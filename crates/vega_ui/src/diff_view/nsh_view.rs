@@ -4,6 +4,7 @@ use super::{
     exact_current_file, head_label,
 };
 use crate::conversation_stream::{MONOFONT, code_token_style};
+use crate::icons::Icon;
 use crate::nsh::{OrderedCommands, ProjectionId, Surface};
 use gpui_kit::Subscription;
 use gpui_kit::{App, Context, Render, Window, div};
@@ -307,7 +308,7 @@ fn send(state: Signal<Snapshot>, commands: &OrderedCommands<Request>, action: Ac
     commands.send(Request::Action(state.get_untracked().observed(), action));
 }
 
-fn control(state: Signal<Snapshot>, target: ElementRef) -> View {
+fn control(state: Signal<Snapshot>, target: ElementRef, outlined: bool) -> View {
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
@@ -324,8 +325,10 @@ fn control(state: Signal<Snapshot>, target: ElementRef) -> View {
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 state.with(|s| s.colors.brand_primary)
-            } else {
+            } else if outlined {
                 state.with(|s| s.colors.border_subtle)
+            } else {
+                state.with(|s| s.colors.bg_base.opacity(0.))
             })
         })
         .text_size(px(Typography::METADATA))
@@ -343,9 +346,39 @@ fn button(
     key: &'static str,
     action: Action,
 ) -> View {
-    control(state, element_ref())
+    control(state, element_ref(), true)
         .label(move || localized(state, key))
         .child(text(move || localized(state, key)).number_of_lines(1))
+        .on_press(move || send(state, &commands, action))
+}
+
+fn glyph(icon: Icon, ink: impl Fn() -> gpui_kit::Rgba + Copy + 'static) -> AnyElement {
+    svg(nsh_core::element::ImageSrc::svg_markup(
+        &crate::icons::nsh_source(icon).unwrap_or_default(),
+    ))
+    .size(px(Layout::ICON_SIZE))
+    .flex_shrink_0()
+    .accessible(false)
+    .text_color(move || crate::nsh::color(ink()))
+    .tint_color(move || crate::nsh::color(ink()).to_hsla())
+    .into_element()
+}
+
+fn header_button(
+    state: Signal<Snapshot>,
+    commands: OrderedCommands<Request>,
+    icon: Icon,
+    key: fn(&Snapshot) -> &'static str,
+    action: Action,
+) -> View {
+    let label = move || state.with(|snapshot| vega_i18n::t(key(snapshot)));
+    control(state, element_ref(), false)
+        .size(px(DIFF_ROW_HEIGHT))
+        .px(px(0.))
+        .flex_shrink_0()
+        .label(label)
+        .tooltip(text(label))
+        .child(glyph(icon, move || state.with(|s| s.colors.text_secondary)))
         .on_press(move || send(state, &commands, action))
 }
 
@@ -452,7 +485,14 @@ fn prepared_row(
         } => {
             let id = *id;
             let focus = element_ref();
-            control(state, focus)
+            let chevron = if *expanded {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            let ink = colors.text_tertiary;
+            control(state, focus, false)
+                .rounded(px(0.))
                 .h(px(DIFF_ROW_HEIGHT))
                 .min_h(px(DIFF_ROW_HEIGHT))
                 .max_h(px(DIFF_ROW_HEIGHT))
@@ -471,10 +511,7 @@ fn prepared_row(
                     ..Default::default()
                 })
                 .disabled(move || state.with(|s| s.refresh_error.is_some()))
-                .child(
-                    text(if *expanded { "▾" } else { "▸" })
-                        .text_color(crate::nsh::color(colors.text_tertiary)),
-                )
+                .child(glyph(chevron, move || ink))
                 .child(
                     text(label.clone())
                         .flex_1()
@@ -482,11 +519,13 @@ fn prepared_row(
                         .number_of_lines(1),
                 )
                 .child(
-                    text(summary.clone())
+                    text(summary.replace(' ', "\u{a0}"))
+                        .label(summary.clone())
                         .max_w(px(110.))
+                        .flex_shrink_0()
+                        .truncate()
                         .font_family(MONOFONT)
                         .text_size(px(Typography::CODE))
-                        .number_of_lines(1)
                         .text_color(crate::nsh::color(colors.text_secondary)),
                 )
                 .on_press(move || {
@@ -531,7 +570,7 @@ fn prepared_row(
                         .number_of_lines(1),
                 )
                 .child(
-                    control(state, element_ref())
+                    control(state, element_ref(), true)
                         .label(vega_i18n::t("ui.retry"))
                         .child(text(vega_i18n::t("ui.retry")))
                         .on_press(move || {
@@ -585,7 +624,7 @@ fn render_recovery(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> An
             vega_i18n::t("ui.git_diff_could_not_be_loaded_safely")
         }))
         .child(
-            control(state, target)
+            control(state, target, true)
                 .label(move || localized(state, "settings.action.reload"))
                 .child(text(move || localized(state, "settings.action.reload")))
                 .on_press(move || {
@@ -683,7 +722,6 @@ fn render(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement 
     let failed_commands = commands.failed;
     let reload_commands = commands.clone();
     let retry_commands = commands.clone();
-    let header_commands = commands.clone();
     let body_empty = computed(move || state.with(|s| s.rows.is_empty()));
     view()
         .element_ref(&root)
@@ -701,6 +739,7 @@ fn render(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement 
                 .flex_shrink_0()
                 .flex_row()
                 .flex_wrap()
+                .content_center()
                 .items_center()
                 .gap_1()
                 .px_2()
@@ -727,48 +766,45 @@ fn render(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement 
                         ),
                 )
                 .child(
-                    button(
+                    header_button(
                         state,
                         commands.clone(),
-                        "ui.refresh_workspace_changes",
+                        Icon::Refresh,
+                        |_| "ui.refresh_workspace_changes",
                         Action::Refresh,
                     )
                     .disabled(move || state.with(|s| s.refreshing)),
                 )
+                .child(header_button(
+                    state,
+                    commands.clone(),
+                    Icon::Split,
+                    |s| match s.layout {
+                        DiffLayout::Unified => "ui.unified",
+                        DiffLayout::SideBySide => "ui.side_by_side",
+                    },
+                    Action::Layout,
+                ))
                 .child(
-                    control(state, element_ref())
-                        .label(move || {
-                            state.with(|s| {
-                                vega_i18n::t(match s.layout {
-                                    DiffLayout::Unified => "ui.unified",
-                                    DiffLayout::SideBySide => "ui.side_by_side",
-                                })
-                            })
-                        })
-                        .child(text(move || {
-                            state.with(|s| {
-                                vega_i18n::t(match s.layout {
-                                    DiffLayout::Unified => "ui.unified",
-                                    DiffLayout::SideBySide => "ui.side_by_side",
-                                })
-                            })
-                        }))
-                        .on_press(move || send(state, &header_commands, Action::Layout)),
-                )
-                .child(
-                    button(
+                    header_button(
                         state,
                         commands.clone(),
-                        "ui.previous_change",
+                        Icon::ArrowUp,
+                        |_| "ui.previous_change",
                         Action::Previous,
                     )
                     .disabled(move || !state.with(|s| s.has_hunks)),
                 )
                 .child(
-                    button(state, commands.clone(), "ui.next_change", Action::Next)
-                        .disabled(move || !state.with(|s| s.has_hunks)),
-                )
-                .child(button(state, commands.clone(), "ui.close", Action::Close)),
+                    header_button(
+                        state,
+                        commands.clone(),
+                        Icon::ArrowDown,
+                        |_| "ui.next_change",
+                        Action::Next,
+                    )
+                    .disabled(move || !state.with(|s| s.has_hunks)),
+                ),
         )
         .child(when(
             move || state.with(|s| s.refresh_error.is_some()),
@@ -823,7 +859,7 @@ fn render(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement 
                             .text_color(move || crate::nsh::color(state.with(|s| s.colors.danger))),
                     )
                     .child(
-                        control(state, element_ref())
+                        control(state, element_ref(), true)
                             .label(move || localized(state, "settings.action.reload"))
                             .child(text(move || localized(state, "settings.action.reload")))
                             .on_press({
