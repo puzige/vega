@@ -2,6 +2,7 @@ mod parser;
 mod permission;
 mod reset;
 mod runtime;
+mod writes;
 pub use parser::parse_command;
 pub use permission::AutomationPermissionService;
 pub(crate) use reset::pause_for_reset_in_transaction;
@@ -60,6 +61,29 @@ pub fn authorize_full_access(
     confirmed: bool,
     now: i64,
 ) -> Result<AutomationTask, String> {
+    crate::threads::existing_task_workspace_root(store, &expected.fence.thread_id)
+        .map_err(storage)?;
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::AuthorizeAutomation {
+            expected: expected.clone(),
+            confirmed,
+            now,
+        },
+    )
+    .map_err(storage)?
+}
+
+fn authorize_full_access_on_writer(
+    store: &Store,
+    expected: &AutomationPermissionAuthorization,
+    confirmed: bool,
+    now: i64,
+) -> Result<AutomationTask, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     if !confirmed || !expected.fence.is_valid() || expected.fence.permission_mode != "full_access" {
@@ -72,7 +96,7 @@ pub fn authorize_full_access(
         .ok_or(vega_i18n::t("domain.automation.error.deleted"))?;
     if owner.status != "active"
         || owner.backend != "native"
-        || crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?
+        || crate::permission_contracts::capture_fence_for_commit(store, &owner).map_err(storage)?
             != expected.fence
     {
         return Err(vega_i18n::t("domain.automation.error.changed").into());
@@ -114,6 +138,27 @@ pub fn command(
     command: &AutomationCommand,
     now: i64,
 ) -> Result<Vec<AutomationTask>, String> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::ChangeAutomation {
+            thread: thread.to_owned(),
+            command: command.clone(),
+            now,
+        },
+    )
+    .map_err(storage)?
+}
+
+fn command_on_writer(
+    store: &Store,
+    thread: &str,
+    command: &AutomationCommand,
+    now: i64,
+) -> Result<Vec<AutomationTask>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
@@ -130,11 +175,35 @@ pub fn command_for_draft(
 ) -> Result<(Vec<AutomationTask>, Thread), String> {
     let creation =
         crate::permission_contracts::DraftCreationGuard::begin(store, draft).map_err(storage)?;
-    let tx = store.immediate_transaction().map_err(storage)?;
-    let thread = creation.materialize(&tx).map_err(storage)?;
-    let tasks = command_in_transaction(&tx, &thread.id, command, now)?;
-    tx.commit().map_err(storage)?;
-    Ok((tasks, thread))
+    let path = store.database_path().ok_or("database path unavailable")?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        DraftAutomation {
+            creation,
+            command: command.clone(),
+            now,
+        },
+    )?
+}
+
+struct DraftAutomation {
+    creation: crate::permission_contracts::DraftCreationGuard,
+    command: AutomationCommand,
+    now: i64,
+}
+impl crate::database_writer::Sealed for DraftAutomation {}
+impl crate::database_writer::DatabaseCommand for DraftAutomation {
+    type Output = Result<(Vec<AutomationTask>, Thread), String>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+        crate::permission_contracts::require_admission_open(store).map_err(storage)?;
+        let tx = store.immediate_transaction().map_err(storage)?;
+        let thread = self.creation.materialize(&tx).map_err(storage)?;
+        let tasks = command_in_transaction(&tx, &thread.id, &self.command, self.now)?;
+        tx.commit().map_err(storage)?;
+        Ok((tasks, thread))
+    }
 }
 
 fn command_in_transaction(
@@ -296,6 +365,25 @@ pub(crate) fn pause_in_transaction(
 }
 
 pub fn pause_all(store: &Store, thread: &str, reason: &str) -> Result<Vec<AutomationTask>, String> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::PauseAutomation {
+            thread: thread.to_owned(),
+            reason: reason.to_owned(),
+        },
+    )
+    .map_err(storage)?
+}
+
+fn pause_all_on_writer(
+    store: &Store,
+    thread: &str,
+    reason: &str,
+) -> Result<Vec<AutomationTask>, String> {
     let tx = store.immediate_transaction().map_err(storage)?;
     pause_in_transaction(&tx, thread, reason)?;
     let tasks = load_from(&tx, thread)?;
@@ -304,6 +392,27 @@ pub fn pause_all(store: &Store, thread: &str, reason: &str) -> Result<Vec<Automa
 }
 
 pub fn pause_matching(
+    store: &Store,
+    thread: &str,
+    expected: &[AutomationTask],
+    reason: &str,
+) -> Result<(), ConversationError> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| ConversationError::Store("database path unavailable".into()))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::PauseMatchingAutomation {
+            thread: thread.to_owned(),
+            expected: expected.to_vec(),
+            reason: reason.to_owned(),
+        },
+    )
+    .map_err(ConversationError::Store)?
+}
+
+fn pause_matching_on_writer(
     store: &Store,
     thread: &str,
     expected: &[AutomationTask],
@@ -355,7 +464,7 @@ pub fn recover_startup(store: &Store) -> Result<(), String> {
     }
     for data in db::active_runs(store.conn()).map_err(storage)? {
         let run: AutomationRunClaim = decode(&data)?;
-        finish(store, &run, false, false, 0, now_ms())?;
+        finish_on_writer(store, &run, false, false, 0, now_ms())?;
     }
     let tx = store.immediate_transaction().map_err(storage)?;
     let tasks: Vec<AutomationTask> = db::all_tasks(&tx)
@@ -384,6 +493,21 @@ pub fn due_kind(tasks: &[AutomationTask], now: i64) -> Option<AutomationKind> {
 }
 
 pub fn refresh(store: &Store, thread: &str, now: i64) -> Result<Vec<AutomationTask>, String> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::RefreshAutomation {
+            thread: thread.to_owned(),
+            now,
+        },
+    )
+    .map_err(storage)?
+}
+
+fn refresh_on_writer(store: &Store, thread: &str, now: i64) -> Result<Vec<AutomationTask>, String> {
     let read = store.conn().unchecked_transaction().map_err(storage)?;
     if vega_store::threads::find(&read, thread)
         .map_err(storage)?
@@ -431,9 +555,30 @@ pub fn claim(
     source: Option<AutomationKind>,
     now: i64,
 ) -> Result<Option<AutomationRunClaim>, String> {
+    crate::threads::task_workspace_root(store, thread).map_err(storage)?;
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::ClaimAutomation {
+            thread: thread.to_owned(),
+            source,
+            now,
+        },
+    )
+    .map_err(storage)?
+}
+
+fn claim_on_writer(
+    store: &Store,
+    thread: &str,
+    source: Option<AutomationKind>,
+    now: i64,
+) -> Result<Option<AutomationRunClaim>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     crate::permission_contracts::require_admission_open(store).map_err(storage)?;
-    crate::threads::task_workspace_root(store, thread).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
     let owner = vega_store::threads::find(&tx, thread)
         .map_err(storage)?
@@ -477,7 +622,7 @@ pub fn claim(
         return Err(vega_i18n::t("domain.automation.error.budget").into());
     }
     let permission_fence =
-        crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?;
+        crate::permission_contracts::capture_fence_for_commit(store, &owner).map_err(storage)?;
     if permission_fence.permission_mode == "full_access"
         && tasks.iter().any(|task| {
             !task
@@ -514,10 +659,28 @@ pub fn activate_claim(
     store: &Store,
     claim: &AutomationRunClaim,
 ) -> Result<Option<AutomationRunClaim>, String> {
+    crate::threads::existing_task_workspace_root(store, &claim.thread_id).map_err(storage)?;
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::ActivateAutomation {
+            claim: claim.clone(),
+        },
+    )
+    .map_err(storage)?
+}
+
+fn activate_claim_on_writer(
+    store: &Store,
+    claim: &AutomationRunClaim,
+) -> Result<Option<AutomationRunClaim>, String> {
     let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
     crate::permission_contracts::require_admission_open(store).map_err(storage)?;
     let tx = store.immediate_transaction().map_err(storage)?;
-    if !current_claim(store, claim)? {
+    if !current_claim_for_commit(store, claim)? {
         return Ok(None);
     }
     let Some((_, data)) = db::run(&tx, &claim.thread_id, &claim.id).map_err(storage)? else {
@@ -559,6 +722,11 @@ pub fn finish_unsettled_claim(
 }
 
 pub fn current_claim(store: &Store, claim: &AutomationRunClaim) -> Result<bool, String> {
+    crate::threads::existing_task_workspace_root(store, &claim.thread_id).map_err(storage)?;
+    current_claim_for_commit(store, claim)
+}
+
+fn current_claim_for_commit(store: &Store, claim: &AutomationRunClaim) -> Result<bool, String> {
     let Some((finished, data)) =
         db::run(store.conn(), &claim.thread_id, &claim.id).map_err(storage)?
     else {
@@ -584,7 +752,7 @@ pub fn current_claim(store: &Store, claim: &AutomationRunClaim) -> Result<bool, 
         return Ok(false);
     };
     let current_fence =
-        crate::permission_contracts::capture_fence(store, &owner).map_err(storage)?;
+        crate::permission_contracts::capture_fence_for_commit(store, &owner).map_err(storage)?;
     if &current_fence != expected_fence
         || (current_fence.permission_mode == "full_access"
             && claim.tasks.iter().any(|task| {
@@ -625,6 +793,20 @@ pub fn current_claim(store: &Store, claim: &AutomationRunClaim) -> Result<bool, 
 }
 
 pub fn release_claim(store: &Store, claim: &AutomationRunClaim) -> Result<(), String> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::ReleaseAutomationClaim {
+            claim: claim.clone(),
+        },
+    )
+    .map_err(storage)?
+}
+
+fn release_claim_on_writer(store: &Store, claim: &AutomationRunClaim) -> Result<(), String> {
     db::save_run(
         store.conn(),
         &claim.thread_id,
@@ -636,6 +818,31 @@ pub fn release_claim(store: &Store, claim: &AutomationRunClaim) -> Result<(), St
 }
 
 pub fn finish(
+    store: &Store,
+    claim: &AutomationRunClaim,
+    success: bool,
+    usage_complete: bool,
+    elapsed_ms: u64,
+    now: i64,
+) -> Result<(), String> {
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        writes::FinishAutomation {
+            claim: claim.clone(),
+            success,
+            usage_complete,
+            elapsed_ms,
+            now,
+        },
+    )
+    .map_err(storage)?
+}
+
+fn finish_on_writer(
     store: &Store,
     claim: &AutomationRunClaim,
     success: bool,

@@ -15,10 +15,43 @@ pub fn apply(
         ),
         _ => None,
     };
-    let tx = store.immediate_transaction().map_err(storage)?;
-    let result = apply_in_transaction(store, &tx, expected_revision, action, creation.as_ref())?;
-    tx.commit().map_err(storage)?;
-    Ok(result)
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        ApplyOrganization {
+            expected_revision,
+            action,
+            creation,
+        },
+    )
+    .map_err(storage)?
+}
+
+struct ApplyOrganization {
+    expected_revision: u64,
+    action: SidebarOrganizationAction,
+    creation: Option<crate::permission_contracts::DraftCreationGuard>,
+}
+impl crate::database_writer::Sealed for ApplyOrganization {}
+impl crate::database_writer::DatabaseCommand for ApplyOrganization {
+    type Output = Result<SidebarOrganizationOutcome, SidebarOrganizationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate().map_err(storage)?;
+        crate::permission_contracts::require_admission_open(store).map_err(storage)?;
+        let tx = store.immediate_transaction().map_err(storage)?;
+        let result = apply_in_transaction(
+            store,
+            &tx,
+            self.expected_revision,
+            self.action,
+            self.creation.as_ref(),
+        )?;
+        tx.commit().map_err(storage)?;
+        Ok(result)
+    }
 }
 
 pub(super) fn apply_in_transaction(

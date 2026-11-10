@@ -102,26 +102,24 @@ impl ConversationCompactionHook<'_> {
             .map(|target| target.call_id.clone())
             .collect::<Vec<_>>();
         let source_fingerprint = tokio::task::spawn_blocking(move || {
-            let _admission = admission;
-            let store = Store::open(path).map_err(VegaError::Store)?;
-            vega_store::context_micro::install(
+            let store = Store::open_existing(&path)?;
+            let prepared = vega_store::context_micro::PreparedMicro::prepare(
                 store.conn(),
                 &source,
                 &model,
                 checkpoint.map(|checkpoint| checkpoint.id),
                 &call_ids,
                 now_ms(),
-                || cancel.is_cancelled(),
             )
-            .map_err(|error| match error {
-                vega_store::context_compaction::ContextCheckpointError::Cancelled => {
-                    VegaError::Cancelled
-                }
-                vega_store::context_compaction::ContextCheckpointError::Store(error) => {
-                    VegaError::Store(error)
-                }
-                _ => context_error(ContextRuntimeError::SourceChanged),
-            })
+            .map_err(super::precompute::store_error)?;
+            super::writer::commit(
+                &path,
+                super::writer::Micro {
+                    prepared,
+                    cancel,
+                    admission,
+                },
+            )
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;

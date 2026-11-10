@@ -11,6 +11,7 @@ mod projection;
 mod reactive;
 mod summary_fork;
 mod summary_variant;
+mod writer;
 
 use crate::types::ContextCompactionTrigger;
 use std::collections::HashSet;
@@ -375,19 +376,14 @@ pub fn save_context_settings(
     store: &Store,
     settings: &crate::types::ContextSettings,
 ) -> Result<(), crate::types::ConversationError> {
-    let _admission = crate::thread_access::acquire(store, &settings.thread_id)?;
-    save_settings(
-        store.conn(),
-        &StoreContextSettings {
-            thread_id: settings.thread_id.clone(),
-            model: settings.model.clone(),
-            context_limit: settings.context_limit,
-            output_reserve: settings.output_reserve,
-            automatic_compaction: settings.automatic_compaction,
-            updated_at: settings.updated_at,
+    let admission = crate::thread_access::acquire(store, &settings.thread_id)?;
+    writer::commit_conversation(
+        store,
+        writer::Settings {
+            settings: settings.clone(),
+            admission,
         },
     )
-    .map_err(|error| crate::types::ConversationError::Store(error.to_string()))
 }
 
 /// Reads the exact conversation/model context projection for the controller.
@@ -857,26 +853,26 @@ async fn compact_thread_manually_owned(
         run_id: run_id.clone(),
         root_attempt_id: root_attempt_id.clone(),
     };
-    let hook = ConversationCompactionHook::new(
-        provider,
-        database_path,
-        thread_id_owned,
-        model,
-        reasoning,
-        pricing_catalog,
-    )
-    .with_thread_admission(admission)
-    .with_credential_reader(credential_reader)
-    .with_credential_exceptions(exceptions)
-    .with_diagnostics(diagnostics_context)
-    .with_summary_requirements(summary_requirements)?;
-    let hook = if let Some(selection) = selection {
-        hook.with_partial_selection(selection)
-    } else {
-        hook
-    };
-    let result = hook
-        .compact_with_replay(
+    let result = async {
+        let hook = ConversationCompactionHook::new(
+            provider,
+            database_path,
+            thread_id_owned,
+            model,
+            reasoning,
+            pricing_catalog,
+        )
+        .with_thread_admission(admission.clone())
+        .with_credential_reader(credential_reader)
+        .with_credential_exceptions(exceptions)
+        .with_diagnostics(diagnostics_context)
+        .with_summary_requirements(summary_requirements)?;
+        let hook = if let Some(selection) = selection {
+            hook.with_partial_selection(selection)
+        } else {
+            hook
+        };
+        hook.compact_with_replay(
             ContextCompactionRequest {
                 trigger: ContextCompactionTrigger::Manual,
                 system_prompt: system_prompt.to_string(),
@@ -893,7 +889,9 @@ async fn compact_thread_manually_owned(
             wire_messages[0].replay_frame().cloned(),
             cancel,
         )
-        .await;
+        .await
+    }
+    .await;
     let (state, failure_code) = match &result {
         Ok(_) => (
             vega_store::run_diagnostics::DiagnosticState::Succeeded,
@@ -923,8 +921,31 @@ async fn compact_thread_manually_owned(
         ),
         run_started_at,
     );
-    diagnostics.flush_to(store);
-    result
+    let flushed = diagnostics
+        .flush_to(store, admission, thread_id, &run_id)
+        .await;
+    finish_manual_diagnostics(result, flushed)
+}
+
+fn finish_manual_diagnostics(
+    result: Result<ContextCompactionResult, ContextCompactionFailure>,
+    flushed: Result<(), super::diagnostics::DiagnosticsFlushError>,
+) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+    match (result, flushed) {
+        (result, Ok(())) => result,
+        (Ok(result), Err(error)) => {
+            tracing::error!(error = %error, "manual compaction diagnostics persistence failed after compaction succeeded");
+            Err(ContextCompactionFailure::with_usages(
+                error.into_runtime_error(),
+                result.usages,
+                result.usage_complete,
+            ))
+        }
+        (Err(original), Err(error)) => {
+            tracing::error!(error = %error, "manual compaction diagnostics persistence failed; preserving original compaction failure");
+            Err(original)
+        }
+    }
 }
 
 /// Runs a manual compaction through the conversation service boundary used by
@@ -1227,34 +1248,14 @@ fn persist_context_usage(
     model: &str,
     usage: &ContextCompactionUsage,
 ) -> Result<(), crate::types::ConversationError> {
-    vega_store::token_usage::insert(
-        store.conn(),
-        vega_store::token_usage::NewTokenUsage {
-            thread_id,
-            message_id: None,
-            model,
-            input_tokens: usage.usage.input,
-            output_tokens: usage.usage.output,
-            cache_read_tokens: usage.usage.cache_read.unwrap_or(0),
-            cache_write_tokens: usage.usage.cache_write.unwrap_or(0),
-            cost_microcents: usage.cost_microcents,
-            created_at: now_ms(),
-            pricing_version: usage
-                .pricing
-                .as_ref()
-                .map(|pricing| pricing.version.as_str()),
-            pricing_profile: usage
-                .pricing
-                .as_ref()
-                .map(|pricing| pricing.profile.as_str()),
-            call_started_at: usage
-                .pricing
-                .as_ref()
-                .map(|pricing| pricing.call_started_at),
+    writer::commit_conversation(
+        store,
+        writer::Usage {
+            thread_id: thread_id.into(),
+            model: model.into(),
+            usage: usage.clone(),
         },
     )
-    .map(|_| ())
-    .map_err(|error| crate::types::ConversationError::Store(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1267,40 +1268,17 @@ fn persist_context_status(
     phase: &str,
     record: &crate::types::ContextCompactionStatusRecord,
 ) -> Result<(), crate::types::ConversationError> {
-    let usage_state = match record.usage {
-        crate::types::ContextCompactionUsageState::Pending => "pending",
-        crate::types::ContextCompactionUsageState::Known { priced: true } => "known_priced",
-        crate::types::ContextCompactionUsageState::Known { priced: false } => "known_unpriced",
-        crate::types::ContextCompactionUsageState::Unknown => "unknown",
-    };
-    let failure = record.failure.map(context_failure_name);
-    let tx = store
-        .immediate_transaction()
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
-    if phase == "started" {
-        vega_store::messages::record_thread_tail_timestamp_boundary(&tx, thread_id, operation_key)
-            .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
-    }
-    insert_status(
-        &tx,
-        NewContextCompactionStatus {
-            thread_id,
-            model,
-            operation_key,
+    writer::commit_conversation(
+        store,
+        writer::Status {
+            thread_id: thread_id.into(),
+            model: model.into(),
+            operation_key: operation_key.into(),
             generation,
-            phase,
-            usage_state,
-            failure,
-            source_version: record.source_version.unwrap_or_default(),
-            estimated_tokens: record.estimated_tokens.unwrap_or_default(),
-            input_budget: record.input_budget.unwrap_or_default(),
-            target_tokens: record.target_tokens.unwrap_or_default(),
-            created_at: record.updated_at,
+            phase: phase.into(),
+            record: record.clone(),
         },
     )
-    .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
-    tx.commit()
-        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2053,6 +2031,13 @@ impl ConversationCompactionHook<'_> {
                         expected_generation,
                         ready_preferences,
                         database_identity: store.database_identity(),
+                        authority: crate::permission_contracts::capture_fence_for_commit(
+                            &store,
+                            &vega_store::threads::find(&transaction, &thread_id)
+                                .map_err(VegaError::Store)?
+                                .ok_or_else(|| context_error(ContextRuntimeError::SourceChanged))?,
+                        )
+                        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?,
                     }),
                 )
             } else {
@@ -2601,41 +2586,31 @@ impl ConversationCompactionHook<'_> {
             let path = self.database_path.clone();
             let install_cancel = cancel.clone();
             move || {
-                let store = Store::open(path).map_err(VegaError::Store)?;
-                crate::thread_access::verify(&store, &checkpoint.thread_id, &admission)
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-                let (install, retired_generation) = vega_store::context_compaction::install_checkpoint_and_retire_precompute_with_guard(
-                    store.conn(),
-                    &checkpoint,
-                    || install_cancel.is_cancelled() || tokio::time::Instant::now() >= deadline,
-                )
-                .map_err(|error| match error {
-                    vega_store::context_compaction::ContextCheckpointError::Stale => {
-                        context_error(ContextRuntimeError::SourceChanged)
-                    }
-                    vega_store::context_compaction::ContextCheckpointError::IncompleteCoverage => {
-                        context_error(ContextRuntimeError::SummaryProjectionInvalid)
-                    }
-                    vega_store::context_compaction::ContextCheckpointError::Invalid => {
-                        context_error(ContextRuntimeError::SummaryProjectionInvalid)
-                    }
-                    vega_store::context_compaction::ContextCheckpointError::Cancelled => {
-                        if install_cancel.is_cancelled() {
-                            VegaError::Cancelled
-                        } else {
-                            context_error(ContextRuntimeError::SummaryTimedOut)
-                        }
-                    }
-                    vega_store::context_compaction::ContextCheckpointError::Store(error) => {
-                        VegaError::Store(error)
-                    }
-                })?;
+                let store = Store::open_existing(&path).map_err(VegaError::Store)?;
+                let thread_id = checkpoint.thread_id.clone();
+                let checkpoint =
+                    vega_store::context_compaction::PreparedContextCheckpoint::prepare(
+                        store.conn(),
+                        checkpoint,
+                    )
+                    .map_err(precompute::store_error)?;
+                let (install, retired_generation) = writer::commit(
+                    &path,
+                    writer::Install {
+                        checkpoint,
+                        admission,
+                        install_cancel,
+                        deadline,
+                    },
+                )?;
                 if let Some(generation) = retired_generation
                     && crate::types::ContextPrecomputeRegistry::global()
-                        .cancel_generation(store.database_identity(), &checkpoint.thread_id, &generation)
+                        .cancel_generation(store.database_identity(), &thread_id, &generation)
                         .is_err()
                 {
-                    tracing::error!("superseded context precompute cancellation could not be confirmed");
+                    tracing::error!(
+                        "superseded context precompute cancellation could not be confirmed"
+                    );
                 }
                 Ok::<_, VegaError>(install)
             }

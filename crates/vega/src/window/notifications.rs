@@ -166,45 +166,20 @@ impl VegaWindow {
             return;
         }
         vega_ui::navigation::begin_task_mutation(cx);
-        let result = (|| {
-            let store = cx.global::<VegaStore>().0.as_ref().map_err(Clone::clone)?;
-            vega_conversation::threads::update_thread(
-                store,
-                &run.thread_id,
-                &ThreadUpdate {
-                    unread: Some(true),
-                    ..Default::default()
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            vega_conversation::threads::get_thread(store, &run.thread_id)
-                .map_err(|error| error.to_string())
-        })();
-        vega_ui::navigation::finish_task_mutation(cx);
-        let thread = match result {
-            Ok(thread) => thread,
-            Err(_) => {
-                Self::completion_navigation_error(vega_i18n::t("app.navigation.unread_failed"), cx);
-                return;
-            }
-        };
-        if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
-            && current.id == thread.id
-            && current.project_id == thread.project_id
-        {
-            current.unread = true;
-            cx.set_global(OpenedThread(Some(current)));
-        }
-        self.sidebar.update(cx, Sidebar::reload_sessions);
-        if run.cancellation_reason == Some(RunCancellationReason::User) {
-            return;
-        }
-        let Some(output) = run
-            .stream
-            .read(cx)
-            .completion_response(&run.message_ids, cx)
-        else {
-            return;
+        let database = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .and_then(|store| store.database_path().map(std::path::Path::to_path_buf));
+        let thread_id = run.thread_id.clone();
+        let generation = run.generation;
+        let output = if run.cancellation_reason == Some(RunCancellationReason::User) {
+            None
+        } else {
+            run.stream
+                .read(cx)
+                .completion_response(&run.message_ids, cx)
         };
         let outcome = if success {
             run.completion_outcome
@@ -215,17 +190,58 @@ impl VegaWindow {
                 _ => RunCompletionOutcome::Failed,
             }
         };
-        crate::app_notifications::show(
-            NavigationRoute::Task {
-                project: thread.project_binding().map(str::to_owned),
-                task: thread.id.clone(),
-            },
-            &thread.title,
-            run.generation,
-            outcome,
-            &output,
-            cx,
-        );
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let database = database.ok_or_else(|| "store unavailable".to_owned())?;
+                    vega_conversation::threads::persist_thread_update(
+                        &database,
+                        &thread_id,
+                        &ThreadUpdate {
+                            unread: Some(true),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| error.to_string())
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                vega_ui::navigation::finish_task_mutation(cx);
+                let thread = match result {
+                    Ok(thread) => thread,
+                    Err(_) => {
+                        Self::completion_navigation_error(
+                            vega_i18n::t("app.navigation.unread_failed"),
+                            cx,
+                        );
+                        return;
+                    }
+                };
+                if let Some(mut current) = cx.global::<OpenedThread>().0.clone()
+                    && current.id == thread.id
+                    && current.project_id == thread.project_id
+                {
+                    current.unread = true;
+                    cx.set_global(OpenedThread(Some(current)));
+                }
+                this.sidebar.update(cx, Sidebar::reload_sessions);
+                if let Some(output) = output {
+                    crate::app_notifications::show(
+                        NavigationRoute::Task {
+                            project: thread.project_binding().map(str::to_owned),
+                            task: thread.id.clone(),
+                        },
+                        &thread.title,
+                        generation,
+                        outcome,
+                        &output,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn open_completion_notification(

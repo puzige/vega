@@ -1,6 +1,9 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
+mod checkpoints;
+pub use checkpoints::{PreparedAbandonedRecovery, PreparedStageCheckpoint, PreparedTerminal};
+
 fn invalid() -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName("delegated stage identity unavailable".into())
 }
@@ -154,6 +157,32 @@ pub fn append(
         crate::write_coordination::WriteCategory::Delegation,
     )?;
     let source = crate::context_compaction::load_source_version_in_transaction(conn, child)?;
+    append_with_source(
+        conn,
+        child,
+        message,
+        origin,
+        StageCheckpointPayload { manifest, effects },
+        now,
+        &source,
+    )
+}
+
+struct StageCheckpointPayload {
+    manifest: Value,
+    effects: Value,
+}
+
+fn append_with_source(
+    conn: &rusqlite::Transaction<'_>,
+    child: &str,
+    message: &str,
+    origin: &str,
+    payload: StageCheckpointPayload,
+    now: i64,
+    source: &crate::context_compaction::ContextSourceVersion,
+) -> rusqlite::Result<Value> {
+    let StageCheckpointPayload { manifest, effects } = payload;
     let id = ulid::Ulid::generate().to_string();
     let previous = latest(conn, child, message)?.map(|value| value["id"].clone());
     let permission_fence: Option<String> = conn.query_row(

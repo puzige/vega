@@ -36,17 +36,25 @@ pub fn insert_screenshot(
     call_id: &str,
     bytes: &[u8],
 ) -> rusqlite::Result<usize> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::ComputerDelivery,
-    )?;
-    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::ComputerDelivery,
     )?;
+    let ordinal = insert_screenshot_in_transaction(&tx, thread_id, message_id, call_id, bytes)?;
+    tx.commit()?;
+    Ok(ordinal)
+}
+
+pub fn insert_screenshot_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    message_id: &str,
+    call_id: &str,
+    bytes: &[u8],
+) -> rusqlite::Result<usize> {
+    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     let prior: Option<(String,i64,Vec<u8>)> = tx.query_row("SELECT s.message_id,s.ordinal,a.encoded FROM computer_screenshot_artifacts s JOIN image_attachments a ON a.message_id=s.message_id AND a.ordinal=s.ordinal JOIN messages m ON m.id=s.message_id WHERE s.call_id=?1 AND m.thread_id=?2",params![call_id,thread_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
     if let Some((owner, ordinal, encoded)) = prior {
         if owner != message_id || encoded != bytes {
@@ -70,6 +78,5 @@ pub fn insert_screenshot(
         "INSERT INTO computer_screenshot_artifacts (call_id,message_id,ordinal) VALUES (?1,?2,?3)",
         params![call_id, message_id, count],
     )?;
-    tx.commit()?;
     usize::try_from(count).map_err(|_| rusqlite::Error::InvalidQuery)
 }

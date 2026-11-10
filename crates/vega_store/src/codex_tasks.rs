@@ -72,6 +72,39 @@ pub fn bind_to_materialized_thread(
         conn,
         crate::write_coordination::WriteCategory::CodexTasks,
     )?;
+    let prepared = prepare_snapshot(snapshot)?;
+    let changed = bind_prepared_in_transaction(&tx, thread_id, &prepared, created_at)?;
+    if changed {
+        tx.commit()?;
+    }
+    Ok(changed)
+}
+
+pub struct PreparedCodexSnapshot {
+    snapshot: NewCodexTaskSnapshot,
+    arguments_json: String,
+    additional_directories_json: String,
+}
+
+pub fn prepare_snapshot(
+    snapshot: &NewCodexTaskSnapshot,
+) -> Result<PreparedCodexSnapshot, rusqlite::Error> {
+    Ok(PreparedCodexSnapshot {
+        snapshot: snapshot.clone(),
+        arguments_json: serde_json::to_string(&snapshot.arguments)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+        additional_directories_json: serde_json::to_string(&snapshot.additional_directories)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+    })
+}
+
+pub fn bind_prepared_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    prepared: &PreparedCodexSnapshot,
+    created_at: i64,
+) -> Result<bool, rusqlite::Error> {
+    let snapshot = &prepared.snapshot;
     let existing: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT backend, project_id FROM threads WHERE id = ?1",
@@ -92,8 +125,7 @@ pub fn bind_to_materialized_thread(
     {
         return Ok(false);
     }
-    insert_snapshot(&tx, thread_id, snapshot, created_at)?;
-    tx.commit()?;
+    insert_prepared_snapshot(tx, thread_id, prepared, created_at)?;
     Ok(true)
 }
 
@@ -296,6 +328,25 @@ fn insert_snapshot(
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let additional_directories_json = serde_json::to_string(&snapshot.additional_directories)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    insert_prepared_snapshot(
+        conn,
+        thread_id,
+        &PreparedCodexSnapshot {
+            snapshot: snapshot.clone(),
+            arguments_json,
+            additional_directories_json,
+        },
+        created_at,
+    )
+}
+
+fn insert_prepared_snapshot(
+    conn: &Connection,
+    thread_id: &str,
+    prepared: &PreparedCodexSnapshot,
+    created_at: i64,
+) -> Result<(), rusqlite::Error> {
+    let snapshot = &prepared.snapshot;
     conn.execute(
         "INSERT INTO codex_task_snapshots \
          (thread_id, profile_id, profile_display_name, adapter_kind, executable, arguments_json, \
@@ -309,7 +360,7 @@ fn insert_snapshot(
             snapshot.profile_display_name,
             snapshot.adapter_kind,
             snapshot.executable,
-            arguments_json,
+            prepared.arguments_json,
             snapshot.adapter_version,
             snapshot.codex_version,
             snapshot.model,
@@ -320,7 +371,7 @@ fn insert_snapshot(
             snapshot.selected_project_id,
             snapshot.worktree_id,
             snapshot.canonical_working_directory,
-            additional_directories_json,
+            prepared.additional_directories_json,
             created_at,
         ],
     )?;

@@ -1,9 +1,5 @@
 use std::{
     path::PathBuf,
-    sync::{
-        OnceLock,
-        mpsc::{self, SyncSender},
-    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -71,6 +67,24 @@ struct PendingPredictionEvent {
     occurred_at: i64,
 }
 
+impl crate::database_writer::Sealed for PendingPredictionEvent {}
+
+impl crate::database_writer::DatabaseCommand for PendingPredictionEvent {
+    type Output = Result<(), String>;
+
+    fn apply(self, store: &vega_store::Store) -> Self::Output {
+        vega_store::composer_prediction_events::record(
+            store.conn(),
+            &self.thread_id,
+            &self.message_id,
+            self.event.as_str(),
+            self.attempt,
+            self.occurred_at,
+        )
+        .map_err(|_| "prediction diagnostic persistence failed".to_owned())
+    }
+}
+
 pub fn record_prediction_event(
     database: &std::path::Path,
     thread_id: &str,
@@ -78,49 +92,33 @@ pub fn record_prediction_event(
     event: PredictionEvent,
     attempt: u8,
 ) {
-    static WRITER: OnceLock<Option<SyncSender<PendingPredictionEvent>>> = OnceLock::new();
-    let writer = WRITER.get_or_init(|| {
-        let (sender, receiver) = mpsc::sync_channel::<PendingPredictionEvent>(1024);
-        std::thread::Builder::new()
-            .name("prediction-diagnostics".into())
-            .spawn(move || {
-                for event in receiver {
-                    match vega_store::Store::open(&event.database) {
-                        Ok(store) => vega_store::composer_prediction_events::record(
-                            store.conn(),
-                            &event.thread_id,
-                            &event.message_id,
-                            event.event.as_str(),
-                            event.attempt,
-                            event.occurred_at,
-                        ),
-                        Err(_) => {
-                            tracing::warn!("composer prediction diagnostic store unavailable")
-                        }
-                    }
-                }
-            })
-            .ok()
-            .map(|_| sender)
-    });
     let occurred_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         });
-    let queued = writer.as_ref().is_some_and(|writer| {
-        writer
-            .try_send(PendingPredictionEvent {
-                database: database.to_path_buf(),
-                thread_id: thread_id.to_string(),
-                message_id: message_id.to_string(),
-                event,
-                attempt,
-                occurred_at,
-            })
-            .is_ok()
-    });
-    if !queued {
-        tracing::warn!("composer prediction diagnostic queue unavailable");
+    let event = PendingPredictionEvent {
+        database: database.to_path_buf(),
+        thread_id: thread_id.to_owned(),
+        message_id: message_id.to_owned(),
+        event,
+        attempt,
+        occurred_at,
+    };
+    if let Err(error) = crate::submission_diagnostics::background::submit(move || {
+        let succeeded = vega_store::Store::open_read_only(&event.database)
+            .ok()
+            .is_some_and(|store| {
+                let path = event.database.clone();
+                crate::database_writer::commit(&path, store.database_identity(), event)
+                    .is_ok_and(|result| result.is_ok())
+            });
+        if !succeeded {
+            tracing::warn!(outcome = "prediction_diagnostic_not_confirmed");
+            return Err("prediction diagnostic persistence not confirmed".into());
+        }
+        Ok(())
+    }) {
+        tracing::warn!(%error, outcome="prediction_diagnostic_not_accepted");
     }
 }

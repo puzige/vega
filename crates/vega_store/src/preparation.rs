@@ -17,6 +17,10 @@ const TABLES: &[(&str, &str)] = &[
         "message_id IN (SELECT id FROM messages WHERE thread_id=?1)",
     ),
     ("pending_messages", "thread_id=?1"),
+    (
+        "permission_contract_state",
+        "singleton=1 AND ?1 IS NOT NULL",
+    ),
     ("historical_message_delivery", "thread_id=?1"),
     ("historical_tool_receipts", "thread_id=?1"),
     (
@@ -53,15 +57,29 @@ const TABLES: &[(&str, &str)] = &[
 
 pub struct DelegatedSnapshot<'a> {
     original: &'a Connection,
+    database: Option<crate::DatabaseIdentity>,
     connection: Connection,
     thread: String,
     revision: i64,
+    next_seq: i64,
     schema: i64,
     origins: HashMap<String, MutationOrigin>,
 }
 
 pub struct PreparedDelegatedInstall<'a> {
     snapshot: DelegatedSnapshot<'a>,
+    legacy: PreparedLegacyRedaction,
+    payloads: PreparedPayloadRedaction,
+    assistant: crate::messages::MessageRow,
+}
+
+pub struct OwnedDelegatedInstall {
+    database: crate::DatabaseIdentity,
+    thread: String,
+    revision: i64,
+    next_seq: i64,
+    schema: i64,
+    origins: HashMap<String, MutationOrigin>,
     legacy: PreparedLegacyRedaction,
     payloads: PreparedPayloadRedaction,
     assistant: crate::messages::MessageRow,
@@ -101,9 +119,15 @@ fn verify_schema(conn: &Connection) -> rusqlite::Result<()> {
 
 impl<'a> DelegatedSnapshot<'a> {
     pub fn capture(conn: &'a Connection, thread: &str, assistant: &str) -> rusqlite::Result<Self> {
+        let database = conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(|_| crate::DatabaseIdentity::for_connection(conn))
+            .transpose()?;
         let read = conn.unchecked_transaction()?;
         verify_schema(&read)?;
         let revision = revision(&read, thread)?;
+        let next_seq = crate::messages::next_seq(&read, thread)?;
         let schema = read.pragma_query_value(None, "schema_version", |row| row.get(0))?;
         for sql in [
             "SELECT EXISTS(SELECT 1 FROM tool_calls c LEFT JOIN messages m ON m.id=c.message_id WHERE (c.thread_id=?1 OR m.thread_id=?1) AND (m.id IS NULL OR c.thread_id<>m.thread_id) AND ?2 IS NOT NULL)",
@@ -182,9 +206,11 @@ impl<'a> DelegatedSnapshot<'a> {
         read.commit()?;
         Ok(Self {
             original: conn,
+            database,
             connection,
             thread: thread.to_owned(),
             revision,
+            next_seq,
             schema,
             origins,
         })
@@ -204,22 +230,48 @@ impl<'a> DelegatedSnapshot<'a> {
         payloads: PreparedPayloadRedaction,
         assistant: crate::messages::MessageRow,
     ) -> rusqlite::Result<PreparedDelegatedInstall<'a>> {
+        self.prepare_turn_install(legacy, payloads, assistant, None, &[], None)
+    }
+
+    pub fn prepare_turn_install(
+        self,
+        legacy: PreparedLegacyRedaction,
+        payloads: PreparedPayloadRedaction,
+        assistant: crate::messages::MessageRow,
+        user: Option<crate::messages::MessageRow>,
+        images: &[Vec<u8>],
+        pending: Option<(&str, &str)>,
+    ) -> rusqlite::Result<PreparedDelegatedInstall<'a>> {
         if !legacy.belongs_to(&self.thread)
             || !payloads.belongs_to(&self.thread)
             || assistant.thread_id != self.thread
             || assistant.role != "assistant"
             || assistant.status != "streaming"
-            || assistant.seq != crate::messages::next_seq(&self.connection, &self.thread)?
+        {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let prepared = self.prepare_redacted_install(legacy, payloads, assistant)?;
+        prepared.project_turn(user, images, pending)?;
+        Ok(prepared)
+    }
+
+    pub fn prepare_redacted_install(
+        self,
+        legacy: PreparedLegacyRedaction,
+        payloads: PreparedPayloadRedaction,
+        assistant: crate::messages::MessageRow,
+    ) -> rusqlite::Result<PreparedDelegatedInstall<'a>> {
+        if !legacy.belongs_to(&self.thread)
+            || !payloads.belongs_to(&self.thread)
+            || assistant.thread_id != self.thread
+            || assistant.role != "assistant"
+            || assistant.status != "streaming"
         {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let mut projection = self.connection.unchecked_transaction()?;
         payloads.install(&mut projection)?;
         legacy.clone().install(&mut projection)?;
-        projection.execute(
-            "INSERT INTO messages(id,thread_id,seq,role,kind,content,status,created_at,plan_status,plan_review_note,plan_reviewed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-            rusqlite::params![assistant.id, assistant.thread_id, assistant.seq, assistant.role, assistant.kind, assistant.content, assistant.status, assistant.created_at, assistant.plan_status, assistant.plan_review_note, assistant.plan_reviewed_at],
-        )?;
         projection.commit()?;
         Ok(PreparedDelegatedInstall {
             snapshot: self,
@@ -231,6 +283,72 @@ impl<'a> DelegatedSnapshot<'a> {
 }
 
 impl PreparedDelegatedInstall<'_> {
+    pub fn project_turn(
+        &self,
+        user: Option<crate::messages::MessageRow>,
+        images: &[Vec<u8>],
+        pending: Option<(&str, &str)>,
+    ) -> rusqlite::Result<()> {
+        let projection = self.snapshot.connection.unchecked_transaction()?;
+        let assistant = &self.assistant;
+        if let Some(user) = user {
+            if user.thread_id != self.snapshot.thread
+                || user.role != "user"
+                || user.status != "done"
+                || user.seq != crate::messages::next_seq(&projection, &self.snapshot.thread)?
+            {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            crate::messages::insert(&projection, &user)?;
+        }
+        if !images.is_empty() {
+            let user_id: String = projection.query_row(
+                "SELECT id FROM messages WHERE thread_id=?1 AND role='user' AND seq<?2 ORDER BY seq DESC LIMIT 1",
+                rusqlite::params![self.snapshot.thread, assistant.seq], |row| row.get(0),
+            )?;
+            for (ordinal, image) in images.iter().enumerate() {
+                crate::image_attachments::insert(&projection, &user_id, ordinal, image)?;
+            }
+        }
+        if let Some((id, content)) = pending {
+            if !crate::pending_messages::mark_delivered(&projection, &self.snapshot.thread, id)? {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            crate::pending_messages::preserve_model_input(
+                &projection,
+                &self.snapshot.thread,
+                id,
+                content,
+            )?;
+        }
+        if assistant.seq != crate::messages::next_seq(&projection, &self.snapshot.thread)? {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        projection.execute(
+            "INSERT INTO messages(id,thread_id,seq,role,kind,content,status,created_at,plan_status,plan_review_note,plan_reviewed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![assistant.id, assistant.thread_id, assistant.seq, assistant.role, assistant.kind, assistant.content, assistant.status, assistant.created_at, assistant.plan_status, assistant.plan_review_note, assistant.plan_reviewed_at],
+        )?;
+        projection.commit()?;
+        Ok(())
+    }
+
+    pub fn into_owned(self) -> rusqlite::Result<OwnedDelegatedInstall> {
+        Ok(OwnedDelegatedInstall {
+            database: self
+                .snapshot
+                .database
+                .ok_or(rusqlite::Error::InvalidQuery)?,
+            thread: self.snapshot.thread,
+            revision: self.snapshot.revision,
+            next_seq: self.snapshot.next_seq,
+            schema: self.snapshot.schema,
+            origins: self.snapshot.origins,
+            legacy: self.legacy,
+            payloads: self.payloads,
+            assistant: self.assistant,
+        })
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.snapshot.connection
     }
@@ -245,7 +363,8 @@ impl PreparedDelegatedInstall<'_> {
                 .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?
                 == self.snapshot.schema
             && revision(transaction, &self.snapshot.thread)? == self.snapshot.revision
-            && crate::messages::next_seq(transaction, &self.snapshot.thread)? == self.assistant.seq)
+            && crate::messages::next_seq(transaction, &self.snapshot.thread)?
+                == self.snapshot.next_seq)
     }
 
     pub fn install(&self, transaction: &mut Transaction<'_>) -> rusqlite::Result<bool> {
@@ -255,6 +374,39 @@ impl PreparedDelegatedInstall<'_> {
         let savepoint = transaction.savepoint()?;
         for (id, expected) in &self.snapshot.origins {
             if crate::fork_mutations::origin(&savepoint, &self.snapshot.thread, id)? != *expected {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+        }
+        self.payloads.install_preparation_updates(&savepoint)?;
+        let changed = self.legacy.install_preparation_updates(&savepoint)?;
+        savepoint.commit()?;
+        Ok(changed)
+    }
+
+    pub fn assistant(&self) -> &crate::messages::MessageRow {
+        &self.assistant
+    }
+}
+
+impl OwnedDelegatedInstall {
+    pub fn validate(&self, transaction: &Transaction<'_>) -> rusqlite::Result<bool> {
+        Ok(
+            crate::DatabaseIdentity::for_connection(transaction)? == self.database
+                && transaction
+                    .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?
+                    == self.schema
+                && revision(transaction, &self.thread)? == self.revision
+                && crate::messages::next_seq(transaction, &self.thread)? == self.next_seq,
+        )
+    }
+
+    pub fn install(&self, transaction: &mut Transaction<'_>) -> rusqlite::Result<bool> {
+        if !self.validate(transaction)? {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let savepoint = transaction.savepoint()?;
+        for (id, expected) in &self.origins {
+            if crate::fork_mutations::origin(&savepoint, &self.thread, id)? != *expected {
                 return Err(rusqlite::Error::InvalidQuery);
             }
         }

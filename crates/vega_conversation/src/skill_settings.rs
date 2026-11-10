@@ -10,9 +10,10 @@ use vega_runtime::skills::{
     SkillError, SkillSource, SourceIdentity, parse_skill_md, resolve_precedence,
 };
 use vega_store::Store;
-use vega_store::skills::{
-    self, NewSkillApproval, NewSkillSource, SkillSourceRecord, SkillStoreError,
-};
+use vega_store::skills::{self, SkillSourceRecord, SkillStoreError};
+
+mod writer;
+use writer::{SkillApprovalInstall, SkillSettingsWrite};
 
 use crate::types::{
     SkillBodyPreview, SkillCandidateView, SkillRootPreview, SkillSettingsMutation,
@@ -137,8 +138,8 @@ impl SkillSettingsService {
     }
 
     fn store(&self) -> Result<Store, SkillSettingsError> {
-        let store = Store::open(&self.database_path).map_err(|_| SkillSettingsError::Store)?;
-        store.migrate().map_err(|_| SkillSettingsError::Store)?;
+        let store =
+            Store::open_read_only(&self.database_path).map_err(|_| SkillSettingsError::Store)?;
         Ok(store)
     }
 
@@ -530,15 +531,15 @@ impl SkillSettingsService {
         if !previews.active {
             return Err(SkillSettingsError::Stale);
         }
-        match mutation {
+        let command = match mutation {
             SkillSettingsMutation::LinkRoot { preview_token } => {
-                self.link_preview(&store, expected_generation, &preview_token, &previews)?;
+                self.link_preview(&store, expected_generation, &preview_token, &previews)?
             }
             SkillSettingsMutation::ApproveSkill { preview_token } => {
-                self.approve_preview(&store, expected_generation, &preview_token, &previews)?;
+                self.approve_preview(&store, expected_generation, &preview_token, &previews)?
             }
             SkillSettingsMutation::SetGlobal { enabled, automatic } => {
-                skills::set_global_settings(store.conn(), expected_generation, enabled, automatic)?;
+                SkillSettingsWrite::Global { enabled, automatic }
             }
             SkillSettingsMutation::SetProject {
                 project_id,
@@ -548,13 +549,11 @@ impl SkillSettingsService {
                 if self.selected_project_id.as_deref() != Some(project_id.as_str()) {
                     return Err(SkillSettingsError::Invalid);
                 }
-                skills::set_project_settings(
-                    store.conn(),
-                    expected_generation,
-                    &project_id,
+                SkillSettingsWrite::Project {
+                    project_id,
                     enabled,
                     automatic,
-                )?;
+                }
             }
             SkillSettingsMutation::SetSource {
                 source_id,
@@ -565,21 +564,18 @@ impl SkillSettingsService {
                 if enabled {
                     self.rebind(&store, &row)?;
                 }
-                skills::set_source_preferences(
-                    store.conn(),
-                    expected_generation,
-                    &source_id,
+                SkillSettingsWrite::Source {
+                    source_id,
                     enabled,
                     automatic,
-                )?;
+                }
             }
             SkillSettingsMutation::SetSkill {
                 source_id,
                 name,
                 enabled,
-                automatic,
+                automatic: _,
             } => {
-                let _ = automatic;
                 let row = self.find_scoped_source(&store, &source_id)?;
                 let source = self.rebind(&store, &row)?;
                 let candidate = source
@@ -596,27 +592,33 @@ impl SkillSettingsService {
                     .source
                     .target_binding()
                     .map_err(|_| SkillSettingsError::Stale)?;
-                skills::approve_skill(
-                    store.conn(),
-                    expected_generation,
-                    NewSkillApproval {
-                        source_id: &source_id,
-                        name: &name,
-                        approved_sha256: &candidate.sha256,
-                        target_binding: target_binding.as_deref(),
-                        source_label: &source_label(&source_id),
-                        enabled,
-                        automatic: enabled,
-                        reviewed_at: now_ms(),
-                    },
-                )?;
+                SkillSettingsWrite::Approval(SkillApprovalInstall {
+                    source_id,
+                    name,
+                    sha256: candidate.sha256,
+                    target_binding,
+                    enabled,
+                    automatic: enabled,
+                })
             }
             SkillSettingsMutation::UnlinkSource { source_id } => {
                 self.find_scoped_source(&store, &source_id)?;
-                skills::unlink_source(store.conn(), expected_generation, &source_id)?;
+                SkillSettingsWrite::Unlink { source_id }
             }
-        }
-        Ok(())
+        };
+        let preview_epoch = previews.epoch;
+        drop(previews);
+        crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::SaveSkillSettings {
+                previews: self.previews.clone(),
+                preview_epoch,
+                expected_generation,
+                command,
+            },
+        )
+        .map_err(|_| SkillSettingsError::Store)?
     }
 
     fn link_preview(
@@ -625,7 +627,7 @@ impl SkillSettingsService {
         expected_generation: u64,
         token: &str,
         previews: &PreviewState,
-    ) -> Result<(), SkillSettingsError> {
+    ) -> Result<SkillSettingsWrite, SkillSettingsError> {
         let ticket = previews
             .root
             .as_ref()
@@ -663,7 +665,7 @@ impl SkillSettingsService {
             parse_scope(&row.scope).ok() == Some(ticket.scope)
                 && persisted_identity_matches(row, &ticket.identity)
         }) {
-            return Ok(());
+            return Ok(SkillSettingsWrite::Unchanged);
         }
         let import_order = if ticket.scope == SkillUiScope::Imported {
             rows.iter()
@@ -686,26 +688,21 @@ impl SkillSettingsService {
             .canonical_root()
             .to_str()
             .ok_or(SkillSettingsError::Invalid)?;
-        skills::link_source(
-            store.conn(),
-            expected_generation,
-            NewSkillSource {
-                id: &id,
-                scope: scope_text(ticket.scope),
-                project_id: (ticket.scope == SkillUiScope::Project)
-                    .then_some(self.selected_project_id.as_deref())
-                    .flatten(),
-                configured_root,
-                canonical_root,
-                root_dev: &ticket.identity.device().to_string(),
-                root_ino: &ticket.identity.inode().to_string(),
-                import_order,
-                enabled: false,
-                automatic: false,
-                created_at: now_ms(),
-            },
-        )?;
-        Ok(())
+        Ok(SkillSettingsWrite::Link(SkillSourceRecord {
+            id,
+            scope: scope_text(ticket.scope).to_owned(),
+            project_id: (ticket.scope == SkillUiScope::Project)
+                .then_some(self.selected_project_id.clone())
+                .flatten(),
+            configured_root: configured_root.to_owned(),
+            canonical_root: canonical_root.to_owned(),
+            root_dev: ticket.identity.device().to_string(),
+            root_ino: ticket.identity.inode().to_string(),
+            import_order,
+            enabled: false,
+            automatic: false,
+            created_at: now_ms(),
+        }))
     }
 
     fn approve_preview(
@@ -714,7 +711,7 @@ impl SkillSettingsService {
         expected_generation: u64,
         token: &str,
         previews: &PreviewState,
-    ) -> Result<(), SkillSettingsError> {
+    ) -> Result<SkillSettingsWrite, SkillSettingsError> {
         let ticket = previews
             .skill
             .as_ref()
@@ -741,21 +738,14 @@ impl SkillSettingsService {
         {
             return Err(SkillSettingsError::Stale);
         }
-        skills::approve_skill(
-            store.conn(),
-            expected_generation,
-            NewSkillApproval {
-                source_id: &ticket.source_id,
-                name: &ticket.name,
-                approved_sha256: &ticket.sha256,
-                target_binding: ticket.target_binding.as_deref(),
-                source_label: &source_label(&ticket.source_id),
-                enabled: true,
-                automatic: false,
-                reviewed_at: now_ms(),
-            },
-        )?;
-        Ok(())
+        Ok(SkillSettingsWrite::Approval(SkillApprovalInstall {
+            source_id: ticket.source_id.clone(),
+            name: ticket.name.clone(),
+            sha256: ticket.sha256.clone(),
+            target_binding: ticket.target_binding.clone(),
+            enabled: true,
+            automatic: false,
+        }))
     }
 
     fn find_scoped_source(

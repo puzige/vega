@@ -84,22 +84,17 @@ impl AutomaticTitleRequest {
                     .duration_since(UNIX_EPOCH)
                     .map_or(0, |d| d.as_secs() as i64);
                 let (title, usage) = runtime.block_on(self.collect(&model));
-                let Ok(store) = vega_store::Store::open(&database) else {
+                let Ok(store) = vega_store::Store::open_existing(&database) else {
                     tracing::warn!(
                         operation = "open_store",
                         "automatic title persistence failed"
                     );
                     return;
                 };
-                if _title_drain.as_ref().is_none_or(|title| {
-                    !title
-                        .admission()
-                        .verifies(store.database_identity(), &thread_id)
-                }) {
+                let Some(admission) = _title_drain else {
                     return;
-                }
-
-                if let Some((input, output, cache_read, cache_write)) = usage {
+                };
+                let usage = usage.map(|(input, output, cache_read, cache_write)| {
                     let quote = pricing.as_ref().and_then(|catalog| {
                         catalog
                             .quote_with_optional_caches(
@@ -117,47 +112,39 @@ impl AutomaticTitleRequest {
                         vega_token::PricingProfile::Base => "base",
                         vega_token::PricingProfile::PeakUtcWeekly => "peak_utc_weekly",
                     });
-                    // Existing accounting represents unavailable price by NULL provenance.
-                    let result = vega_store::token_usage::insert(
-                        store.conn(),
-                        vega_store::token_usage::NewTokenUsage {
-                            thread_id: &thread_id,
-                            message_id: None,
-                            model: &model,
-                            input_tokens: input,
-                            output_tokens: output,
-                            cache_read_tokens: cache_read.unwrap_or(0),
-                            cache_write_tokens: cache_write.unwrap_or(0),
-                            cost_microcents: quote.as_ref().map_or(0, |q| q.cost_microcents),
-                            created_at: started.saturating_mul(1000),
-                            pricing_version: quote.as_ref().map(|q| q.pricing_version),
-                            pricing_profile: profile,
-                            call_started_at: Some(started),
-                        },
-                    );
-                    if result.is_err() {
-                        tracing::warn!(
-                            operation = "persist_usage",
-                            "automatic title persistence failed"
-                        );
+                    TitleUsage {
+                        input,
+                        output,
+                        cache_read: cache_read.unwrap_or(0),
+                        cache_write: cache_write.unwrap_or(0),
+                        cost_microcents: quote.as_ref().map_or(0, |q| q.cost_microcents),
+                        pricing_version: quote.as_ref().map(|q| q.pricing_version.to_owned()),
+                        pricing_profile: profile.map(str::to_owned),
                     }
-                }
-                if let Some(title) = title {
-                    match vega_store::threads::finish_auto_title(
-                        store.conn(),
-                        &thread_id,
-                        &message_id,
-                        &title,
-                    ) {
-                        Ok(true) => {
-                            let _ = self.notifications.send(());
-                        }
-                        Ok(false) => {}
-                        Err(_) => tracing::warn!(
-                            operation = "persist_title",
-                            "automatic title persistence failed"
-                        ),
+                });
+                let result = crate::database_writer::commit(
+                    &database,
+                    store.database_identity(),
+                    CompleteAutomaticTitle {
+                        admission,
+                        thread_id,
+                        message_id,
+                        model,
+                        started,
+                        title,
+                        usage,
+                    },
+                )
+                .and_then(|result| result);
+                match result {
+                    Ok(true) => {
+                        let _ = self.notifications.send(());
                     }
+                    Ok(false) => {}
+                    Err(_) => tracing::warn!(
+                        operation = "persist_title",
+                        "automatic title persistence failed"
+                    ),
                 }
             });
         if worker.is_err() {
@@ -243,6 +230,82 @@ impl AutomaticTitleRequest {
         };
         cancel.cancel();
         (title, usage)
+    }
+}
+
+struct TitleUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    cost_microcents: i64,
+    pricing_version: Option<String>,
+    pricing_profile: Option<String>,
+}
+
+struct CompleteAutomaticTitle {
+    admission: vega_store::thread_admission::TitleAdmission,
+    thread_id: String,
+    message_id: String,
+    model: String,
+    started: i64,
+    title: Option<String>,
+    usage: Option<TitleUsage>,
+}
+
+impl crate::database_writer::Sealed for CompleteAutomaticTitle {}
+
+impl crate::database_writer::DatabaseCommand for CompleteAutomaticTitle {
+    type Output = Result<bool, String>;
+
+    fn apply(self, store: &vega_store::Store) -> Self::Output {
+        if !self
+            .admission
+            .admission()
+            .verifies(store.database_identity(), &self.thread_id)
+        {
+            return Ok(false);
+        }
+        let tx = store
+            .immediate_transaction()
+            .map_err(|_| "title transaction unavailable".to_string())?;
+        if let Some(usage) = self.usage {
+            vega_store::token_usage::insert(
+                &tx,
+                vega_store::token_usage::NewTokenUsage {
+                    thread_id: &self.thread_id,
+                    message_id: None,
+                    model: &self.model,
+                    input_tokens: usage.input,
+                    output_tokens: usage.output,
+                    cache_read_tokens: usage.cache_read,
+                    cache_write_tokens: usage.cache_write,
+                    cost_microcents: usage.cost_microcents,
+                    created_at: self.started.saturating_mul(1000),
+                    pricing_version: usage.pricing_version.as_deref(),
+                    pricing_profile: usage.pricing_profile.as_deref(),
+                    call_started_at: Some(self.started),
+                },
+            )
+            .map_err(|_| "title usage persistence failed".to_string())?;
+        }
+        let updated = self
+            .title
+            .as_deref()
+            .map(|title| {
+                vega_store::threads::finish_auto_title(
+                    &tx,
+                    &self.thread_id,
+                    &self.message_id,
+                    title,
+                )
+            })
+            .transpose()
+            .map_err(|_| "title persistence failed".to_string())?
+            .unwrap_or(false);
+        tx.commit()
+            .map_err(|_| "title commit outcome unknown".to_string())?;
+        Ok(updated)
     }
 }
 
