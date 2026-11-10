@@ -1137,7 +1137,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                                     .text_color(crate::nsh::color(colors.text_secondary)),
                                 ),
                         );
-                    } else if let Some(resting) = item.resting {
+                    } else if let Some(resting) = item.resting.filter(|text| !text.is_empty()) {
                         button = button.child(
                             ns::text(resting)
                                 .text_size(ns::px(Typography::METADATA))
