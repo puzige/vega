@@ -201,6 +201,7 @@ struct Leaf {
     surface: Option<Surface<Snapshot, Request>>,
     focus: FocusHandle,
     selected: Option<Selection<usize>>,
+    pending_menu_key: Option<Selection<usize>>,
     lease: Weak<chrome::ChromeLease>,
     handler: Handler,
     guard: Guard,
@@ -216,6 +217,20 @@ struct Leaf {
 }
 
 impl Leaf {
+    fn action_is_current(&self, id: &ProjectionId, index: usize, cx: &App) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|s| s.errors().borrow().is_none())
+            && self.snapshot.accepts(
+                id,
+                index,
+                self.lease.upgrade().is_some(),
+                self.authority == Authority::current(cx),
+                (self.guard)(cx),
+                cx.has_active_drag(),
+            )
+    }
+
     fn activate(
         &mut self,
         id: &ProjectionId,
@@ -224,10 +239,7 @@ impl Leaf {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .surface
-            .as_ref()
-            .is_some_and(|surface| surface.errors().borrow().is_none())
+        if !self.action_is_current(id, index, cx)
             || !self
                 .acknowledged
                 .as_ref()
@@ -243,16 +255,7 @@ impl Leaf {
         {
             return;
         }
-        if !self.snapshot.accepts(
-            id,
-            index,
-            self.lease.upgrade().is_some(),
-            self.authority == Authority::current(cx),
-            (self.guard)(cx),
-            cx.has_active_drag(),
-        ) {
-            return;
-        }
+        self.pending_menu_key = None;
         if self.snapshot.recovery {
             if let Some(surface) = self.surface.take() {
                 surface.entity().read(cx).stop();
@@ -309,7 +312,22 @@ impl Leaf {
                                     && height.is_finite()
                                     && height > 0. =>
                             {
-                                this.acknowledged = Some((id, width));
+                                this.acknowledged = Some((id.clone(), width));
+                                if let Some(key) = this.pending_menu_key.take() {
+                                    let actions = this.snapshot.actions();
+                                    if let Some(index) = key.action(&id, &actions)
+                                        && this
+                                            .selected
+                                            .as_ref()
+                                            .and_then(|s| s.action(&id, &actions))
+                                            == Some(index)
+                                        && this.focus.is_focused(window)
+                                        && window.is_window_active()
+                                        && window.is_visible()
+                                    {
+                                        this.activate(&id, index, false, window, cx);
+                                    }
+                                }
                                 if this
                                     .measured_height
                                     .is_none_or(|previous| (previous - height).abs() > 0.5)
@@ -373,6 +391,7 @@ impl Leaf {
     }
 
     fn step_menu(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        self.pending_menu_key = None;
         let actions = self.snapshot.actions();
         if actions.is_empty() {
             return;
@@ -397,16 +416,29 @@ impl Leaf {
         if !self.focus.is_focused(window) {
             return;
         }
-        if let Some(index) = self
+        let id = self.snapshot.id.clone();
+        let Some(index) = self
             .selected
             .as_ref()
-            .and_then(|selected| selected.action(&self.snapshot.id, &self.snapshot.actions()))
+            .and_then(|s| s.action(&id, &self.snapshot.actions()))
+        else {
+            return;
+        };
+        if self.snapshot.presentation == Presentation::TaskMenu
+            && !self.snapshot.recovery
+            && self.acknowledged.is_none()
+            && window.is_visible()
+            && window.is_window_active()
+            && self.action_is_current(&id, index, cx)
         {
-            self.activate(&self.snapshot.id.clone(), index, false, window, cx);
+            self.pending_menu_key = self.selected.clone();
+            return;
         }
+        self.activate(&id, index, false, window, cx);
     }
 
     fn key(&mut self, event: &gpui_kit::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_menu_key = None;
         let modifiers = event.keystroke.modifiers;
         if self.menu_scroll.is_some()
             && !event.prefer_character_input
@@ -469,11 +501,7 @@ impl Leaf {
                 cx.notify();
             }
             Key::Activate if self.focus.is_focused(window) => {
-                if let Some(index) = self.selected.as_ref().and_then(|selected| {
-                    selected.action(&self.snapshot.id, &self.snapshot.actions())
-                }) {
-                    self.activate(&self.snapshot.id.clone(), index, false, window, cx);
-                }
+                self.activate_selected(window, cx);
                 cx.stop_propagation();
             }
             _ => {}
@@ -616,9 +644,18 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 }
                 cx.notify();
             }),
-            cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
-            cx.observe_window_activation(window, |_, _, cx| cx.notify()),
-            cx.observe_window_visibility(window, |_, _, _, cx| cx.notify()),
+            cx.on_focus_out(&focus, window, |this, _, _, cx| {
+                this.pending_menu_key = None;
+                cx.notify()
+            }),
+            cx.observe_window_activation(window, |this, _, cx| {
+                this.pending_menu_key = None;
+                cx.notify()
+            }),
+            cx.observe_window_visibility(window, |this, _, _, cx| {
+                this.pending_menu_key = None;
+                cx.notify()
+            }),
         ];
         Leaf {
             snapshot: Snapshot {
@@ -634,6 +671,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             surface: None,
             focus,
             selected: None,
+            pending_menu_key: None,
             lease: Weak::new(),
             handler: Rc::new(|_, _, _, _| {}),
             guard: Rc::new(|_| false),
@@ -654,6 +692,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             if let Some(surface) = this.surface.take() {
                 surface.entity().read(cx).stop();
             }
+            this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
             this.acknowledged = None;
             this.selected = None;
@@ -668,6 +707,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 surface.entity().read(cx).stop();
             }
             this.lease = Weak::new();
+            this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
             this.snapshot.recovery = true;
             this.acknowledged = None;
@@ -701,6 +741,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     || a.tint != b.tint
             });
         if changed {
+            this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
             this.selected = None;
             this.measured_height = None;
