@@ -7,6 +7,9 @@ use vega_theme::{Layout, ThemeColors, Typography};
 use super::super::SettingsView;
 use crate::nsh::{ProjectionId, Surface};
 
+mod controls;
+use controls::Control;
+
 pub(in crate::settings) struct Presentation {
     surface: Surface<Snapshot, Request>,
     height: f32,
@@ -14,6 +17,7 @@ pub(in crate::settings) struct Presentation {
     help_target: super::super::nsh_control::FocusTarget,
     help_epoch: u64,
     help_focused: bool,
+    focused_control: Option<Control>,
     keyboard_modality: bool,
     _focus_events: Vec<gpui_kit::Subscription>,
 }
@@ -24,6 +28,7 @@ struct Snapshot {
     revision: u64,
     phase: UpdatePhase,
     automatic: bool,
+    focused_control: Option<Control>,
     help_open: bool,
     help_epoch: u64,
     help_visible: bool,
@@ -41,6 +46,7 @@ struct Snapshot {
 const HELP_ID: &str = "settings-updater-help";
 
 struct Decision {
+    epoch: u64,
     id: ProjectionId,
     revision: u64,
     phase: UpdatePhase,
@@ -167,6 +173,10 @@ impl SettingsView {
                 .updater_presentation
                 .as_ref()
                 .is_some_and(|p| p.help_focused && p.keyboard_modality),
+            focused_control: self
+                .updater_presentation
+                .as_ref()
+                .and_then(|p| p.focused_control.filter(|_| p.keyboard_modality)),
             help_open: self.settings_help_open.as_deref() == Some(HELP_ID),
             pending: self
                 .updater_presentation
@@ -227,12 +237,31 @@ impl SettingsView {
                     cx.notify();
                 }
             });
+            let mut focus_events = vec![gained, lost];
+            for control in Control::ALL {
+                let handle = control.register(surface.entity().read(cx), cx);
+                focus_events.push(cx.on_focus(&handle, window, move |settings, _, cx| {
+                    if let Some(page) = &mut settings.updater_presentation {
+                        page.focused_control = Some(control);
+                        cx.notify();
+                    }
+                }));
+                focus_events.push(cx.on_blur(&handle, window, move |settings, _, cx| {
+                    if let Some(page) = &mut settings.updater_presentation
+                        && page.focused_control == Some(control)
+                    {
+                        page.focused_control = None;
+                        cx.notify();
+                    }
+                }));
+            }
             self.updater_presentation = Some(Presentation {
                 help_target: target,
                 help_epoch: 0,
                 help_focused: false,
                 keyboard_modality: window.last_input_was_keyboard(),
-                _focus_events: vec![gained, lost],
+                focused_control: None,
+                _focus_events: focus_events,
                 surface,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
                 pending: false,
@@ -243,21 +272,26 @@ impl SettingsView {
                         .update_in(cx, |this, _, cx| {
                             match request {
                                 Request::Decide(command) => {
-                                    let accepted = this.section == 1
+                                    let accepted = this.updater_help_visible(cx)
                                         && this.updater_identity.matches(&command.id)
-                                        && this.updater_revision == command.revision
-                                        && this.updater.phase == command.phase
-                                        && this.updater.automatic == command.automatic
-                                        && this
-                                            .updater_presentation
-                                            .as_ref()
-                                            .is_some_and(|page| !page.pending)
+                                        && (matches!(command.action, UpdateRequest::ReleasePage)
+                                            || (this.updater_revision == command.revision
+                                                && this.updater.phase == command.phase
+                                                && this.updater.automatic == command.automatic))
+                                        && this.updater_presentation.as_ref().is_some_and(|page| {
+                                            !page.pending && page.help_epoch == command.epoch
+                                        })
                                         && allowed(
                                             &this.updater.phase,
                                             this.updater.automatic,
                                             command.action,
                                         );
                                     if accepted {
+                                        if this.settings_help_open.as_deref() == Some(HELP_ID) {
+                                            this.settings_help_open = None;
+                                            this.invalidate_help_state();
+                                            cx.notify();
+                                        }
                                         if matches!(
                                             command.action,
                                             UpdateRequest::Check
@@ -339,6 +373,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     waiting: Signal<bool>,
     failed: Signal<bool>,
@@ -355,24 +390,27 @@ impl Actions {
         }
         self.waiting.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            if commands
-                .send(Request::Decide(Decision {
-                    id: snapshot.id,
-                    revision: snapshot.revision,
-                    phase: snapshot.phase,
-                    automatic: snapshot.automatic,
-                    action,
-                    reply,
-                }))
-                .await
-                .is_err()
-                || !matches!(response.await, Ok(true))
-            {
-                self.failed.set(true);
-            }
-            self.waiting.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                if commands
+                    .send(Request::Decide(Decision {
+                        epoch: snapshot.help_epoch,
+                        id: snapshot.id,
+                        revision: snapshot.revision,
+                        phase: snapshot.phase,
+                        automatic: snapshot.automatic,
+                        action,
+                        reply,
+                    }))
+                    .await
+                    .is_err()
+                    || !matches!(response.await, Ok(true))
+                {
+                    self.failed.set(true);
+                }
+                self.waiting.set(false);
+            });
         });
     }
 }
@@ -400,24 +438,57 @@ fn focus_ring(state: Signal<Snapshot>, quiet: bool) -> nsh_core::element::View {
 fn action_button(
     actions: Actions,
     commands: mpsc::Sender<Request>,
-    key: &'static str,
-    action: UpdateRequest,
+    control: Control,
 ) -> AnyElement {
-    focus_ring(actions.state, false)
-        .role(AccessibilityRole::Button)
-        .label(move || actions.state.with(|_| vega_i18n::t(key)))
-        .disabled(move || {
-            actions.waiting.get()
-                || actions
-                    .state
-                    .with(|s| s.pending || !allowed(&s.phase, s.automatic, action))
-        })
-        .px_3()
-        .py_2()
+    let state = actions.state;
+    let pointer = controls::Pointer::new(control);
+    let enabled = move || !actions.waiting.get() && state.with(|s| control.enabled(s));
+    view()
+        .relative()
+        .self_start()
+        .accessible(false)
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
+        .items_center()
+        .justify_center()
+        .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
-        .on_press(move |_: &nsh_core::PressEvent| actions.send(commands.clone(), action))
-        .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
+        .border_color(move || {
+            state.with(|s| {
+                crate::nsh::color(if s.focused_control == Some(control) && enabled() {
+                    s.colors.brand_primary
+                } else {
+                    s.colors.border_subtle
+                })
+            })
+        })
+        .bg(move || {
+            state.with(|s| {
+                let hovered = enabled() && pointer.hovered(s);
+                crate::nsh::color(match (control, hovered) {
+                    (Control::Install, true) => s.colors.brand_primary_strong,
+                    (Control::Install, false) => s.colors.brand_primary,
+                    (_, _) if enabled() && pointer.pressed(s) => s.colors.bg_active,
+                    (_, true) => s.colors.bg_hover,
+                    (_, false) => s.colors.bg_elevated,
+                })
+            })
+        })
+        .text_color(move || {
+            state.with(|s| {
+                crate::nsh::color(if !enabled() {
+                    s.colors.text_tertiary
+                } else if control == Control::Install {
+                    s.colors.brand_on_accent
+                } else {
+                    s.colors.text_primary
+                })
+            })
+        })
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
+        .child(text(move || state.with(|_| vega_i18n::t(control.label()))).accessible(false))
+        .child(control.target(actions, commands, pointer))
         .into_element()
 }
 
@@ -532,6 +603,7 @@ fn update_help(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyE
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         waiting: signal(false),
         failed: signal(false),
@@ -540,6 +612,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     let measured = signal(0.0f32);
     let layout = commands.clone();
     let automatic = commands.clone();
+    let switch_pointer = controls::Pointer::new(Control::Automatic);
     let buttons = commands.clone();
     let help_commands = commands.clone();
     let links = commands;
@@ -610,57 +683,68 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             move || state.get().colors,
             text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
             None,
-            focus_ring(state, true)
+            view()
+                .relative()
                 .self_start()
-                .focusable(true)
-                .role(AccessibilityRole::Switch)
-                .label(move || state.with(|_| vega_i18n::t("settings.updater.automatic")))
-                .accessibility_state(move || nsh_core::AccessibilityState {
-                    checked: Some(if state.get().automatic {
-                        nsh_core::Checked::True
+                .accessible(false)
+                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                .border(px(1.))
+                .border_color(move || {
+                    state.with(|s| {
+                        crate::nsh::color(
+                            if s.focused_control == Some(Control::Automatic)
+                                && Control::Automatic.enabled(s)
+                            {
+                                s.colors.text_primary
+                            } else if s.automatic {
+                                s.colors.brand_primary
+                            } else {
+                                s.colors.border_subtle
+                            },
+                        )
+                    })
+                })
+                .bg(move || {
+                    state.with(|s| {
+                        let hovered = Control::Automatic.enabled(s)
+                            && !actions.waiting.get()
+                            && switch_pointer.hovered(s);
+                        crate::nsh::color(match (s.automatic, hovered) {
+                            (true, true) => s.colors.brand_primary_strong,
+                            (true, false) => s.colors.brand_primary,
+                            (false, _) if hovered && switch_pointer.pressed(s) => {
+                                s.colors.bg_active
+                            }
+                            (false, true) => s.colors.border_subtle,
+                            (false, false) => s.colors.bg_hover,
+                        })
+                    })
+                })
+                .opacity(move || -> f32 {
+                    if actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase)) {
+                        0.5
                     } else {
-                        nsh_core::Checked::False
-                    }),
-                    ..Default::default()
-                })
-                .disabled(move || {
-                    actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase))
-                })
-                .on_press(move |_: &nsh_core::PressEvent| {
-                    actions.send(
-                        automatic.clone(),
-                        UpdateRequest::Automatic(!state.get_untracked().automatic),
-                    )
+                        1.
+                    }
                 })
                 .child(
                     view()
-                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                        .relative()
-                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                        .bg(move || {
-                            crate::nsh::color(if state.get().automatic {
-                                state.get().colors.brand_primary
+                        .absolute()
+                        .top(px(1.))
+                        .left(move || {
+                            px(if state.get().automatic {
+                                Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
                             } else {
-                                state.get().colors.bg_hover
+                                1.
                             })
                         })
-                        .child(
-                            view()
-                                .absolute()
-                                .top(px(2.))
-                                .left(move || {
-                                    px(if state.get().automatic {
-                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
-                                    } else {
-                                        2.
-                                    })
-                                })
-                                .size(px(Layout::ICON_SIZE))
-                                .rounded(px(Layout::ICON_SIZE / 2.))
-                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
-                        ),
-                ),
+                        .size(px(Layout::ICON_SIZE))
+                        .rounded(px(Layout::ICON_SIZE / 2.))
+                        .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
+                )
+                .child(Control::Automatic.target(actions, automatic, switch_pointer)),
         ))
         .child(when(
             move || {
@@ -669,55 +753,47 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 })
             },
             move || {
-                text(move || state.get().message.unwrap_or_default()).text_color(move || {
-                    crate::nsh::color(if state.get().phase == UpdatePhase::Error {
-                        state.get().colors.danger
-                    } else {
-                        state.get().colors.text_secondary
-                    })
-                })
+                view().mt_3().child(super::super::nsh_form::status(
+                    move || state.get().colors,
+                    move || {
+                        state.with(|s| match s.phase {
+                            UpdatePhase::Error => s.colors.danger,
+                            UpdatePhase::Ready => s.colors.success,
+                            _ => s.colors.text_secondary,
+                        })
+                    },
+                    text(move || state.get().message.unwrap_or_default()),
+                ))
             },
         ))
         .child(when(
             move || state.get().progress.is_some(),
-            move || text(move || state.get().progress.unwrap_or_default()),
+            move || {
+                view()
+                    .mt_2()
+                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                    .child(text(move || state.get().progress.unwrap_or_default()))
+            },
         ))
         .child(
             view()
+                .mt_3()
                 .flex_row()
                 .flex_wrap()
                 .gap_2()
+                .child(action_button(actions, buttons.clone(), Control::Check))
                 .child(action_button(
                     actions,
                     buttons.clone(),
-                    "settings.updater.check",
-                    UpdateRequest::Check,
+                    Control::ReleasePage,
                 ))
-                .child(action_button(
-                    actions,
-                    buttons.clone(),
-                    "settings.updater.release_page",
-                    UpdateRequest::ReleasePage,
-                ))
+                .child(when(move || state.get().phase == UpdatePhase::Ready, {
+                    let buttons = buttons.clone();
+                    move || action_button(actions, buttons.clone(), Control::Later)
+                }))
                 .child(when(
                     move || state.get().phase == UpdatePhase::Ready,
-                    move || {
-                        view()
-                            .flex_row()
-                            .gap_2()
-                            .child(action_button(
-                                actions,
-                                buttons.clone(),
-                                "settings.updater.later",
-                                UpdateRequest::Later,
-                            ))
-                            .child(action_button(
-                                actions,
-                                buttons.clone(),
-                                "settings.updater.install",
-                                UpdateRequest::Install,
-                            ))
-                    },
+                    move || action_button(actions, buttons.clone(), Control::Install),
                 )),
         )
         .child(when(

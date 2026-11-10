@@ -57,6 +57,8 @@ impl FocusTarget {
                     hint: String::new(),
                     tooltip: false,
                     report_hover: false,
+                    report_press: false,
+                    pointer_down: Default::default(),
                     selected: false,
                     enabled: false,
                 })
@@ -80,6 +82,8 @@ struct Target {
     hint: String,
     tooltip: bool,
     report_hover: bool,
+    report_press: bool,
+    pointer_down: std::rc::Rc<std::cell::Cell<bool>>,
     selected: bool,
     enabled: bool,
 }
@@ -111,6 +115,7 @@ impl NativeComponent for Target {
         match name {
             "focus-request" => self.focus_request = value.and_then(Value::as_u64),
             "state" => self.displayed = value.cloned(),
+            "report-press" => self.report_press = value.and_then(Value::as_bool).unwrap_or(false),
             "report-hover" => self.report_hover = value.and_then(Value::as_bool).unwrap_or(false),
             "tooltip" => self.tooltip = value.and_then(Value::as_bool).unwrap_or(false),
             "hint" => self.hint = value.and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -159,6 +164,35 @@ impl NativeComponent for Target {
             element = element.on_hover(move |inside, _, _| {
                 context.emit("hover", serde_json::json!([hover_state, inside]));
             });
+        }
+        if self.report_press {
+            let context = self.context.clone();
+            let stamp = displayed.clone();
+            if self.enabled {
+                let down = self.pointer_down.clone();
+                let held = down.clone();
+                let release = context.clone();
+                let end = stamp.clone();
+                let release_press = move |_: &MouseUpEvent, _: &mut Window, _: &mut App| {
+                    if held.replace(false) {
+                        release.emit("press", serde_json::json!([end, false]));
+                    }
+                };
+                element = element
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        down.set(true);
+                        context.emit("press", serde_json::json!([stamp, true]));
+                    })
+                    .on_mouse_up(MouseButton::Left, release_press.clone())
+                    .on_mouse_up_out(MouseButton::Left, release_press);
+            } else {
+                element = element.on_mouse_down(MouseButton::Left, move |_, window, _| {
+                    if window.is_window_active() {
+                        context.emit("disabledPointerDown", stamp.clone());
+                    }
+                });
+            }
         }
         if !self.enabled {
             return Some(
