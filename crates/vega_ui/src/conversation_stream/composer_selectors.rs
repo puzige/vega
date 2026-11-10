@@ -534,7 +534,10 @@ impl Host {
                     }
                 }
                 Action::ThinkingTitle => {
-                    stream.on_thinking_slider_title_activated(&ThinkingSliderTitleActivated, cx)
+                    stream.on_thinking_slider_title_activated(&ThinkingSliderTitleActivated, cx);
+                    if stream.model_picker_level == ModelPickerLevel::List {
+                        window.focus(&stream.model_focus, cx);
+                    }
                 }
                 Action::Tier(position) => {
                     stream.thinking_slider.update(cx, |slider, cx| {
@@ -590,6 +593,20 @@ impl Host {
             cx.stop_propagation();
             return;
         }
+        // A permission activation must originate from the option that actually has focus.
+        let permission_focus = if self.snapshot.kind == Kind::PermissionMenu {
+            let Some(index) = stream
+                .permission_editor
+                .options
+                .iter()
+                .position(|option| option.is_focused(window))
+            else {
+                return;
+            };
+            Some(index)
+        } else {
+            None
+        };
         let focused = self.focus.contains_focused(window, cx)
             || self
                 .surface
@@ -643,17 +660,10 @@ impl Host {
         ) && matches!(self.snapshot.kind, Kind::PermissionMenu | Kind::Thinking)
         {
             let count = self.snapshot.rows.len();
-            let current = if self.snapshot.kind == Kind::PermissionMenu {
-                stream
-                    .permission_editor
-                    .options
-                    .iter()
-                    .position(|focus| focus.is_focused(window))
-                    .or(self.snapshot.selected)
-                    .unwrap_or(0)
-            } else {
-                self.snapshot.selected.unwrap_or(0)
-            };
+            if permission_focus.is_some() && !matches!(key, "up" | "down" | "tab") {
+                return;
+            }
+            let current = permission_focus.or(self.snapshot.selected).unwrap_or(0);
             let next = if self.snapshot.kind == Kind::PermissionMenu {
                 if key == "up" || key == "left" || (key == "tab" && modifiers.shift) {
                     (current + count - 1) % count
@@ -691,18 +701,7 @@ impl Host {
             return;
         }
         if matches!(key, "enter" | "space" | " ") {
-            let index = if self.snapshot.kind == Kind::PermissionMenu {
-                owner
-                    .read(cx)
-                    .permission_editor
-                    .options
-                    .iter()
-                    .position(|focus| focus.is_focused(window))
-                    .or(self.snapshot.selected)
-                    .unwrap_or(0)
-            } else {
-                self.snapshot.selected.unwrap_or(0)
-            };
+            let index = permission_focus.or(self.snapshot.selected).unwrap_or(0);
             self.request(index, Origin::Keyboard, window, cx);
             cx.stop_propagation();
         }
@@ -887,6 +886,9 @@ impl Render for Host {
         );
         let mut element = div()
             .id("nsh-composer-selector-host")
+            .when(self.snapshot.kind == Kind::PermissionMenu, |host| {
+                host.key_context("PermissionOptions")
+            })
             .relative()
             .min_w_0()
             .when(!popup || self.snapshot.kind == Kind::Thinking, |element| {

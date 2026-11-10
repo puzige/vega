@@ -126,7 +126,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(
             "tab",
             conversation_stream::NextComposerControl,
-            Some("Composer"),
+            Some("Composer && !PermissionOptions"),
         ),
         KeyBinding::new(
             "enter",
@@ -166,7 +166,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(
             "shift-tab",
             conversation_stream::PreviousComposerControl,
-            Some("Composer"),
+            Some("Composer && !PermissionOptions"),
         ),
         KeyBinding::new(
             "up",
@@ -315,7 +315,11 @@ pub fn init(cx: &mut App) {
             conversation_stream::SendMessage,
             Some("Composer"),
         ),
-        KeyBinding::new("up", conversation_stream::PreviousMessage, Some("Composer")),
+        KeyBinding::new(
+            "up",
+            conversation_stream::PreviousMessage,
+            Some("Composer && !PermissionOptions"),
+        ),
         KeyBinding::new("enter", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("tab", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("up", file_selector::PreviousFile, Some("FileSelect")),
