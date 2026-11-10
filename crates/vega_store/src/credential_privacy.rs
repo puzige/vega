@@ -4,9 +4,6 @@ use sha2::{Digest, Sha256};
 mod prepared;
 pub use prepared::{PreparedCleanup, prepare_clean};
 
-#[cfg(test)]
-mod tests;
-
 pub fn exceptions(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, String)>> {
     conn.prepare(
         "SELECT rule_id, fingerprint FROM credential_privacy_exceptions WHERE thread_id = ?1",

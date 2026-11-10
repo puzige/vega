@@ -52,9 +52,6 @@ pub use rusqlite::{Connection, Transaction};
 pub use thread_admission::DatabaseIdentity;
 use write_coordination::{WriteCategory, WriteTransaction};
 
-#[cfg(test)]
-mod migration_tests;
-
 /// Ordered, compile-time-embedded schema migrations.
 ///
 /// `MIGRATIONS[i]` migrates the schema from `user_version == i` to

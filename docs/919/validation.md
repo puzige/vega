@@ -117,3 +117,17 @@
 - `cargo fmt --all -- --check`、`git diff --check`：通过。本轮仍固定工具链及 `CARGO_FORK_AUTO_UPDATE=0`，因其他任务构建使用 -j1 协调负载；未干预其他任务进程。Python前轮5/15/40为未改脚本版本证据，最终无Rust测试head仍须重跑。
 
 保存新的修复开发提交后停止写入交增量独审；保留完整开发测试，不先清理换绿。来源metadata末检风险及用户真实外部/UI手测限制不变。未开最终PR、未合并、未安装。
+
+## 独审通过与最终测试清理
+
+三位非实现者已在精确开发 head `f8ec21230d7a720612819bc9ede9a65553f74cdb` 对原发现的修复增量分别给出 PASS：core（全库容量/注册公平）、services（默认权限来源/MCP事务）、app（Codex非阻塞Drop/显式收尾）。继承未变范围的原审查结论；静态限制与真实UI/外部服务待用户手测不变。
+
+开发回归源码和128/128证据保留在已推送的上述提交。清理只删除17个外部开发测试模块、4个文件尾部内联测试模块、模块接线及 pipeline 单一测试暂停钩子；Rust清理差异38文件、7361行删除、0行新增。未新增/删除生产接口、依赖、feature、Python fixture或通用CI。首次清理预检误将lib.rs同级模块解析为子目录，尚未执行删除即失败；修正模块路径规则，所有目标核对完成后统一删除。该工具问题不作产品缺陷。
+
+最终无测试源码的 `cargo fmt --all -- --check`、`git diff --check`、`cargo clippy --workspace --all-targets --locked --offline -j 1 -- -D warnings` 均通过，Clippy27.85秒，日志 `/tmp/vega-919-clippy-no-tests.log`。静态Rust测试属性/cfg接线/暂停钩子扫描为0；三份manifest与Cargo.lock相对基线无差异，无新增可执行doctest。
+
+本机 Nextest **0.9.151**（不冒充CI固定0.9.146），`CARGO_FORK_AUTO_UPDATE=0 CARGO_BUILD_JOBS=1 cargo nextest list --workspace --locked --offline --message-format json`：**0发现**；`cargo nextest run --workspace --locked --offline --no-tests=pass`：**0执行**，16 binaries，明确记录 **no Rust tests**，不是行为测试通过。首次错误传-j被CLI拒绝，未执行清点，改用CARGO_BUILD_JOBS控制编译，不改变Nextest测试默认并发。日志 `/tmp/vega-919-final-nextest-list.{json,log}`、`/tmp/vega-919-final-nextest.log`。
+
+最终源码三组Python实际重跑 `python3 scripts/release_tests.py` 5/5、`python3 scripts/prepare_computer_use_tests.py` 15/15、`python3 -m unittest discover -s scripts/tests -v` 40/40，退出0，日志 `/tmp/vega-919-final-python-{release,computer,suite}.log`。
+
+接下来保存最终无Rust测试head，清理delta独审与该head required CI并行；尚未取得最终CI、未合并、未安装、未用户验收。保留两处本轮Python生成但尚未删除的__pycache__，不作未知用户数据删除。

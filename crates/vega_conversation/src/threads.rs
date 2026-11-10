@@ -77,10 +77,6 @@ fn fork_thread_at(
     commit_fork(store, prepared)
 }
 
-#[cfg(test)]
-#[path = "threads/fork_tests.rs"]
-mod fork_tests;
-
 struct PreparedFork {
     install: vega_store::thread_fork::PreparedForkInstall,
 }

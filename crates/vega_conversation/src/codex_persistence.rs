@@ -9,10 +9,6 @@ use vega_store::{DatabaseIdentity, Store};
 use crate::database_writer::{DatabaseCommand, Sealed};
 use crate::types::*;
 
-#[cfg(test)]
-#[path = "codex_tasks/persistence_tests.rs"]
-mod persistence_tests;
-
 pub struct CodexPersistence {
     path: PathBuf,
     database: DatabaseIdentity,

@@ -602,10 +602,6 @@ pub(crate) fn safe_tool_call_id(value: &str) -> Option<&str> {
     .then_some(value)
 }
 
-#[cfg(test)]
-#[path = "diagnostics_tests.rs"]
-mod tests;
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

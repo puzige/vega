@@ -20,10 +20,6 @@ use vega_conversation::codex_persistence::{
 mod writes;
 use writes::CodexWrites;
 
-#[cfg(test)]
-#[path = "codex_agent/behavior_tests.rs"]
-mod behavior_tests;
-
 #[derive(Clone, Copy)]
 pub(crate) enum CodexPreflightFailure {
     ProfileUnavailable,

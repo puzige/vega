@@ -927,10 +927,6 @@ async fn compact_thread_manually_owned(
     finish_manual_diagnostics(result, flushed)
 }
 
-#[cfg(test)]
-#[path = "compaction_diagnostics_tests.rs"]
-mod diagnostics_tests;
-
 fn finish_manual_diagnostics(
     result: Result<ContextCompactionResult, ContextCompactionFailure>,
     flushed: Result<(), super::diagnostics::DiagnosticsFlushError>,

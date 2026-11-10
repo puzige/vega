@@ -2,8 +2,6 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 mod authority;
-#[cfg(test)]
-mod concurrency_tests;
 mod context_projection;
 mod install;
 
@@ -1519,8 +1517,6 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 .validate_prepared_sources()
                 .map_err(skill_preparation_error)?;
         }
-        #[cfg(test)]
-        concurrency_tests::foreign_ids_boundary();
         let foreign_call_ids =
             tool_calls::foreign_call_ids(store.conn(), &thread_id).map_err(runtime_store_error)?;
         let outcome = crate::database_writer::commit_with_admission(

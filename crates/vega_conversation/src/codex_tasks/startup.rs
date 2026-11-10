@@ -227,6 +227,3 @@ impl DatabaseCommand for AbandonedStartup {
         tx.commit().map_err(|error| error.to_string())
     }
 }
-
-#[cfg(test)]
-mod tests;

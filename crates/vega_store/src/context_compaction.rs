@@ -17,8 +17,6 @@ use crate::messages::MessageRow;
 
 mod legacy_redaction;
 mod prepared_checkpoint;
-#[cfg(test)]
-mod prepared_tests;
 pub mod source_version;
 pub use legacy_redaction::{PreparedLegacyRedaction, prepare_legacy_thread_redaction};
 pub use prepared_checkpoint::PreparedContextCheckpoint;

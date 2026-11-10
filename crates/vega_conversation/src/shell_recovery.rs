@@ -3,9 +3,6 @@ use std::path::PathBuf;
 use crate::types::Thread;
 use vega_store::Store;
 
-#[cfg(test)]
-mod tests;
-
 #[derive(Clone, Debug)]
 pub struct ShellRecoveryRow {
     pub operation_id: String,

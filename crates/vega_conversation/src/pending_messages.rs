@@ -878,9 +878,6 @@ fn verify_commit_fence(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests;
-
 fn commit_pending(store: &Store, command: PendingWrite) -> Result<(), ConversationError> {
     crate::database_writer::commit(
         store.database_path().ok_or_else(failure)?,

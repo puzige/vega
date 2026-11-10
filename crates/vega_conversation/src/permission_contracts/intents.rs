@@ -1,9 +1,6 @@
 use super::*;
 use crate::database_writer::{DatabaseCommand, Sealed};
 
-#[cfg(test)]
-mod tests;
-
 pub(super) fn source_key(source: &DefaultPermissionSnapshot) -> Result<String, ConversationError> {
     serde_json::to_string(&(
         &source.config_path,

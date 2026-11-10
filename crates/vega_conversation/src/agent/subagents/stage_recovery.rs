@@ -3,10 +3,6 @@ use serde_json::{Value, json};
 use vega_store::delegated_ownership::DelegatedOwnership;
 use vega_store::delegated_stages as stages;
 
-#[cfg(test)]
-#[path = "stage_recovery/prepared_tests.rs"]
-mod prepared_tests;
-
 pub(super) struct StageHook {
     pub database: PathBuf,
     pub snapshot: SubagentSnapshot,

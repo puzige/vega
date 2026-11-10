@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod protocol_tests;
 mod writer;
 
 use std::collections::{HashMap, HashSet};

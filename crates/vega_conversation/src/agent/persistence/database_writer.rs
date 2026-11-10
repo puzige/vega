@@ -3,9 +3,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 use vega_store::Connection;
 
-#[cfg(test)]
-mod tests;
-
 const RUN_CAPACITY: usize = 128;
 
 type NecessaryReceiver = std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>;
