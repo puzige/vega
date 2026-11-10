@@ -210,8 +210,6 @@ fn control(state: Signal<Snapshot>) -> nsh_core::element::View {
             })
         })
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .px_3()
-        .py_2()
 }
 
 fn running_button(
@@ -226,6 +224,10 @@ fn running_button(
     let focused = signal(false);
     let hovered = signal(false);
     control(actions.state)
+        .self_start()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .role(AccessibilityRole::Button)
         .on_focus(move |_: &()| focused.set(true))
         .on_blur(move |_: &()| focused.set(false))
@@ -264,6 +266,47 @@ fn running_button(
         .into_element()
 }
 
+fn field_row(
+    state: Signal<Snapshot>,
+    key: &'static str,
+    description: Option<&'static str>,
+    control: AnyElement,
+) -> AnyElement {
+    view()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex_row()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .child(
+            view()
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w(relative(1.))
+                .flex_shrink_0()
+                .py_1()
+                .gap_1()
+                .child(text(move || state.with(|_| vega_i18n::t(key))))
+                .child(when(
+                    move || description.is_some(),
+                    move || {
+                        text(move || {
+                            state.with(|_| description.map(vega_i18n::t).unwrap_or_default())
+                        })
+                        .text_size(px(Typography::METADATA))
+                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                    },
+                )),
+        )
+        .child(view().flex_1().basis(px(220.)).min_w_0().child(control))
+        .into_element()
+}
+
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
         state,
@@ -276,7 +319,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap_3()
+        .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .border(px(1.))
         .rounded(px(Layout::PANEL_RADIUS))
@@ -297,84 +340,62 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 });
             }
         })
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_3()
+        .child(field_row(
+            state,
+            "settings.defaults.predictions",
+            Some("settings.defaults.predictions_hint"),
+            control(state)
+                .self_start()
+                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                .role(AccessibilityRole::Switch)
+                .label(move || state.with(|_| vega_i18n::t("settings.defaults.predictions")))
+                .accessibility_state(move || nsh_core::AccessibilityState {
+                    checked: Some(if state.get().predictions {
+                        nsh_core::Checked::True
+                    } else {
+                        nsh_core::Checked::False
+                    }),
+                    ..Default::default()
+                })
+                .disabled(move || actions.pending.get() || !state.get().enabled)
+                .on_press(move |_: &nsh_core::PressEvent| {
+                    actions.send(predictions.clone(), Action::Predictions)
+                })
                 .child(
                     view()
-                        .gap_2()
-                        .child(text(move || {
-                            state.with(|_| vega_i18n::t("settings.defaults.predictions"))
-                        }))
-                        .child(
-                            text(move || {
-                                state.with(|_| vega_i18n::t("settings.defaults.predictions_hint"))
-                            })
-                            .text_color(move || {
-                                crate::nsh::color(state.get().colors.text_secondary)
-                            }),
-                        ),
-                )
-                .child(
-                    control(state)
-                        .role(AccessibilityRole::Switch)
-                        .label(move || {
-                            state.with(|_| vega_i18n::t("settings.defaults.predictions"))
-                        })
-                        .accessibility_state(move || nsh_core::AccessibilityState {
-                            checked: Some(if state.get().predictions {
-                                nsh_core::Checked::True
+                        .relative()
+                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                        .bg(move || {
+                            crate::nsh::color(if state.get().predictions {
+                                state.get().colors.brand_primary
                             } else {
-                                nsh_core::Checked::False
-                            }),
-                            ..Default::default()
-                        })
-                        .disabled(move || actions.pending.get() || !state.get().enabled)
-                        .on_press(move |_: &nsh_core::PressEvent| {
-                            actions.send(predictions.clone(), Action::Predictions)
+                                state.get().colors.bg_hover
+                            })
                         })
                         .child(
                             view()
-                                .relative()
-                                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                                .bg(move || {
-                                    crate::nsh::color(if state.get().predictions {
-                                        state.get().colors.brand_primary
+                                .absolute()
+                                .top(px(2.))
+                                .left(move || {
+                                    px(if state.get().predictions {
+                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
                                     } else {
-                                        state.get().colors.bg_hover
+                                        2.
                                     })
                                 })
-                                .child(
-                                    view()
-                                        .absolute()
-                                        .top(px(2.))
-                                        .left(move || {
-                                            px(if state.get().predictions {
-                                                Layout::SETTINGS_SWITCH_WIDTH
-                                                    - Layout::ICON_SIZE
-                                                    - 2.
-                                            } else {
-                                                2.
-                                            })
-                                        })
-                                        .size(px(Layout::ICON_SIZE))
-                                        .rounded(px(Layout::ICON_SIZE / 2.))
-                                        .bg(move || {
-                                            crate::nsh::color(state.get().colors.bg_elevated)
-                                        }),
-                                ),
+                                .size(px(Layout::ICON_SIZE))
+                                .rounded(px(Layout::ICON_SIZE / 2.))
+                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
                         ),
-                ),
-        )
-        .child(text(move || {
-            state.with(|_| vega_i18n::t("settings.defaults.running_message"))
-        }))
-        .child(
+                )
+                .into_element(),
+        ))
+        .child(field_row(
+            state,
+            "settings.defaults.running_message",
+            None,
             view()
                 .flex_row()
                 .flex_wrap()
@@ -388,8 +409,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     actions,
                     commands,
                     PendingMessageBehavior::Steer,
-                )),
-        )
+                ))
+                .into_element(),
+        ))
         .child(when(
             move || actions.failed.get(),
             move || {

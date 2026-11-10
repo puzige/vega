@@ -228,8 +228,10 @@ fn control(
             ..Default::default()
         })
         .disabled(move || actions.pending.get() || !actions.state.get().enabled)
-        .px_3()
-        .py_2()
+        .self_start()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .border_color(move || {
@@ -258,6 +260,31 @@ fn control(
         .into_element()
 }
 
+fn field_row(state: Signal<Snapshot>, key: &'static str, control: AnyElement) -> AnyElement {
+    view()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex_row()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .child(
+            view()
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w(relative(1.))
+                .flex_shrink_0()
+                .py_1()
+                .child(text(move || state.with(|_| vega_i18n::t(key)))),
+        )
+        .child(view().flex_1().basis(px(220.)).min_w_0().child(control))
+        .into_element()
+}
+
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
         state,
@@ -274,7 +301,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap_3()
+        .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .border(px(1.))
         .rounded(px(Layout::PANEL_RADIUS))
@@ -299,10 +326,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             text(move || state.with(|_| vega_i18n::t("settings.appearance.title")))
                 .text_size(px(Typography::HEADING_CARD)),
         )
-        .child(text(move || {
-            state.with(|_| vega_i18n::t("settings.appearance.theme"))
-        }))
-        .child(
+        .child(field_row(
+            state,
+            "settings.appearance.theme",
             view()
                 .flex_row()
                 .flex_wrap()
@@ -324,12 +350,12 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     commands.clone(),
                     Action::Theme("system"),
                     "settings.appearance.system",
-                )),
-        )
-        .child(text(move || {
-            state.with(|_| vega_i18n::t("settings.language"))
-        }))
-        .child(
+                ))
+                .into_element(),
+        ))
+        .child(field_row(
+            state,
+            "settings.language",
             view()
                 .flex_row()
                 .flex_wrap()
@@ -345,87 +371,77 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     commands,
                     Action::Language("zh-CN"),
                     "settings.language.chinese",
-                )),
-        )
-        .child(
+                ))
+                .into_element(),
+        ))
+        .child(field_row(
+            state,
+            "settings.appearance.sidebar",
             view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(text(move || {
-                    state.with(|_| vega_i18n::t("settings.appearance.sidebar"))
-                }))
+                .element_ref(&target)
+                .role(AccessibilityRole::Switch)
+                .label(move || {
+                    state.with(|snapshot| {
+                        vega_i18n::t(if snapshot.sidebar {
+                            "settings.sidebar.hide"
+                        } else {
+                            "settings.sidebar.show"
+                        })
+                    })
+                })
+                .accessibility_state(move || nsh_core::AccessibilityState {
+                    checked: Some(if state.get().sidebar {
+                        nsh_core::Checked::True
+                    } else {
+                        nsh_core::Checked::False
+                    }),
+                    ..Default::default()
+                })
+                .disabled(actions.pending)
+                .self_start()
+                .border(px(1.))
+                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                .border_color(move || {
+                    crate::nsh::color(if focused.get() {
+                        state.get().colors.accent
+                    } else {
+                        state.get().colors.border_subtle
+                    })
+                })
+                .on_press(move |_: &nsh_core::PressEvent| {
+                    actions.send(sidebar.clone(), Action::Sidebar)
+                })
                 .child(
                     view()
-                        .element_ref(&target)
-                        .role(AccessibilityRole::Switch)
-                        .label(move || {
-                            state.with(|snapshot| {
-                                vega_i18n::t(if snapshot.sidebar {
-                                    "settings.sidebar.hide"
-                                } else {
-                                    "settings.sidebar.show"
-                                })
-                            })
-                        })
-                        .accessibility_state(move || nsh_core::AccessibilityState {
-                            checked: Some(if state.get().sidebar {
-                                nsh_core::Checked::True
+                        .relative()
+                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                        .bg(move || {
+                            crate::nsh::color(if state.get().sidebar {
+                                state.get().colors.brand_primary
                             } else {
-                                nsh_core::Checked::False
-                            }),
-                            ..Default::default()
-                        })
-                        .disabled(actions.pending)
-                        .border(px(1.))
-                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                        .p_2()
-                        .border_color(move || {
-                            crate::nsh::color(if focused.get() {
-                                state.get().colors.accent
-                            } else {
-                                state.get().colors.border_subtle
+                                state.get().colors.bg_hover
                             })
-                        })
-                        .on_press(move |_: &nsh_core::PressEvent| {
-                            actions.send(sidebar.clone(), Action::Sidebar)
                         })
                         .child(
                             view()
-                                .relative()
-                                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                                .bg(move || {
-                                    crate::nsh::color(if state.get().sidebar {
-                                        state.get().colors.brand_primary
+                                .absolute()
+                                .top(px(2.))
+                                .left(move || {
+                                    px(if state.get().sidebar {
+                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
                                     } else {
-                                        state.get().colors.bg_hover
+                                        2.
                                     })
                                 })
-                                .child(
-                                    view()
-                                        .absolute()
-                                        .top(px(2.))
-                                        .left(move || {
-                                            px(if state.get().sidebar {
-                                                Layout::SETTINGS_SWITCH_WIDTH
-                                                    - Layout::ICON_SIZE
-                                                    - 2.
-                                            } else {
-                                                2.
-                                            })
-                                        })
-                                        .size(px(Layout::ICON_SIZE))
-                                        .rounded(px(Layout::ICON_SIZE / 2.))
-                                        .bg(move || {
-                                            crate::nsh::color(state.get().colors.bg_elevated)
-                                        }),
-                                ),
+                                .size(px(Layout::ICON_SIZE))
+                                .rounded(px(Layout::ICON_SIZE / 2.))
+                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
                         ),
-                ),
-        )
+                )
+                .into_element(),
+        ))
         .child(when(
             move || actions.failed.get(),
             move || {

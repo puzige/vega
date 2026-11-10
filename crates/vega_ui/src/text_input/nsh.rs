@@ -326,6 +326,7 @@ impl SingleLineChrome {
 #[derive(Clone)]
 struct ComposerProjection {
     snapshot: EditorSnapshot,
+    colors: vega_theme::ThemeColors,
     chrome: Option<SingleLineChrome>,
     gate: EditorGate,
     focus_revision: u64,
@@ -364,14 +365,23 @@ fn render_composer_editor(
     let focus_revision = signal(initial.focus_revision);
     let host_failed = signal(initial.host_failed);
     let chrome = signal_with(initial.chrome, SignalEquals::Never);
+    let colors = signal_with(initial.colors, SignalEquals::Never);
     effect(move || {
         let projection = state.get();
         snapshot.set(projection.snapshot);
         focus_revision.set(projection.focus_revision);
         host_failed.set(projection.host_failed);
         chrome.set(projection.chrome);
+        colors.set(projection.colors);
     });
-    let editor = editor(snapshot, commands, focus_revision, host_failed, &initial);
+    let editor = editor(
+        snapshot,
+        commands,
+        focus_revision,
+        host_failed,
+        colors,
+        &initial,
+    );
     let element = view()
         .w_full()
         .px(move || px(chrome.get().map_or(0., |chrome| chrome.rem * 0.5)))
@@ -940,6 +950,7 @@ impl TextInput {
                     })
                     .flatten();
                 let initial = ComposerProjection {
+                    colors: vega_theme::theme(cx).colors,
                     snapshot: snapshot.clone(),
                     chrome: SingleLineChrome::new(route, this.bare_chrome, window, cx),
                     gate: gate.clone(),
@@ -983,6 +994,7 @@ impl TextInput {
                         {
                             editor.focus_revision = editor.focus_revision.wrapping_add(1);
                             editor.surface.publish(ComposerProjection {
+                                colors: vega_theme::theme(cx).colors,
                                 snapshot,
                                 chrome: SingleLineChrome::new(
                                     editor.route,
@@ -1182,6 +1194,7 @@ impl TextInput {
             });
             editor.surface.sync_environment(cx);
             editor.surface.publish(ComposerProjection {
+                colors: vega_theme::theme(cx).colors,
                 snapshot,
                 chrome: SingleLineChrome::new(route, this.bare_chrome, window, cx),
                 gate: editor.gate.clone(),
@@ -1791,6 +1804,7 @@ fn editor(
     commands: mpsc::Sender<EditorRequest>,
     focus_revision: Signal<u64>,
     host_failed: Signal<bool>,
+    colors: Signal<vega_theme::ThemeColors>,
     host: &ComposerProjection,
 ) -> EditorView {
     let gate = host.gate.clone();
@@ -2028,9 +2042,32 @@ fn editor(
             });
         })
         .into_element();
+    let recovery_button = move || {
+        nsh_base::button()
+            .min_h(px(vega_theme::Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .px(px(vega_theme::Layout::SETTINGS_CONTROL_PADDING_X))
+            .py_1()
+            .self_start()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .rounded(px(vega_theme::Layout::SETTINGS_CONTROL_RADIUS))
+            .border(px(1.))
+            .border_color(move || crate::nsh::color(colors.get().border_subtle))
+            .bg(move || crate::nsh::color(colors.get().bg_elevated))
+            .text_color(move || crate::nsh::color(colors.get().text_primary))
+            .focus(|style| style.border_color(move || crate::nsh::color(colors.get().accent)))
+            .hover(|style| style.bg(move || crate::nsh::color(colors.get().bg_hover)))
+            .disabled_style(|style| {
+                style.text_color(move || crate::nsh::color(colors.get().text_tertiary))
+            })
+    };
     let element = view()
         .w_full()
         .gap_2()
+        .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+        .text_color(move || crate::nsh::color(colors.get().text_primary))
         .child(input)
         .child(when(
             move || authority_failed.get(),
@@ -2047,7 +2084,7 @@ fn editor(
                         state.with(|_| vega_i18n::t("ui.editor_sync_failed"))
                     }))
                     .child(
-                        nsh_base::button()
+                        recovery_button()
                             .disabled(move || pending.get() != 0 || host_failed.get())
                             .on_press(move || {
                                 if reload.pending.get_untracked() != 0
@@ -2094,7 +2131,7 @@ fn editor(
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        nsh_base::button()
+                        recovery_button()
                             .on_press(move || {
                                 if let Some(text) = copy.recovery.get_untracked() {
                                     set_clipboard(text);
@@ -2105,7 +2142,7 @@ fn editor(
                             })),
                     )
                     .child(
-                        nsh_base::button()
+                        recovery_button()
                             .disabled(move || {
                                 readonly.get() || pending.get() != 0 || composing.get()
                             })

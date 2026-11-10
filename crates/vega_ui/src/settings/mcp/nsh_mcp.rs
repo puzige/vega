@@ -6,7 +6,7 @@ use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 use vega_conversation::types::{
     McpConnectionTest, McpOAuthDiscovery, McpOAuthPreparation, McpOAuthStepUpOffer,
-    McpRemoteAuthorization, McpServerTransport, McpServerView,
+    McpRemoteAuthorization, McpServerHealth, McpServerTransport, McpServerView,
 };
 use vega_theme::{Layout, ThemeColors, Typography};
 
@@ -157,6 +157,7 @@ struct Block {
     title: String,
     lines: Vec<String>,
     warning: bool,
+    emphasized: Vec<usize>,
     controls: Vec<Control>,
 }
 fn block(key: impl Into<String>, title: impl Into<String>) -> Block {
@@ -165,6 +166,7 @@ fn block(key: impl Into<String>, title: impl Into<String>) -> Block {
         title: title.into(),
         lines: Vec::new(),
         warning: false,
+        emphasized: Vec::new(),
         controls: Vec::new(),
     }
 }
@@ -390,6 +392,14 @@ fn blocks(authority: &Authority) -> Vec<Block> {
                 t_args("settings.mcp.remote_summary", &[("endpoint", endpoint)])
             }
         });
+        if matches!(
+            row.health,
+            McpServerHealth::Error(_)
+                | McpServerHealth::NeedsCredential
+                | McpServerHealth::NeedsAuthorization
+        ) {
+            item.emphasized.push(item.lines.len());
+        }
         item.lines.push(health_label(&row.health).into());
         item.lines.push(t_args(
             "settings.mcp.config_summary",
@@ -449,6 +459,7 @@ fn blocks(authority: &Authority) -> Vec<Block> {
             if let Some(offer) = authority.offers.iter().find(|offer| {
                 row.enabled && offer.server_id == *id && offer.config_revision == revision
             }) {
+                item.emphasized.push(item.lines.len());
                 item.lines.push(t_args(
                     "settings.mcp.oauth.step_up_warning",
                     &[(
@@ -944,8 +955,11 @@ fn button(
         })
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .px_3()
-        .py_2()
+        .self_start()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .max_w(relative(1.))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 actions.state.get().colors.accent
@@ -987,8 +1001,24 @@ fn field(
     target.on_focus_out(move || focused.set(false));
     view()
         .w_full()
-        .gap_1()
-        .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
+        .min_w_0()
+        .flex_shrink_0()
+        .flex_row()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(move || crate::nsh::color(actions.state.get().colors.border_subtle))
+        .child(
+            view()
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w(relative(1.))
+                .flex_shrink_0()
+                .py_1()
+                .child(text(move || actions.state.with(|_| vega_i18n::t(key)))),
+        )
         .child(
             nsh_base::input()
                 .element_ref(&target)
@@ -1002,11 +1032,14 @@ fn field(
                         draft.read().frozen
                     }
                 })
-                .w_full()
+                .flex_1()
+                .basis(px(220.))
+                .min_w_0()
+                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
                 .border(px(1.))
                 .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .px_3()
-                .py_2()
+                .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+                .py_1()
                 .border_color(move || {
                     crate::nsh::color(if focused.get() {
                         actions.state.get().colors.accent
@@ -1037,161 +1070,26 @@ fn field(
         )
         .into_element()
 }
-fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> AnyElement {
-    let bearer = signal(String::new());
-    let environment = signal(String::new());
+fn editor_actions(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+    include: fn(&McpAction) -> bool,
+    bearer: Signal<String>,
+    environment: Signal<String>,
+) -> AnyElement {
     let state = actions.state;
-    let draft = editor.draft;
-    let clear = draft.clone();
-    effect(move || {
-        if !state.get().visible {
-            bearer.set(String::new());
-            environment.set(String::new());
-            clear.edit(8, None, Some(false));
-            clear.edit(9, None, Some(false));
-        }
-    });
-    let local = move || state.get().authority.transport == McpTransportChoice::Local;
-    let saved = move || {
-        matches!(
-            state.get().authority.editor,
-            Some(McpEditor::Existing { .. })
-        )
-    };
-    let local_draft = draft.clone();
-    let remote_draft = draft.clone();
-    let controls = commands.clone();
     view()
         .w_full()
-        .gap_3()
-        .p(px(Layout::SETTINGS_GROUP_PADDING))
-        .border(px(1.))
-        .rounded(px(Layout::PANEL_RADIUS))
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .child(text(move || {
-            state.with(|_| {
-                vega_i18n::t(if saved() {
-                    "settings.mcp.edit"
-                } else {
-                    "settings.mcp.add"
-                })
-            })
-        }))
-        .child(field(actions, draft, 0, "settings.field.name", None))
-        .child(when(local, move || {
-            let draft = local_draft.clone();
-            let secrets = draft.clone();
-            view()
-                .w_full()
-                .gap_3()
-                .child(text(move || {
-                    state.with(|_| vega_i18n::t("settings.mcp.arguments_warning"))
-                }))
-                .child(field(
-                    actions,
-                    draft.clone(),
-                    1,
-                    "settings.field.executable",
-                    None,
-                ))
-                .child(field(actions, draft.clone(), 2, "settings.mcp.args", None))
-                .child(field(
-                    actions,
-                    draft.clone(),
-                    3,
-                    "settings.mcp.working_directory",
-                    None,
-                ))
-                .child(field(actions, draft, 4, "settings.mcp.environment", None))
-                .child(when(saved, move || {
-                    view()
-                        .w_full()
-                        .gap_3()
-                        .child(text(move || {
-                            state.with(|_| vega_i18n::t("settings.mcp.environment_warning"))
-                        }))
-                        .child(field(
-                            actions,
-                            secrets.clone(),
-                            7,
-                            "settings.mcp.variable",
-                            None,
-                        ))
-                        .child(field(
-                            actions,
-                            secrets.clone(),
-                            9,
-                            "settings.mcp.secret",
-                            Some(environment),
-                        ))
-                }))
-        }))
-        .child(when(
-            move || !local(),
-            move || {
-                let draft = remote_draft.clone();
-                let oauth_draft = draft.clone();
-                let secret_draft = draft.clone();
-                view()
-                    .w_full()
-                    .gap_3()
-                    .child(field(
-                        actions,
-                        draft,
-                        5,
-                        "settings.provider.service_url",
-                        None,
-                    ))
-                    .child(text(move || {
-                        state.with(|_| vega_i18n::t("settings.mcp.loopback_hint"))
-                    }))
-                    .child(when(
-                        move || state.get().authority.auth == McpAuthChoice::Bearer,
-                        move || {
-                            view()
-                                .w_full()
-                                .gap_3()
-                                .child(text(move || {
-                                    state.with(|_| vega_i18n::t("settings.mcp.bearer_warning"))
-                                }))
-                                .child(when(saved, {
-                                    let draft = secret_draft.clone();
-                                    move || {
-                                        field(
-                                            actions,
-                                            draft.clone(),
-                                            8,
-                                            "settings.mcp.bearer",
-                                            Some(bearer),
-                                        )
-                                    }
-                                }))
-                        },
-                    ))
-                    .child(when(
-                        move || state.get().authority.auth == McpAuthChoice::OAuth,
-                        move || {
-                            view()
-                                .w_full()
-                                .gap_3()
-                                .child(field(
-                                    actions,
-                                    oauth_draft.clone(),
-                                    6,
-                                    "settings.mcp.oauth.client_id",
-                                    None,
-                                ))
-                                .child(text(move || {
-                                    state.with(|_| vega_i18n::t("settings.mcp.oauth.save_warning"))
-                                }))
-                        },
-                    ))
-            },
-        ))
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .py_2()
         .child(each(
             move || {
                 editor_controls(&state.get().authority)
                     .into_iter()
+                    .filter(|control| include(&control.action))
                     .map(|control| (control, state.get().authority))
                     .collect::<Vec<_>>()
             },
@@ -1216,12 +1114,217 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
                 };
                 button(
                     actions,
-                    controls.clone(),
+                    commands.clone(),
                     move || item.get().0,
                     move || item.get().1,
                     secret,
                 )
             },
+        ))
+        .into_element()
+}
+
+fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> AnyElement {
+    let bearer = signal(String::new());
+    let environment = signal(String::new());
+    let state = actions.state;
+    let draft = editor.draft;
+    let clear = draft.clone();
+    effect(move || {
+        if !state.get().visible {
+            bearer.set(String::new());
+            environment.set(String::new());
+            clear.edit(8, None, Some(false));
+            clear.edit(9, None, Some(false));
+        }
+    });
+    let local = move || state.get().authority.transport == McpTransportChoice::Local;
+    let saved = move || {
+        matches!(
+            state.get().authority.editor,
+            Some(McpEditor::Existing { .. })
+        )
+    };
+    let local_draft = draft.clone();
+    let remote_draft = draft.clone();
+    let local_controls = commands.clone();
+    let remote_controls = commands.clone();
+    let bearer_controls = commands.clone();
+    view()
+        .w_full()
+        .gap_0()
+        .p(px(Layout::SETTINGS_GROUP_PADDING))
+        .border(px(1.))
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .child(text(move || {
+            state.with(|_| {
+                vega_i18n::t(if saved() {
+                    "settings.mcp.edit"
+                } else {
+                    "settings.mcp.add"
+                })
+            })
+        }))
+        .child(editor_actions(
+            actions,
+            commands.clone(),
+            |action| matches!(action, McpAction::Transport(_)),
+            bearer,
+            environment,
+        ))
+        .child(field(actions, draft, 0, "settings.field.name", None))
+        .child(when(local, move || {
+            let draft = local_draft.clone();
+            let secrets = draft.clone();
+            let local_controls = local_controls.clone();
+            view()
+                .w_full()
+                .gap_0()
+                .child(text(move || {
+                    state.with(|_| vega_i18n::t("settings.mcp.arguments_warning"))
+                }))
+                .child(field(
+                    actions,
+                    draft.clone(),
+                    1,
+                    "settings.field.executable",
+                    None,
+                ))
+                .child(field(actions, draft.clone(), 2, "settings.mcp.args", None))
+                .child(field(
+                    actions,
+                    draft.clone(),
+                    3,
+                    "settings.mcp.working_directory",
+                    None,
+                ))
+                .child(field(actions, draft, 4, "settings.mcp.environment", None))
+                .child(when(saved, move || {
+                    view()
+                        .w_full()
+                        .gap_0()
+                        .child(text(move || {
+                            state.with(|_| vega_i18n::t("settings.mcp.environment_warning"))
+                        }))
+                        .child(field(
+                            actions,
+                            secrets.clone(),
+                            7,
+                            "settings.mcp.variable",
+                            None,
+                        ))
+                        .child(field(
+                            actions,
+                            secrets.clone(),
+                            9,
+                            "settings.mcp.secret",
+                            Some(environment),
+                        ))
+                        .child(editor_actions(
+                            actions,
+                            local_controls.clone(),
+                            |action| {
+                                matches!(
+                                    action,
+                                    McpAction::SaveLocalSecret | McpAction::CopyCredentialBindings
+                                )
+                            },
+                            bearer,
+                            environment,
+                        ))
+                }))
+        }))
+        .child(when(
+            move || !local(),
+            move || {
+                let draft = remote_draft.clone();
+                let oauth_draft = draft.clone();
+                let secret_draft = draft.clone();
+                let bearer_controls = bearer_controls.clone();
+                view()
+                    .w_full()
+                    .gap_0()
+                    .child(field(
+                        actions,
+                        draft,
+                        5,
+                        "settings.provider.service_url",
+                        None,
+                    ))
+                    .child(editor_actions(
+                        actions,
+                        remote_controls.clone(),
+                        |action| matches!(action, McpAction::ToggleLoopback),
+                        bearer,
+                        environment,
+                    ))
+                    .child(text(move || {
+                        state.with(|_| vega_i18n::t("settings.mcp.loopback_hint"))
+                    }))
+                    .child(editor_actions(
+                        actions,
+                        remote_controls.clone(),
+                        |action| matches!(action, McpAction::Auth(_)),
+                        bearer,
+                        environment,
+                    ))
+                    .child(when(
+                        move || state.get().authority.auth == McpAuthChoice::Bearer,
+                        move || {
+                            view()
+                                .w_full()
+                                .gap_0()
+                                .child(text(move || {
+                                    state.with(|_| vega_i18n::t("settings.mcp.bearer_warning"))
+                                }))
+                                .child(when(saved, {
+                                    let draft = secret_draft.clone();
+                                    move || {
+                                        field(
+                                            actions,
+                                            draft.clone(),
+                                            8,
+                                            "settings.mcp.bearer",
+                                            Some(bearer),
+                                        )
+                                    }
+                                }))
+                                .child(editor_actions(
+                                    actions,
+                                    bearer_controls.clone(),
+                                    |action| matches!(action, McpAction::SaveBearer),
+                                    bearer,
+                                    environment,
+                                ))
+                        },
+                    ))
+                    .child(when(
+                        move || state.get().authority.auth == McpAuthChoice::OAuth,
+                        move || {
+                            view()
+                                .w_full()
+                                .gap_0()
+                                .child(field(
+                                    actions,
+                                    oauth_draft.clone(),
+                                    6,
+                                    "settings.mcp.oauth.client_id",
+                                    None,
+                                ))
+                                .child(text(move || {
+                                    state.with(|_| vega_i18n::t("settings.mcp.oauth.save_warning"))
+                                }))
+                        },
+                    ))
+            },
+        ))
+        .child(editor_actions(
+            actions,
+            commands,
+            |action| matches!(action, McpAction::Save | McpAction::CancelEditor),
+            bearer,
+            environment,
         ))
         .into_element()
 }
@@ -1291,11 +1394,20 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             move |entry, _| {
                 let block = computed(move || entry.get().0);
                 let commands = rows_commands.clone();
+                let framed =
+                    move || !matches!(block.get().key.as_str(), "top" | "message" | "waiting");
                 view()
                     .w_full()
+                    .min_w_0()
                     .gap_2()
-                    .p(px(Layout::SETTINGS_GROUP_PADDING))
-                    .border(px(1.))
+                    .p(move || {
+                        px(if framed() {
+                            Layout::SETTINGS_GROUP_PADDING
+                        } else {
+                            0.
+                        })
+                    })
+                    .border(move || px(if framed() { 1. } else { 0. }))
                     .rounded(px(Layout::PANEL_RADIUS))
                     .border_color(move || {
                         crate::nsh::color(if block.get().warning {
@@ -1304,13 +1416,37 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             state.get().colors.border_subtle
                         })
                     })
-                    .child(text(move || block.get().title))
+                    .child(when(
+                        move || !block.get().title.is_empty(),
+                        move || {
+                            text(move || block.get().title)
+                                .text_size(move || {
+                                    px(if block.get().key == "top" {
+                                        Typography::HEADING_PAGE
+                                    } else {
+                                        Typography::HEADING_BLOCK
+                                    })
+                                })
+                                .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16))
+                        },
+                    ))
                     .child(each(
-                        move || block.get().lines,
-                        |line| line.clone(),
+                        move || {
+                            block
+                                .get()
+                                .lines
+                                .into_iter()
+                                .enumerate()
+                                .collect::<Vec<_>>()
+                        },
+                        |(index, _)| *index,
                         move |line, _| {
-                            text(move || line.get()).text_color(move || {
-                                crate::nsh::color(if block.get().warning {
+                            text(move || line.get().1).text_color(move || {
+                                let block = block.get();
+                                crate::nsh::color(if block.key == "message" && block.warning {
+                                    state.get().colors.danger
+                                } else if block.warning || block.emphasized.contains(&line.get().0)
+                                {
                                     state.get().colors.warning
                                 } else {
                                     state.get().colors.text_secondary
@@ -1318,25 +1454,38 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             })
                         },
                     ))
-                    .child(each(
+                    .child(when(
+                        move || !block.get().controls.is_empty(),
                         move || {
-                            let (block, authority) = entry.get();
-                            block
-                                .controls
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, control)| (index, control, authority.clone()))
-                                .collect::<Vec<_>>()
-                        },
-                        |(index, _, _)| *index,
-                        move |item, _| {
-                            button(
-                                actions,
-                                commands.clone(),
-                                move || item.get().1,
-                                move || item.get().2,
-                                None,
-                            )
+                            let commands = commands.clone();
+                            view()
+                                .flex_row()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
+                                .child(each(
+                                    move || {
+                                        let (block, authority) = entry.get();
+                                        block
+                                            .controls
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(index, control)| {
+                                                (index, control, authority.clone())
+                                            })
+                                            .collect::<Vec<_>>()
+                                    },
+                                    |(index, _, _)| *index,
+                                    move |item, _| {
+                                        button(
+                                            actions,
+                                            commands.clone(),
+                                            move || item.get().1,
+                                            move || item.get().2,
+                                            None,
+                                        )
+                                    },
+                                ))
                         },
                     ))
             },

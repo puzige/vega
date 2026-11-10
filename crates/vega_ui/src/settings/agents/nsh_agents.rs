@@ -394,12 +394,15 @@ fn button(
         .focusable(true)
         .label(move || actions.state.with(|_| vega_i18n::t(key)))
         .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
+        .self_start()
         .flex_row()
         .items_center()
+        .justify_center()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .px_3()
-        .py_2()
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 actions.state.get().colors.accent
@@ -407,7 +410,30 @@ fn button(
                 actions.state.get().colors.border_subtle
             })
         })
-        .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+        .bg(move || {
+            let colors = actions.state.get().colors;
+            crate::nsh::color(if matches!(action, Action::Save) {
+                if actions.pending.get() || !allowed(&actions.snapshot(), action) {
+                    colors.bg_hover
+                } else {
+                    colors.brand_primary
+                }
+            } else {
+                colors.bg_elevated
+            })
+        })
+        .text_color(move || {
+            let colors = actions.state.get().colors;
+            crate::nsh::color(if matches!(action, Action::Save) {
+                if actions.pending.get() || !allowed(&actions.snapshot(), action) {
+                    colors.text_tertiary
+                } else {
+                    colors.brand_on_accent
+                }
+            } else {
+                colors.text_primary
+            })
+        })
         .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
         .child(text(move || {
             actions.state.with(|snapshot| {
@@ -430,12 +456,66 @@ fn button(
 fn group(state: Signal<Snapshot>) -> nsh_core::element::View {
     view()
         .w_full()
-        .gap_3()
+        .min_w(px(0.))
+        .flex_shrink_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .border(px(1.))
         .rounded(px(Layout::PANEL_RADIUS))
         .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
         .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
+}
+
+fn field_row(
+    state: Signal<Snapshot>,
+    key: &'static str,
+    description: Option<&'static str>,
+    control: AnyElement,
+) -> AnyElement {
+    let mut label = view()
+        .w(px(Layout::SETTINGS_LABEL_WIDTH))
+        .max_w(relative(1.))
+        .flex_shrink_0()
+        .py_1()
+        .gap_1()
+        .child(translated(state, key));
+    if let Some(description) = description {
+        label = label.child(
+            text(move || state.with(|_| vega_i18n::t(description)))
+                .text_size(px(Typography::METADATA))
+                .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+        );
+    }
+    view()
+        .w_full()
+        .min_w(px(0.))
+        .flex_shrink_0()
+        .flex_row()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .child(label)
+        .child(
+            view()
+                .flex_1()
+                .basis(px(220.))
+                .min_w(px(0.))
+                .max_w(relative(1.))
+                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                .justify_center()
+                .child(control),
+        )
+        .into_element()
+}
+
+fn heading(state: Signal<Snapshot>, key: &'static str) -> AnyElement {
+    text(move || state.with(|_| vega_i18n::t(key)))
+        .text_size(px(Typography::HEADING_BLOCK))
+        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16))
+        .into_element()
 }
 
 fn field(actions: Actions, draft: Draft, index: usize, key: &'static str) -> AnyElement {
@@ -446,52 +526,53 @@ fn field(actions: Actions, draft: Draft, index: usize, key: &'static str) -> Any
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    view()
-        .w_full()
-        .gap_1()
-        .child(translated(actions.state, key))
-        .child(
-            nsh_base::input()
-                .element_ref(&target)
-                .label(move || actions.state.with(|_| vega_i18n::t(key)))
-                .value(move || value.get())
-                .multiline(index == 2)
-                .readonly(move || {
-                    actions.pending.get() || actions.state.get().authority.profile_saving || {
-                        actions.edits.get();
-                        draft.read().frozen
-                    }
+    field_row(
+        actions.state,
+        key,
+        (index == 2).then_some("settings.agents.codex.arguments_hint"),
+        nsh_base::input()
+            .element_ref(&target)
+            .label(move || actions.state.with(|_| vega_i18n::t(key)))
+            .value(move || value.get())
+            .multiline(index == 2)
+            .readonly(move || {
+                actions.pending.get() || actions.state.get().authority.profile_saving || {
+                    actions.edits.get();
+                    draft.read().frozen
+                }
+            })
+            .border(px(1.))
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .px_3()
+            .py_1()
+            .w_full()
+            .min_w(px(0.))
+            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .border_color(move || {
+                crate::nsh::color(if focused.get() {
+                    actions.state.get().colors.accent
+                } else {
+                    actions.state.get().colors.border_subtle
                 })
-                .border(px(1.))
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .px_3()
-                .py_2()
-                .w_full()
-                .border_color(move || {
-                    crate::nsh::color(if focused.get() {
-                        actions.state.get().colors.accent
-                    } else {
-                        actions.state.get().colors.border_subtle
-                    })
-                })
-                .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
-                .on_change(move |text: &str| {
-                    if edits.edit(index, Some(text), None) {
-                        value.set(text.to_owned());
-                        actions
-                            .edits
-                            .update(|revision| *revision = revision.wrapping_add(1));
-                    }
-                })
-                .on_composition_change(move |event: &Composition| {
-                    if composition.edit(index, None, Some(event.composing)) {
-                        actions
-                            .edits
-                            .update(|revision| *revision = revision.wrapping_add(1));
-                    }
-                }),
-        )
-        .into_element()
+            })
+            .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+            .on_change(move |text: &str| {
+                if edits.edit(index, Some(text), None) {
+                    value.set(text.to_owned());
+                    actions
+                        .edits
+                        .update(|revision| *revision = revision.wrapping_add(1));
+                }
+            })
+            .on_composition_change(move |event: &Composition| {
+                if composition.edit(index, None, Some(event.composing)) {
+                    actions
+                        .edits
+                        .update(|revision| *revision = revision.wrapping_add(1));
+                }
+            })
+            .into_element(),
+    )
 }
 
 fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> AnyElement {
@@ -517,58 +598,59 @@ fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> A
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    view()
-        .flex_row()
-        .flex_wrap()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .child(translated(actions.state, key))
-        .child(
-            view()
-                .element_ref(&target)
-                .role(AccessibilityRole::Switch)
-                .focusable(true)
-                .label(move || actions.state.with(|_| vega_i18n::t(key)))
-                .accessibility_state(move || AccessibilityState {
-                    checked: Some(if enabled() {
-                        Checked::True
-                    } else {
-                        Checked::False
-                    }),
-                    ..Default::default()
+    field_row(
+        actions.state,
+        key,
+        None,
+        view()
+            .element_ref(&target)
+            .role(AccessibilityRole::Switch)
+            .focusable(true)
+            .label(move || actions.state.with(|_| vega_i18n::t(key)))
+            .accessibility_state(move || AccessibilityState {
+                checked: Some(if enabled() {
+                    Checked::True
+                } else {
+                    Checked::False
+                }),
+                ..Default::default()
+            })
+            .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
+            .border(px(1.))
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .self_start()
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+            .py_1()
+            .border_color(move || {
+                crate::nsh::color(if focused.get() {
+                    actions.state.get().colors.accent
+                } else {
+                    actions.state.get().colors.border_subtle
                 })
-                .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
-                .border(px(1.))
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .px_3()
-                .py_2()
-                .border_color(move || {
-                    crate::nsh::color(if focused.get() {
-                        actions.state.get().colors.accent
+            })
+            .bg(move || {
+                crate::nsh::color(if enabled() {
+                    actions.state.get().colors.bg_active
+                } else {
+                    actions.state.get().colors.bg_elevated
+                })
+            })
+            .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
+            .child(text(move || {
+                actions.state.with(|_| {
+                    vega_i18n::t(if enabled() {
+                        "settings.state.on"
                     } else {
-                        actions.state.get().colors.border_subtle
+                        "settings.state.off"
                     })
                 })
-                .bg(move || {
-                    crate::nsh::color(if enabled() {
-                        actions.state.get().colors.bg_active
-                    } else {
-                        actions.state.get().colors.bg_elevated
-                    })
-                })
-                .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
-                .child(text(move || {
-                    actions.state.with(|_| {
-                        vega_i18n::t(if enabled() {
-                            "settings.state.on"
-                        } else {
-                            "settings.state.off"
-                        })
-                    })
-                })),
-        )
-        .into_element()
+            }))
+            .into_element(),
+    )
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
@@ -586,6 +668,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .flex_shrink_0()
         .gap(px(Layout::SETTINGS_SECTION_GAP))
         .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
@@ -602,13 +685,15 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         })
         .child(
             group(state)
-                .child(translated(state, "settings.agents.native.title"))
+                .child(heading(state, "settings.agents.native.title"))
                 .child(toggle(actions, commands.clone(), true))
                 .child(toggle(actions, commands.clone(), false))
                 .child(
                     view()
+                        .mt_3()
                         .flex_row()
                         .flex_wrap()
+                        .items_center()
                         .gap_2()
                         .child(button(
                             actions,
@@ -627,33 +712,34 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     move || state.get().authority.feedback,
                     |item| item.clone(),
                     move |item, _| {
-                        text(move || item.get().0).text_color(move || {
-                            crate::nsh::color(if item.get().1 {
-                                state.get().colors.warning
-                            } else {
-                                state.get().colors.text_secondary
+                        text(move || item.get().0)
+                            .mt_2()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(move || {
+                                crate::nsh::color(if item.get().1 {
+                                    state.get().colors.warning
+                                } else {
+                                    state.get().colors.text_secondary
+                                })
                             })
-                        })
                     },
                 ))
-                .child(
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .justify_between()
-                        .gap_2()
-                        .child(translated(state, "settings.agents.desktop.component"))
-                        .child(text(move || {
-                            state.with(|snapshot| vega_i18n::t(snapshot.authority.component))
-                        })),
-                )
-                .child(
+                .child(field_row(
+                    state,
+                    "settings.agents.desktop.component",
+                    None,
+                    text(move || state.with(|snapshot| vega_i18n::t(snapshot.authority.component)))
+                        .into_element(),
+                ))
+                .child(field_row(
+                    state,
+                    "settings.agents.accessibility",
+                    None,
                     view()
                         .flex_row()
                         .flex_wrap()
                         .items_center()
                         .gap_2()
-                        .child(translated(state, "settings.agents.accessibility"))
                         .child(text(move || {
                             state.with(|snapshot| vega_i18n::t(snapshot.authority.accessibility))
                         }))
@@ -662,15 +748,18 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             commands.clone(),
                             Action::Native(NativeAgentAction::Accessibility),
                             "settings.agents.accessibility.settings",
-                        )),
-                )
-                .child(
+                        ))
+                        .into_element(),
+                ))
+                .child(field_row(
+                    state,
+                    "settings.agents.screen_recording",
+                    None,
                     view()
                         .flex_row()
                         .flex_wrap()
                         .items_center()
                         .gap_2()
-                        .child(translated(state, "settings.agents.screen_recording"))
                         .child(text(move || {
                             state.with(|snapshot| vega_i18n::t(snapshot.authority.screen_recording))
                         }))
@@ -679,40 +768,57 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             commands.clone(),
                             Action::Native(NativeAgentAction::ScreenRecording),
                             "settings.agents.screen_recording.settings",
-                        )),
+                        ))
+                        .into_element(),
+                ))
+                .child(
+                    text(move || {
+                        state.with(|_| vega_i18n::t("settings.agents.screen_recording.restart"))
+                    })
+                    .text_size(px(Typography::METADATA))
+                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
                 )
-                .child(translated(
+                .child(field_row(
                     state,
-                    "settings.agents.screen_recording.restart",
+                    "settings.agents.capture",
+                    None,
+                    translated(state, "settings.state.unverified"),
                 ))
                 .child(
                     view()
+                        .mt_3()
                         .flex_row()
                         .flex_wrap()
-                        .justify_between()
+                        .items_center()
                         .gap_2()
-                        .child(translated(state, "settings.agents.capture"))
-                        .child(translated(state, "settings.state.unverified")),
-                )
-                .child(button(
-                    actions,
-                    commands.clone(),
-                    Action::Native(NativeAgentAction::Extension),
-                    "settings.agents.browser.install_extension",
-                )),
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::Extension),
+                            "settings.agents.browser.install_extension",
+                        )),
+                ),
         )
         .child(
             group(state)
-                .child(text("Codex"))
-                .child(text(move || {
-                    state.with(|snapshot| {
-                        vega_i18n::t(if snapshot.authority.profile.is_some() {
-                            "settings.agents.codex.configured"
-                        } else {
-                            "settings.agents.codex.setup"
+                .child(
+                    text("Codex")
+                        .text_size(px(Typography::HEADING_BLOCK))
+                        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
+                )
+                .child(
+                    text(move || {
+                        state.with(|snapshot| {
+                            vega_i18n::t(if snapshot.authority.profile.is_some() {
+                                "settings.agents.codex.configured"
+                            } else {
+                                "settings.agents.codex.setup"
+                            })
                         })
                     })
-                }))
+                    .text_size(px(Typography::METADATA))
+                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+                )
                 .child(field(actions, draft.clone(), 0, "settings.field.name"))
                 .child(field(
                     actions,
@@ -721,13 +827,20 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     "settings.field.executable",
                 ))
                 .child(field(actions, draft, 2, "settings.field.arguments"))
-                .child(translated(state, "settings.agents.codex.arguments_hint"))
-                .child(button(
-                    actions,
-                    commands,
-                    Action::Save,
-                    "settings.agents.codex.save",
-                )),
+                .child(
+                    view()
+                        .mt_3()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(button(
+                            actions,
+                            commands,
+                            Action::Save,
+                            "settings.agents.codex.save",
+                        )),
+                ),
         )
         .child(when(
             move || actions.failed.get(),

@@ -1233,10 +1233,12 @@ impl Render for Host {
                     .shape_line(label, px(Typography::SIDEBAR), &[run], None)
                     .width,
             )
+            .ceil()
             .min(180.)
+                + 2.
                 + Layout::COMPOSER_UTILITY_CHIP_PADDING_X * 2.
                 + if self.snapshot.kind == Kind::Project {
-                    Layout::ICON_SIZE + 8.
+                    Layout::ICON_SIZE + Layout::COMPOSER_UTILITY_CHIP_GAP
                 } else {
                     0.
                 };

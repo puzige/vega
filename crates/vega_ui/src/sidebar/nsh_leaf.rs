@@ -248,7 +248,8 @@ impl Leaf {
         if self.surface.is_some() {
             return;
         }
-        let (surface, mut requests) = Surface::new(self.snapshot.clone(), render, window, cx);
+        let (surface, mut requests) =
+            Surface::new_transparent(self.snapshot.clone(), render, window, cx);
         let mut errors = surface.errors();
         self.mount = ProjectionId::new();
         let mount = self.mount.clone();

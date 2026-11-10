@@ -1117,6 +1117,68 @@ impl Actions {
         });
     }
 }
+fn field_row(
+    state: Signal<Snapshot>,
+    key: &'static str,
+    description: Option<String>,
+    control: AnyElement,
+) -> AnyElement {
+    let mut label = view()
+        .w(px(Layout::SETTINGS_LABEL_WIDTH))
+        .max_w(relative(1.))
+        .flex_shrink_0()
+        .py_1()
+        .gap_1()
+        .child(text(move || state.with(|_| t(key))));
+    if let Some(description) = description {
+        label = label.child(
+            text(description)
+                .text_size(px(Typography::METADATA))
+                .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+        );
+    }
+    view()
+        .w_full()
+        .min_w(px(0.))
+        .flex_shrink_0()
+        .flex_row()
+        .flex_wrap()
+        .items_start()
+        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
+        .gap_y_2()
+        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
+        .border_b_1()
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .child(label)
+        .child(
+            view()
+                .flex_1()
+                .basis(px(220.))
+                .min_w(px(0.))
+                .max_w(relative(1.))
+                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                .justify_center()
+                .child(control),
+        )
+        .into_element()
+}
+
+fn heading(label: impl Into<String>) -> AnyElement {
+    text(label.into())
+        .text_size(px(Typography::HEADING_BLOCK))
+        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16))
+        .into_element()
+}
+
+fn icon(kind: crate::icons::Icon, state: Signal<Snapshot>) -> AnyElement {
+    let source = crate::icons::nsh_source(kind).unwrap_or_default();
+    svg(nsh_core::element::ImageSrc::svg_markup(&source))
+        .size(px(Layout::ICON_SIZE))
+        .flex_shrink_0()
+        .tint_color(move || crate::nsh::color(state.get().colors.text_secondary).to_hsla())
+        .into_element()
+}
+
 fn button(
     actions: Actions,
     commands: mpsc::Sender<Request>,
@@ -1124,6 +1186,10 @@ fn button(
     focus_key: Option<String>,
     secret: Option<Signal<String>>,
 ) -> AnyElement {
+    let primary = matches!(
+        &action,
+        Action::Submit(_) | Action::Command(Command::SaveModel)
+    );
     let rendered = computed(move || {
         actions.state.get();
         actions.edits.get();
@@ -1172,9 +1238,13 @@ fn button(
             ..Default::default()
         })
         .disabled(move || actions.pending.get() || !item.get().enabled)
+        .self_start()
+        .flex_row()
+        .items_center()
+        .justify_center()
         .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-        .px_3()
-        .py_2()
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .border_color(move || {
@@ -1185,10 +1255,29 @@ fn button(
             })
         })
         .bg(move || {
-            crate::nsh::color(if item.get().selected == Some(true) {
-                actions.state.get().colors.bg_active
+            let colors = actions.state.get().colors;
+            crate::nsh::color(if primary {
+                if actions.pending.get() || !item.get().enabled {
+                    colors.bg_hover
+                } else {
+                    colors.brand_primary
+                }
+            } else if item.get().selected == Some(true) {
+                colors.bg_active
             } else {
-                actions.state.get().colors.bg_elevated
+                colors.bg_elevated
+            })
+        })
+        .text_color(move || {
+            let colors = actions.state.get().colors;
+            crate::nsh::color(if primary {
+                if actions.pending.get() || !item.get().enabled {
+                    colors.text_tertiary
+                } else {
+                    colors.brand_on_accent
+                }
+            } else {
+                colors.text_primary
             })
         })
         .tooltip(text(move || item.get().reason))
@@ -1216,6 +1305,14 @@ fn field(
     readonly: bool,
 ) -> AnyElement {
     let value = secret.unwrap_or_else(|| signal(draft.read().text[index].clone()));
+    let multiline = index == 2 && actions.state.get_untracked().authority.form;
+    let line_height = Typography::BODY * Typography::BODY_LINE_HEIGHT;
+    let min_height = line_height * crate::settings::state::PROVIDER_MODELS_MIN_ROWS as f32;
+    let max_height = line_height * crate::settings::state::PROVIDER_MODELS_MAX_ROWS as f32;
+    let content_height = signal(
+        (value.get_untracked().split('\n').count() as f32 * line_height)
+            .clamp(min_height, max_height),
+    );
     let sync = draft.clone();
     effect(move || {
         actions.state.get();
@@ -1233,90 +1330,103 @@ fn field(
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    view()
-        .w_full()
-        .gap_1()
-        .child(text(move || actions.state.with(|_| t(key))))
-        .child(
-            nsh_base::input()
-                .element_ref(&target)
-                .label(move || actions.state.with(|_| t(key)))
-                .value(move || value.get())
-                .masked(secret.is_some())
-                .hint(move || {
-                    if actions
-                        .state
-                        .get()
-                        .authority
-                        .model
-                        .as_ref()
-                        .is_some_and(|m| m.source == PolicySource::Loading)
-                    {
-                        t("settings.provider.context_loading")
-                    } else {
-                        ""
+    field_row(
+        actions.state,
+        key,
+        secret.map(|_| t("settings.provider.keep_key").to_string()),
+        nsh_base::input()
+            .element_ref(&target)
+            .label(move || actions.state.with(|_| t(key)))
+            .value(move || value.get())
+            .masked(secret.is_some())
+            .hint(move || {
+                if actions
+                    .state
+                    .get()
+                    .authority
+                    .model
+                    .as_ref()
+                    .is_some_and(|m| m.source == PolicySource::Loading)
+                {
+                    t("settings.provider.context_loading")
+                } else {
+                    ""
+                }
+            })
+            .multiline(multiline)
+            .on_content_size_change(move |size: &Size<Points>| {
+                if multiline && size.height.0.is_finite() {
+                    content_height.set(size.height.0.clamp(min_height, max_height));
+                }
+            })
+            .readonly(move || {
+                readonly
+                    || actions.state.get().authority.unavailable
+                    || actions.pending.get()
+                    || actions.state.get().authority.saving
+                    || (index > 0
+                        && secret.is_none()
+                        && actions
+                            .state
+                            .get()
+                            .authority
+                            .model
+                            .as_ref()
+                            .is_some_and(|m| m.source == PolicySource::Loading))
+                    || {
+                        actions.edits.get();
+                        let v = draft.read();
+                        v.frozen || !v.valid
                     }
+            })
+            .w_full()
+            .min_w(px(0.))
+            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .h(move || {
+                if multiline {
+                    Length::from(px(content_height.get() + 18.))
+                } else {
+                    Length::Auto
+                }
+            })
+            .line_height(px(line_height))
+            .px_3()
+            .py(px(if multiline { 8. } else { 4. }))
+            .border(px(1.))
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .border_color(move || {
+                crate::nsh::color(if focused.get() {
+                    actions.state.get().colors.accent
+                } else {
+                    actions.state.get().colors.border_subtle
                 })
-                .multiline(index == 2 && actions.state.get_untracked().authority.form)
-                .readonly(move || {
-                    readonly
-                        || actions.state.get().authority.unavailable
-                        || actions.pending.get()
-                        || actions.state.get().authority.saving
-                        || (index > 0
-                            && secret.is_none()
-                            && actions
-                                .state
-                                .get()
-                                .authority
-                                .model
-                                .as_ref()
-                                .is_some_and(|m| m.source == PolicySource::Loading))
-                        || {
-                            actions.edits.get();
-                            let v = draft.read();
-                            v.frozen || !v.valid
-                        }
-                })
-                .w_full()
-                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-                .px_3()
-                .py_2()
-                .border(px(1.))
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .border_color(move || {
-                    crate::nsh::color(if focused.get() {
-                        actions.state.get().colors.accent
-                    } else {
-                        actions.state.get().colors.border_subtle
-                    })
-                })
-                .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
-                .on_submit(move |_: &str| {
-                    let s = actions.snapshot();
-                    if index == 0 && s.authority.model.is_some() {
-                        actions.send(
-                            submit_commands.clone(),
-                            s.authority,
-                            s.version,
-                            Action::Command(Command::SaveModel),
-                            None,
-                        );
-                    }
-                })
-                .on_change(move |text: &str| {
-                    if editing.edit(index, Some(text), None) {
-                        value.set(text.into());
-                        actions.changed(&commands);
-                    }
-                })
-                .on_composition_change(move |composition: &Composition| {
-                    if composing.edit(index, None, Some(composition.composing)) {
-                        actions.changed(&composition_commands);
-                    }
-                }),
-        )
-        .into_element()
+            })
+            .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+            .on_submit(move |_: &str| {
+                let s = actions.snapshot();
+                if index == 0 && s.authority.model.is_some() {
+                    actions.send(
+                        submit_commands.clone(),
+                        s.authority,
+                        s.version,
+                        Action::Command(Command::SaveModel),
+                        None,
+                    );
+                }
+            })
+            .on_change(move |text: &str| {
+                if editing.edit(index, Some(text), None) {
+                    value.set(text.into());
+                    actions.changed(&commands);
+                }
+            })
+            .on_composition_change(move |composition: &Composition| {
+                if composing.edit(index, None, Some(composition.composing)) {
+                    actions.changed(&composition_commands);
+                }
+            })
+            .into_element(),
+    )
 }
 fn help(actions: Actions) -> AnyElement {
     cleanup(move || actions.popup.set(false));
@@ -1342,31 +1452,26 @@ fn help(actions: Actions) -> AnyElement {
                 actions.state.get().colors.border_subtle
             })
         })
-        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-        .px_2()
+        .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .self_start()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .tooltip(text(move || {
             actions.state.with(|_| super::provider_test_help_copy())
         }))
-        .child(text("?"));
-    view()
-        .gap_1()
-        .child(
-            nsh_base::popover()
-                .on_open_change(move |event: &nsh_base::PopoverEvent| {
-                    if let nsh_base::PopoverEvent::OpenChange(value, _) = event {
-                        actions.popup.set(*value);
-                    }
-                })
-                .trigger(trigger)
-                .child(text(move || {
-                    actions.state.with(|_| super::provider_test_help_copy())
-                })),
-        )
-        .child(when(
-            move || focused.get() && !actions.popup.get(),
-            move || text(move || actions.state.with(|_| super::provider_test_help_copy())),
-        ))
+        .child(icon(crate::icons::Icon::Help, actions.state));
+    nsh_base::popover()
+        .on_open_change(move |event: &nsh_base::PopoverEvent| {
+            if let nsh_base::PopoverEvent::OpenChange(value, _) = event {
+                actions.popup.set(*value);
+            }
+        })
+        .trigger(trigger)
+        .child(text(move || {
+            actions.state.with(|_| super::provider_test_help_copy())
+        }))
         .into_element()
 }
 
@@ -1568,7 +1673,13 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
     let mut body = view()
         .element_ref(&root)
         .w_full()
-        .gap_3()
+        .min_w(px(0.))
+        .flex_shrink_0()
+        .p(px(Layout::SETTINGS_GROUP_PADDING))
+        .border(px(1.))
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
         .child(when(
             move || {
                 within.get()
@@ -1614,7 +1725,11 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
                 )
             },
         ))
-        .child(text(t("settings.provider.add_update")))
+        .child(
+            view()
+                .mb_3()
+                .child(heading(t("settings.provider.add_update"))),
+        )
         .child(
             view()
                 .flex_row()
@@ -1663,10 +1778,18 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
             None,
             false,
         ))
-        .child(text(t_args(
-            "settings.provider.models_hint",
-            &[("limit", &super::super::PROVIDER_MODEL_COUNT_MAX.to_string())],
-        )))
+        .child(
+            view()
+                .gap_1()
+                .pb_3()
+                .text_size(px(Typography::METADATA))
+                .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                .child(text(t_args(
+                    "settings.provider.models_hint",
+                    &[("limit", &super::super::PROVIDER_MODEL_COUNT_MAX.to_string())],
+                )))
+                .child(text(t("settings.provider.responses_hint"))),
+        )
         .child(field(
             actions,
             commands.clone(),
@@ -1676,27 +1799,12 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
             Some(secret),
             false,
         ))
-        .child(text(t("settings.provider.keep_key")))
-        .child(
-            nsh_base::popover()
-                .on_open_change(move |event: &nsh_base::PopoverEvent| {
-                    if let nsh_base::PopoverEvent::OpenChange(value, _) = event {
-                        actions.popup.set(*value);
-                    }
-                })
-                .trigger(
-                    view()
-                        .role(AccessibilityRole::Button)
-                        .focusable(true)
-                        .label(t("settings.provider.test_help_label"))
-                        .child(text("?")),
-                )
-                .child(text(t("settings.provider.responses_hint"))),
-        )
         .child(
             view()
                 .flex_row()
                 .flex_wrap()
+                .items_center()
+                .mt_3()
                 .gap_2()
                 .child(button(
                     actions,
@@ -1743,22 +1851,33 @@ fn menu(actions: Actions, commands: mpsc::Sender<Request>, model: Option<String>
                 actions.state.get().colors.border_subtle
             })
         })
-        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-        .px_2()
+        .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .self_start()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .label(title.clone())
-        .child(text(title));
+        .tooltip(text(title))
+        .child(icon(crate::icons::Icon::More, actions.state));
     let mut content = view().gap_2().p_2();
     if let Some(model) = model {
         content = content
-            .child(button(
-                actions,
-                commands.clone(),
-                Action::Command(Command::Test(model.clone())),
-                None,
-                None,
-            ))
-            .child(help(actions))
+            .child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(button(
+                        actions,
+                        commands.clone(),
+                        Action::Command(Command::Test(model.clone())),
+                        None,
+                        None,
+                    ))
+                    .child(help(actions)),
+            )
             .child(button(
                 actions,
                 commands,
@@ -1813,7 +1932,7 @@ fn provider_detail(
 ) -> AnyElement {
     let s = actions.snapshot();
     let a = &s.authority;
-    let mut body = view().w_full().gap_3();
+    let mut body = view().w_full().min_w(px(0.)).gap_3();
     if s.narrow {
         body = body.child(button(
             actions,
@@ -1829,7 +1948,8 @@ fn provider_detail(
                 .flex_row()
                 .flex_wrap()
                 .gap_2()
-                .child(text(row.name.clone()))
+                .items_center()
+                .child(heading(row.name.clone()))
                 .child(button(
                     actions,
                     commands.clone(),
@@ -1846,31 +1966,39 @@ fn provider_detail(
                 ))
                 .child(menu(actions, commands.clone(), None)),
         )
-        .child(text(format!(
-            "{}: {}",
-            t("settings.provider.address"),
-            row.url
-        )))
-        .child(text(format!(
-            "{}: {}",
-            t("settings.provider.protocol"),
-            api_label(row.api)
-        )))
-        .child(text(format!(
-            "{}: {}",
-            t("settings.provider.credentials"),
-            if row.credential {
-                super::super::key_stored_placeholder()
-            } else {
-                t("settings.provider.key_required")
-            }
-        )))
+        .child(
+            view()
+                .child(field_row(
+                    actions.state,
+                    "settings.provider.address",
+                    None,
+                    text(row.url).into_element(),
+                ))
+                .child(field_row(
+                    actions.state,
+                    "settings.provider.protocol",
+                    None,
+                    text(api_label(row.api)).into_element(),
+                ))
+                .child(field_row(
+                    actions.state,
+                    "settings.provider.credentials",
+                    None,
+                    text(if row.credential {
+                        super::super::key_stored_placeholder()
+                    } else {
+                        t("settings.provider.key_required")
+                    })
+                    .into_element(),
+                )),
+        )
         .child(
             view()
                 .flex_row()
                 .flex_wrap()
                 .gap_2()
-                .child(text(t("settings.field.model")))
+                .items_center()
+                .child(heading(t("settings.field.model")))
                 .child(button(
                     actions,
                     commands.clone(),
@@ -1905,7 +2033,11 @@ fn provider_detail(
                     .flex_row()
                     .flex_wrap()
                     .gap_2()
-                    .child(text(model.clone()))
+                    .items_center()
+                    .child(
+                        text(model.clone())
+                            .font_weight(FontWeight(Typography::HEADING_CARD_WEIGHT.0 as u16)),
+                    )
                     .child(button(
                         actions,
                         commands.clone(),
@@ -1915,7 +2047,13 @@ fn provider_detail(
                     ))
                     .child(menu(actions, commands.clone(), Some(model.clone()))),
             )
-            .child(text(summary.clone()));
+            .child(
+                text(summary.clone())
+                    .text_size(px(Typography::METADATA))
+                    .text_color(move || {
+                        crate::nsh::color(actions.state.get().colors.text_secondary)
+                    }),
+            );
         if let Some((_, status)) = a.statuses.iter().find(|(name, _)| name == model) {
             item = item.child(text(status.clone()));
         }
@@ -2195,6 +2333,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             }
         })
         .gap_3()
+        .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+        .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .child(when(
             move || {
                 within.get()
@@ -2271,7 +2412,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         .h_full()
                         .flex_row()
                         .items_start()
-                        .gap_3()
+                        .gap(px(Layout::SETTINGS_PROVIDER_COLUMN_GAP))
                         .child(when(
                             move || !state.get().narrow,
                             move || {
@@ -2313,7 +2454,12 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 dynamic(move || {
                     body_state.get();
                     let s = actions.snapshot();
-                    let mut body = view().w_full().h_full().flex_row().items_start().gap_3();
+                    let mut body = view()
+                        .w_full()
+                        .h_full()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(Layout::SETTINGS_PROVIDER_COLUMN_GAP));
                     if !s.narrow || !s.authority.detail {
                         let list = scroll()
                             .h_full()
