@@ -34,17 +34,18 @@ impl FocusTarget {
     pub(super) fn register(
         &self,
         view: &nsh_platform_gpui::AppView,
-        name: &'static str,
+        name: &str,
         semantics: Semantics,
         valid: impl Fn(&Value, &App) -> bool + 'static,
     ) {
         let valid: Validator = std::rc::Rc::new(valid);
         let target = self.clone();
+        let registered_name: SharedString = name.to_owned().into();
         view.register_component(
             name,
             std::rc::Rc::new(move |context| {
                 Box::new(Target {
-                    name,
+                    name: registered_name.clone(),
                     semantics,
                     valid: valid.clone(),
                     context,
@@ -64,7 +65,7 @@ impl FocusTarget {
 type Validator = std::rc::Rc<dyn Fn(&Value, &App) -> bool>;
 
 struct Target {
-    name: &'static str,
+    name: SharedString,
     semantics: Semantics,
     valid: Validator,
     focus_request: Option<u64>,
