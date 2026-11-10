@@ -2223,3 +2223,6 @@ fn editor(
         synchronized,
     }
 }
+
+#[cfg(test)]
+mod draft_recovery;
