@@ -44,6 +44,10 @@ pub(super) struct Snapshot {
 
 impl Snapshot {
     pub fn same_authority(&self, other: &Self) -> bool {
+        self.draft_revision == other.draft_revision && self.same_focus_authority(other)
+    }
+
+    pub(super) fn same_focus_authority(&self, other: &Self) -> bool {
         self.page.matches(&other.page)
             && self.thread == other.thread
             && self.project == other.project
@@ -57,7 +61,6 @@ impl Snapshot {
             && self.focus == other.focus
             && self.focus_revision == other.focus_revision
             && self.failure == other.failure
-            && self.draft_revision == other.draft_revision
             && self.draft_overflow == other.draft_overflow
     }
 
@@ -126,6 +129,7 @@ pub(super) enum Request {
     Displayed(Snapshot),
     Edit(ProjectionId),
     Focused(Snapshot),
+    TraverseDraft(Snapshot, bool),
     Measured(Snapshot, Option<[f32; 4]>, MeasurementLease),
     Action(Snapshot, Action, Option<Weak<()>>),
 }
@@ -302,6 +306,20 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
         .child(dynamic(move || {
             let observed = state.get();
             let send = commands.clone();
+            if observed.focus == CommitPanelFocus::Draft && observed.editable() {
+                for (key, backwards) in [("tab", false), ("shift+tab", true)] {
+                    let displayed = observed.clone();
+                    let sender = commands.clone();
+                    on_key_with(
+                        key,
+                        KeyOptions {
+                            when: nsh_core::keymap::When::Always,
+                            repeat: false,
+                        },
+                        move |_| sender.send(Request::TraverseDraft(displayed.clone(), backwards)),
+                    );
+                }
+            }
             if observed.failure || send.failed.get() {
                 return view()
                     .flex_col()

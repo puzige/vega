@@ -128,6 +128,15 @@ impl CommitPanel {
     }
 
     fn accept(&self, observed: &Snapshot, cx: &App) -> bool {
+        self.accept_with(observed, cx, Snapshot::same_authority)
+    }
+
+    fn accept_with(
+        &self,
+        observed: &Snapshot,
+        cx: &App,
+        matches: fn(&Snapshot, &Snapshot) -> bool,
+    ) -> bool {
         if cx
             .try_global::<crate::settings::SettingsOpen>()
             .is_some_and(|state| state.0)
@@ -140,14 +149,12 @@ impl CommitPanel {
         self.presentation.page.as_ref().is_some_and(|page| {
             self.model.is_open()
                 && page.live()
-                && page.shown.same_authority(observed)
+                && matches(&page.shown, observed)
                 && page
                     .displayed
                     .as_ref()
-                    .is_some_and(|shown| shown.same_authority(observed))
-                && self
-                    .snapshot(page.id.clone(), page.failed, cx)
-                    .same_authority(observed)
+                    .is_some_and(|shown| matches(shown, observed))
+                && matches(&self.snapshot(page.id.clone(), page.failed, cx), observed)
         })
     }
 
@@ -246,6 +253,22 @@ impl CommitPanel {
                 drop(value);
                 self.update_carrier(&text, cx);
                 cx.notify();
+            }
+            Request::TraverseDraft(observed, backwards) => {
+                if window.is_window_active()
+                    && observed.focus == CommitPanelFocus::Draft
+                    && observed.editable()
+                    && self.accept_with(&observed, cx, Snapshot::same_focus_authority)
+                    && self.presentation.page.as_ref().is_some_and(|page| {
+                        page.surface
+                            .entity()
+                            .read(cx)
+                            .focus_handle(cx)
+                            .contains_focused(window, cx)
+                    })
+                {
+                    self.move_checked_focus(&observed, backwards, window, cx);
+                }
             }
             Request::Focused(observed) => {
                 if self.accept(&observed, cx) && observed.editable() {
@@ -359,6 +382,16 @@ impl CommitPanel {
         let Some(observed) = self.displayed(cx) else {
             return;
         };
+        self.move_checked_focus(&observed, backwards, window, cx);
+    }
+
+    fn move_checked_focus(
+        &mut self,
+        observed: &Snapshot,
+        backwards: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let composing = observed
             .draft
             .0
