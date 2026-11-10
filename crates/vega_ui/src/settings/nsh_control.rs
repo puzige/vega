@@ -55,6 +55,7 @@ impl FocusTarget {
                     displayed: None,
                     label: String::new(),
                     hint: String::new(),
+                    tooltip: false,
                     report_hover: false,
                     selected: false,
                     enabled: false,
@@ -77,6 +78,7 @@ struct Target {
     target: FocusTarget,
     label: String,
     hint: String,
+    tooltip: bool,
     report_hover: bool,
     selected: bool,
     enabled: bool,
@@ -110,6 +112,7 @@ impl NativeComponent for Target {
             "focus-request" => self.focus_request = value.and_then(Value::as_u64),
             "state" => self.displayed = value.cloned(),
             "report-hover" => self.report_hover = value.and_then(Value::as_bool).unwrap_or(false),
+            "tooltip" => self.tooltip = value.and_then(Value::as_bool).unwrap_or(false),
             "hint" => self.hint = value.and_then(Value::as_str).unwrap_or_default().to_owned(),
             "label" => self.label = value.and_then(Value::as_str).unwrap_or_default().to_owned(),
             "selected" => self.selected = value.and_then(Value::as_bool).unwrap_or(false),
@@ -145,6 +148,10 @@ impl NativeComponent for Target {
             }
         } else if matches!(self.semantics, Semantics::Selection) {
             element = element.aria_selected(self.selected);
+        }
+        if self.tooltip && self.enabled && !self.hint.is_empty() {
+            let hint = self.hint.clone();
+            element = element.tooltip(move |_, cx| crate::icons::tooltip(hint.clone(), cx));
         }
         if self.report_hover && self.enabled {
             let hover_state = displayed.clone();

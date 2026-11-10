@@ -174,6 +174,7 @@ impl SettingsView {
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
+                this.invalidate_help_state();
                 if let Some(page) = &mut this.input_preferences_presentation {
                     page.revoke();
                 }

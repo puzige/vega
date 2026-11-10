@@ -11,6 +11,11 @@ pub(in crate::settings) struct Presentation {
     surface: Surface<Snapshot, Request>,
     height: f32,
     pending: bool,
+    help_target: super::super::nsh_control::FocusTarget,
+    help_epoch: u64,
+    help_focused: bool,
+    keyboard_modality: bool,
+    _focus_events: Vec<gpui_kit::Subscription>,
 }
 
 #[derive(Clone)]
@@ -20,6 +25,9 @@ struct Snapshot {
     phase: UpdatePhase,
     automatic: bool,
     help_open: bool,
+    help_epoch: u64,
+    help_visible: bool,
+    help_focused: bool,
     pending: bool,
     version: String,
     latest: Option<String>,
@@ -44,7 +52,7 @@ struct Decision {
 enum Request {
     Decide(Decision),
     Layout(f32),
-    Help(ProjectionId, bool),
+    Help(u64, bool),
     OpenLink(String),
 }
 
@@ -68,6 +76,21 @@ fn allowed(phase: &UpdatePhase, automatic: bool, action: UpdateRequest) -> bool 
 }
 
 impl SettingsView {
+    pub(in crate::settings) fn invalidate_help_state(&mut self) {
+        if let Some(page) = &mut self.updater_presentation {
+            page.help_epoch = page.help_epoch.wrapping_add(1);
+        }
+    }
+    fn updater_help_visible(&self, cx: &App) -> bool {
+        self.section == 1
+            && !self.palette_open
+            && self.pending_section.is_none()
+            && !self.pending_settings_close
+            && cx
+                .try_global::<super::super::SettingsOpen>()
+                .is_some_and(|open| open.0)
+    }
+
     pub(in crate::settings) fn close_updater_help(
         &mut self,
         window: &mut Window,
@@ -77,9 +100,10 @@ impl SettingsView {
             return false;
         }
         self.settings_help_open = None;
+        self.invalidate_help_state();
         if let Some(page) = &self.updater_presentation {
             page.surface.publish(self.update_snapshot(cx));
-            page.surface.focus(window, cx);
+            window.focus(&page.help_target.handle, cx);
         }
         cx.notify();
         true
@@ -134,6 +158,15 @@ impl SettingsView {
             revision: self.updater_revision,
             phase: self.updater.phase.clone(),
             automatic: self.updater.automatic,
+            help_epoch: self
+                .updater_presentation
+                .as_ref()
+                .map_or(0, |p| p.help_epoch),
+            help_visible: self.updater_help_visible(cx),
+            help_focused: self
+                .updater_presentation
+                .as_ref()
+                .is_some_and(|p| p.help_focused && p.keyboard_modality),
             help_open: self.settings_help_open.as_deref() == Some(HELP_ID),
             pending: self
                 .updater_presentation
@@ -164,7 +197,42 @@ impl SettingsView {
         if self.updater_presentation.is_none() {
             let (surface, mut requests) =
                 Surface::new_transparent(self.update_snapshot(cx), render, window, cx);
+            let target = super::super::nsh_control::FocusTarget::new(cx);
+            let owner = cx.weak_entity();
+            target.register(
+                surface.entity().read(cx),
+                HELP_ID,
+                super::super::nsh_control::Semantics::Disclosure,
+                move |stamp, cx| {
+                    let Some(owner) = owner.upgrade() else {
+                        return false;
+                    };
+                    let settings = owner.read(cx);
+                    settings.updater_help_visible(cx)
+                        && settings
+                            .updater_presentation
+                            .as_ref()
+                            .is_some_and(|p| stamp.as_u64() == Some(p.help_epoch))
+                },
+            );
+            let gained = cx.on_focus(&target.handle, window, |settings, _, cx| {
+                if let Some(page) = &mut settings.updater_presentation {
+                    page.help_focused = true;
+                    cx.notify();
+                }
+            });
+            let lost = cx.on_blur(&target.handle, window, |settings, _, cx| {
+                if let Some(page) = &mut settings.updater_presentation {
+                    page.help_focused = false;
+                    cx.notify();
+                }
+            });
             self.updater_presentation = Some(Presentation {
+                help_target: target,
+                help_epoch: 0,
+                help_focused: false,
+                keyboard_modality: window.last_input_was_keyboard(),
+                _focus_events: vec![gained, lost],
                 surface,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
                 pending: false,
@@ -203,9 +271,14 @@ impl SettingsView {
                                     }
                                     let _ = command.reply.send(accepted);
                                 }
-                                Request::Help(id, open)
-                                    if this.section == 1 && this.updater_identity.matches(&id) =>
+                                Request::Help(epoch, open)
+                                    if this.updater_help_visible(cx)
+                                        && this
+                                            .updater_presentation
+                                            .as_ref()
+                                            .is_some_and(|p| p.help_epoch == epoch) =>
                                 {
+                                    this.invalidate_help_state();
                                     this.settings_help_open = open.then(|| HELP_ID.to_owned());
                                     cx.notify();
                                 }
@@ -239,6 +312,9 @@ impl SettingsView {
             })
             .detach();
         }
+        if let Some(page) = &mut self.updater_presentation {
+            page.keyboard_modality = window.last_input_was_keyboard();
+        }
         let snapshot = self.update_snapshot(cx);
         let Some(page) = &mut self.updater_presentation else {
             return gpui_kit::div().into_any_element();
@@ -248,6 +324,7 @@ impl SettingsView {
         gpui_kit::div()
             .on_mouse_down_out(cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
                 if this.settings_help_open.as_deref() == Some(HELP_ID) {
+                    this.invalidate_help_state();
                     this.settings_help_open = None;
                     cx.notify();
                 }
@@ -345,45 +422,91 @@ fn action_button(
 }
 
 fn update_help(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
-    let trigger = focus_ring(state, true)
-        .focusable(true)
-        .role(AccessibilityRole::Button)
-        .label(move || state.with(|_| vega_i18n::t("settings.updater.help_label")))
-        .hint(move || state.with(|_| vega_i18n::t("settings.updater.help")))
-        .accessibility_state(move || AccessibilityState {
-            expanded: Some(state.get().help_open),
-            ..Default::default()
-        })
+    let activate = commands.clone();
+    let hover = signal(None::<u64>);
+    let trigger = view()
+        .relative()
+        .accessible(false)
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
         .items_center()
         .justify_center()
         .bg(move || {
             let colors = state.get().colors;
-            crate::nsh::color(if state.get().help_open {
+            crate::nsh::color(if state.get().help_open || state.get().help_focused {
                 colors.bg_active
+            } else if hover.get() == Some(state.get().help_epoch) {
+                colors.bg_hover
             } else {
                 colors.bg_base.opacity(0.)
             })
         })
-        .hover(move |style| style.bg(crate::nsh::color(state.get().colors.bg_hover)))
-        .tooltip(text(move || {
-            state.with(|_| vega_i18n::t("settings.updater.help"))
-        }))
         .child(
             svg(nsh_core::element::ImageSrc::svg_markup(
                 &crate::icons::nsh_source(crate::icons::Icon::Help).unwrap_or_default(),
             ))
+            .accessible(false)
             .size(px(Layout::ICON_SIZE))
             .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
             .tint_color(move || crate::nsh::color(state.get().colors.text_secondary).to_hsla()),
+        )
+        .child(
+            native(HELP_ID)
+                .absolute()
+                .inset_0()
+                .prop("report-hover", serde_json::Value::Bool(true))
+                .prop("tooltip", move || {
+                    serde_json::Value::Bool(!state.get().help_open)
+                })
+                .prop("state", move || {
+                    serde_json::Value::from(state.get().help_epoch)
+                })
+                .prop("enabled", move || {
+                    serde_json::Value::from(state.get().help_visible)
+                })
+                .prop("selected", move || {
+                    serde_json::Value::from(state.get().help_open)
+                })
+                .prop("label", move || {
+                    serde_json::Value::from(
+                        state.with(|_| vega_i18n::t("settings.updater.help_label")),
+                    )
+                })
+                .prop("hint", move || {
+                    serde_json::Value::from(state.with(|_| vega_i18n::t("settings.updater.help")))
+                })
+                .on_native_event(move |event: &NativeEvent| {
+                    let current = state.get_untracked();
+                    if &*event.name == "hover"
+                        && current.help_visible
+                        && event.data.get(0).and_then(serde_json::Value::as_u64)
+                            == Some(current.help_epoch)
+                    {
+                        hover.set(
+                            (event.data.get(1).and_then(serde_json::Value::as_bool) == Some(true))
+                                .then_some(current.help_epoch),
+                        );
+                    }
+                    if &*event.name == "activate"
+                        && current.help_visible
+                        && event.data.as_u64() == Some(current.help_epoch)
+                    {
+                        let commands = activate.clone();
+                        spawn(async move {
+                            let _ = commands
+                                .send(Request::Help(current.help_epoch, !current.help_open))
+                                .await;
+                        });
+                    }
+                }),
         );
     nsh_base::popover()
-        .open(move || Some(state.get().help_open))
+        .open(move || Some(state.get().help_visible && state.get().help_open))
         .align(nsh_core::overlay::Align::End)
         .on_open_change(move |event: &nsh_base::PopoverEvent| {
             if let nsh_base::PopoverEvent::OpenChange(value, _) = event {
                 let commands = commands.clone();
-                let request = Request::Help(state.get_untracked().id, *value);
+                let request = Request::Help(state.get_untracked().help_epoch, *value);
                 spawn(async move {
                     let _ = commands.send(request).await;
                 });

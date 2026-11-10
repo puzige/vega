@@ -96,6 +96,7 @@ impl SettingsView {
             return;
         }
         self.palette_open = open;
+        self.invalidate_help_state();
         self.invalidate_model_controls();
         self.sync_default_model(cx);
         if let Some(page) = &mut self.input_preferences_presentation {
@@ -278,6 +279,7 @@ impl SettingsView {
     }
 
     pub(crate) fn discard_default_permission_intent(&mut self) {
+        self.invalidate_help_state();
         if let Some(page) = &mut self.input_preferences_presentation {
             page.revoke();
         }
