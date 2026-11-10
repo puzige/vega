@@ -1711,7 +1711,7 @@ impl ThreadsBlock {
                         anchored()
                             .anchor(Anchor::TopRight)
                             .position_mode(AnchoredPositionMode::Local)
-                            .position(point(px(0.), px(Layout::SIDEBAR_ACTION_SIZE)))
+                            .position(point(px(4.), px(Layout::SIDEBAR_ACTION_SIZE + 4.)))
                             .snap_to_window_with_margin(px(8.))
                             .child(
                                 deferred(self.render_action_menu(

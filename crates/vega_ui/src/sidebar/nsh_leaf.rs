@@ -18,9 +18,12 @@ mod geometry;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Presentation {
     Column,
+    TaskMenu,
     Row,
     DeleteConfirmation,
 }
+
+const TASK_MENU_GAP: f32 = 4.;
 
 #[derive(Clone, PartialEq)]
 pub(super) struct Item {
@@ -352,6 +355,11 @@ impl Leaf {
             (index as f32 + if self.snapshot.text.is_some() { 2. } else { 0. })
                 * Typography::SIDEBAR_LINE_HEIGHT,
         );
+        let top = if self.snapshot.presentation == Presentation::TaskMenu {
+            top + px(index as f32 * TASK_MENU_GAP + 5.)
+        } else {
+            top
+        };
         let bottom = top + px(Typography::SIDEBAR_LINE_HEIGHT);
         let viewport = scroll.bounds().size.height;
         let y = if top + offset.y < px(0.) {
@@ -549,13 +557,23 @@ pub(super) fn menu(
     guard: impl Fn(&App) -> bool + 'static,
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let task_menu = text.is_none();
     let height = (items.len() as f32 + if text.is_some() { 2. } else { 0. })
         * Typography::SIDEBAR_LINE_HEIGHT;
+    let height = if task_menu {
+        height + items.len().saturating_sub(1) as f32 * TASK_MENU_GAP
+    } else {
+        height
+    };
     Host {
         key: key.into(),
         text,
         items,
-        presentation: Presentation::Column,
+        presentation: if task_menu {
+            Presentation::TaskMenu
+        } else {
+            Presentation::Column
+        },
         height,
         guard: Rc::new(guard),
         handler: Rc::new(handler),
@@ -955,6 +973,8 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             let mut actions = ns::view().w_full().flex_col();
             if snapshot.presentation == Presentation::Row {
                 actions = actions.flex_row();
+            } else if snapshot.presentation == Presentation::TaskMenu {
+                actions = actions.gap(ns::px(TASK_MENU_GAP));
             }
             for (index, item) in items.into_iter().enumerate() {
                 if let Some(style) = item.label_style {
@@ -1037,6 +1057,9 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                             });
                         }
                     });
+                if snapshot.presentation == Presentation::TaskMenu {
+                    button = button.px(ns::px(7.));
+                }
                 if item.thread_title {
                     // The GPUI row owns the leading gutter for drag and context-menu events.
                     button = button.border(ns::px(0.)).pl(ns::px(0.)).pr(ns::px(8.));
