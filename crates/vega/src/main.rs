@@ -138,6 +138,7 @@ fn open_workspace(
             Some("VegaWindow && !Terminal && !NshCommandPalette"),
         ),
         KeyBinding::new("escape", CloseSettings, Some("WorkspaceMenu")),
+        KeyBinding::new("escape", CloseSettings, Some("NshDeleteConfirm")),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
     ]);
     vega_ui::init(cx);

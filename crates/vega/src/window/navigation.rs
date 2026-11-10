@@ -103,10 +103,11 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
     cx.on_action(move |_: &CloseSettings, cx| {
         let root = close.clone();
         cx.defer(move |cx| {
-            let _ = window.update(cx, |_, _, cx| {
+            let _ = window.update(cx, |_, window, cx| {
                 let _ = root.update(cx, |root, cx| {
                     if cx.global::<PendingDeleteConfirm>().0.is_some() {
-                        cx.set_global(PendingDeleteConfirm(None));
+                        PendingDeleteConfirm::cancel(window, cx);
+                        return;
                     } else if cx.global::<SettingsOpen>().0 {
                         root.sync_navigation(cx);
                         if root.navigation.cursor > 0 {

@@ -174,7 +174,19 @@ pub struct OpenedThread(pub Option<Thread>);
 
 impl Global for OpenedThread {}
 
-pub struct PendingDeleteConfirm(pub Option<Thread>);
+#[derive(Default)]
+pub struct PendingDeleteConfirm(pub Option<Thread>, Option<FocusHandle>);
+
+impl PendingDeleteConfirm {
+    pub fn cancel(window: &mut Window, cx: &mut App) {
+        let focus = cx.global::<Self>().1.clone();
+        cx.set_global(Self::default());
+        if let Some(focus) = focus {
+            window.focus(&focus, cx);
+        }
+        cx.refresh_windows();
+    }
+}
 
 impl Global for PendingDeleteConfirm {}
 
@@ -275,7 +287,7 @@ pub fn init(workspace: vega_conversation::types::StartupWorkspace, cx: &mut App)
     cx.set_global(ProjectsCollapsed(config.ui.projects_collapsed));
     cx.set_global(SessionsCollapsed(config.ui.sessions_collapsed));
     cx.set_global(OpenedThread(None));
-    cx.set_global(PendingDeleteConfirm(None));
+    cx.set_global(PendingDeleteConfirm::default());
     cx.set_global(SidebarWidth(config::clamp_sidebar_width(
         config.ui.sidebar_width,
     )));
@@ -483,7 +495,7 @@ impl Sidebar {
             .update(cx, |block, cx| block.mutation_route(cx));
         let worker_database = database.clone();
         let id = thread.id.clone();
-        cx.set_global(PendingDeleteConfirm(None));
+        cx.set_global(PendingDeleteConfirm::default());
         crate::navigation::begin_task_mutation(cx);
         let worker = cx.background_executor().spawn(async move {
             conversation::persist_thread_deletion(&worker_database, &id)

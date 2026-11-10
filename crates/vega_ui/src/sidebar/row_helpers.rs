@@ -7,9 +7,6 @@ pub fn render_delete_confirm_overlay(
 ) -> AnyElement {
     let observed = thread.clone();
     let thread_id = thread.id.clone();
-    let mut delete =
-        nsh_leaf::Item::action(vega_i18n::t("ui.delete"), Some(crate::icons::Icon::Trash));
-    delete.danger = true;
     div()
         .absolute()
         .inset_0()
@@ -21,35 +18,22 @@ pub fn render_delete_confirm_overlay(
         .child(
             div()
                 .w(px(320.))
-                .on_mouse_down_out(|_, _, cx| {
-                    cx.set_global(PendingDeleteConfirm(None));
-                    cx.refresh_windows();
-                })
-                .child(nsh_leaf::host(
+                .max_w_full()
+                .on_mouse_down_out(|_, window, cx| PendingDeleteConfirm::cancel(window, cx))
+                .child(nsh_leaf::delete_confirmation(
                     format!("sidebar-delete-confirm-{thread_id}"),
-                    Some(format!(
-                        "{}\n{}",
-                        vega_i18n::t("ui.delete_conversation"),
-                        vega_i18n::t_args(
-                            "ui.delete_title_all_messages_and_tool_call_records",
-                            &[("title", &thread_title(thread))],
-                        )
-                    )),
-                    vec![
-                        nsh_leaf::Item::action(vega_i18n::t("ui.cancel"), None),
-                        delete,
-                    ],
-                    true,
-                    Typography::SIDEBAR_LINE_HEIGHT * 6.,
+                    vega_i18n::t_args(
+                        "ui.delete_title_all_messages_and_tool_call_records",
+                        &[("title", &thread_title(thread))],
+                    ),
                     move |cx| {
                         cx.try_global::<PendingDeleteConfirm>()
                             .and_then(|value| value.0.as_ref())
                             == Some(&observed)
                     },
-                    move |index, _, _, cx| {
+                    move |index, _, window, cx| {
                         if index == 0 {
-                            cx.set_global(PendingDeleteConfirm(None));
-                            cx.refresh_windows();
+                            PendingDeleteConfirm::cancel(window, cx);
                         } else if cx
                             .global::<PendingDeleteConfirm>()
                             .0

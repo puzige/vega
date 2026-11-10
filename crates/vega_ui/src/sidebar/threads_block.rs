@@ -478,10 +478,13 @@ impl ThreadsBlock {
     /// the window root renders the confirmation overlay (ui-spec §4.6: no
     /// system modal). Any inline rename is folded first so the overlay's Esc
     /// semantics stay unambiguous.
-    fn request_delete(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+    fn request_delete(&mut self, thread: &Thread, row_key: &str, cx: &mut Context<Self>) {
         self.close_actions();
         self.editing = None;
-        cx.set_global(PendingDeleteConfirm(Some(thread.clone())));
+        cx.set_global(PendingDeleteConfirm(
+            Some(thread.clone()),
+            self.thread_action_focuses.get(row_key).cloned(),
+        ));
         cx.refresh_windows();
     }
 
@@ -1145,7 +1148,7 @@ impl ThreadsBlock {
                 cx.set_global(SettingsOpen(true));
                 cx.refresh_windows();
             }
-            (true, 8) | (false, 6) => self.request_delete(&thread, cx),
+            (true, 8) | (false, 6) => self.request_delete(&thread, &row_key, cx),
             (_, index) => {
                 let base_count = if project_bound { 9 } else { 7 };
                 let has_fork = Self::supports_fork(&thread);

@@ -11,7 +11,16 @@ use std::rc::{Rc, Weak};
 use tokio::sync::mpsc;
 
 pub(super) mod chrome;
+pub(super) use confirmation::delete_confirmation;
+mod confirmation;
 mod geometry;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    Column,
+    Row,
+    DeleteConfirmation,
+}
 
 #[derive(Clone, PartialEq)]
 pub(super) struct Item {
@@ -133,7 +142,7 @@ struct Snapshot {
     colors: ThemeColors,
     selected: Option<usize>,
     recovery: bool,
-    horizontal: bool,
+    presentation: Presentation,
 }
 
 impl Snapshot {
@@ -421,7 +430,10 @@ impl Leaf {
             }
         }
         match Key::from_event(event) {
-            Key::Next(backwards) if self.menu_scroll.is_some() => {
+            Key::Next(backwards)
+                if self.menu_scroll.is_some()
+                    || self.snapshot.presentation == Presentation::DeleteConfirmation =>
+            {
                 self.step_menu(backwards, cx);
                 cx.stop_propagation();
             }
@@ -464,7 +476,7 @@ pub(super) struct Host {
     pub key: gpui_kit::SharedString,
     pub text: Option<String>,
     pub items: Vec<Item>,
-    pub horizontal: bool,
+    presentation: Presentation,
     pub height: f32,
     pub guard: Guard,
     pub handler: Handler,
@@ -491,7 +503,11 @@ pub(super) fn host(
         key: key.into(),
         text,
         items,
-        horizontal,
+        presentation: if horizontal {
+            Presentation::Row
+        } else {
+            Presentation::Column
+        },
         height,
         guard: Rc::new(guard),
         handler: Rc::new(handler),
@@ -513,7 +529,7 @@ pub(super) fn focused_actions(
         key: key.into(),
         text: None,
         items,
-        horizontal: true,
+        presentation: Presentation::Row,
         height,
         guard: Rc::new(guard),
         handler: Rc::new(handler),
@@ -537,7 +553,7 @@ pub(super) fn menu(
         key: key.into(),
         text,
         items,
-        horizontal: false,
+        presentation: Presentation::Column,
         height,
         guard: Rc::new(guard),
         handler: Rc::new(handler),
@@ -552,7 +568,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         key,
         text,
         items,
-        horizontal,
+        presentation,
         height,
         guard,
         handler,
@@ -571,7 +587,8 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                         None,
                         &this.snapshot.id,
                         &this.snapshot.actions(),
-                        window.modifiers().shift,
+                        this.snapshot.presentation != Presentation::DeleteConfirmation
+                            && window.modifiers().shift,
                     ) {
                         this.selected = Some(selected);
                     }
@@ -592,7 +609,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 colors: theme(cx).colors,
                 selected: None,
                 recovery: false,
-                horizontal,
+                presentation,
             },
             surface: None,
             focus,
@@ -643,7 +660,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             || this.guard_valid != next_guard
             || this.authority != authority
             || this.snapshot.text != text
-            || this.snapshot.horizontal != horizontal
+            || this.snapshot.presentation != presentation
             || this.snapshot.items.len() != items.len()
             || this.snapshot.items.iter().zip(&items).any(|(a, b)| {
                 a.label != b.label
@@ -679,12 +696,14 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             .collect();
         this.snapshot.language = vega_i18n::language();
         this.snapshot.colors = theme(cx).colors;
-        this.snapshot.horizontal = horizontal;
+        this.snapshot.presentation = presentation;
         this.handler = handler;
         this.guard = guard;
         this.guard_valid = next_guard;
         this.menu_scroll = menu_scroll;
-        if entering && this.menu_scroll.is_some() {
+        if entering
+            && (this.menu_scroll.is_some() || presentation == Presentation::DeleteConfirmation)
+        {
             window.focus(&this.focus, cx);
         }
         this.focus = this
@@ -726,7 +745,18 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             .role(Role::Group)
             .capture_key_down(cx.listener(Leaf::key))
             .child(surface.entity());
-        if this.menu_scroll.is_some() {
+        if presentation == Presentation::DeleteConfirmation {
+            host = host
+                .key_context("NshDeleteConfirm")
+                .role(Role::AlertDialog)
+                .aria_label(vega_i18n::t("ui.delete_conversation").to_owned())
+                .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
+                    if (this.guard)(cx) {
+                        PendingDeleteConfirm::cancel(window, cx);
+                    }
+                    cx.stop_propagation();
+                }));
+        } else if this.menu_scroll.is_some() {
             host = host
                 .key_context("ThreadActionsMenu")
                 .on_action(cx.listener(|this, _: &NextThreadAction, _, cx| {
@@ -900,6 +930,9 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                     }
                 },
             );
+            if snapshot.presentation == Presentation::DeleteConfirmation && !snapshot.recovery {
+                return confirmation::render(content, &snapshot, commands.clone());
+            }
             if let Some(text) = &snapshot.text {
                 content = content.child(
                     ns::text(text.clone())
@@ -916,7 +949,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 snapshot.items.clone()
             };
             let mut actions = ns::view().w_full().flex_col();
-            if snapshot.horizontal {
+            if snapshot.presentation == Presentation::Row {
                 actions = actions.flex_row();
             }
             for (index, item) in items.into_iter().enumerate() {
@@ -1012,7 +1045,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 if item.compact {
                     button = button.px(ns::px(0.)).justify_center();
                 }
-                if snapshot.horizontal {
+                if snapshot.presentation == Presentation::Row {
                     button = button.flex_1();
                 }
                 if quiet {

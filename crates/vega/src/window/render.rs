@@ -1,6 +1,10 @@
 use super::workspace::nsh_workspace;
 use super::*;
 
+fn keep_delete_confirmation_open<A: Action>(_: &A, _: &mut Window, cx: &mut App) {
+    cx.stop_propagation();
+}
+
 fn clear_confirmed_reasoning_default_ledger(
     failures: &mut std::collections::HashMap<(String, String), ReasoningDefaultFailure>,
     provider: &str,
@@ -757,6 +761,24 @@ impl Render for VegaWindow {
         let preparation_error = self.render_preparation_error(cx);
         div()
             .key_context("VegaWindow")
+            .when(pending_delete.is_some(), |root| {
+                use vega_ui::command_palette::{
+                    OpenPalette, OpenWorkspacePicker, ToggleWorkspaceTerminal,
+                };
+                use vega_ui::navigation::{
+                    EditorNavigateBack, EditorNavigateForward, NavigateBack, NavigateForward,
+                };
+                root.capture_action(keep_delete_confirmation_open::<OpenSettings>)
+                    .capture_action(keep_delete_confirmation_open::<NewThread>)
+                    .capture_action(keep_delete_confirmation_open::<ToggleSidebar>)
+                    .capture_action(keep_delete_confirmation_open::<OpenPalette>)
+                    .capture_action(keep_delete_confirmation_open::<OpenWorkspacePicker>)
+                    .capture_action(keep_delete_confirmation_open::<ToggleWorkspaceTerminal>)
+                    .capture_action(keep_delete_confirmation_open::<NavigateBack>)
+                    .capture_action(keep_delete_confirmation_open::<NavigateForward>)
+                    .capture_action(keep_delete_confirmation_open::<EditorNavigateBack>)
+                    .capture_action(keep_delete_confirmation_open::<EditorNavigateForward>)
+            })
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::palette_open_workspace))
