@@ -1,3 +1,5 @@
+mod chart_target;
+
 use std::sync::Arc;
 
 use gpui_kit::{App, Context, Window};
@@ -13,6 +15,9 @@ pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     id: ProjectionId,
     height: f32,
+    chart_focus: gpui_kit::FocusHandle,
+    chart_focused: bool,
+    _focus_events: [gpui_kit::Subscription; 2],
 }
 
 #[derive(Clone)]
@@ -26,6 +31,7 @@ struct Snapshot {
     range: usize,
     mode: usize,
     selected: Option<usize>,
+    chart_focused: bool,
     colors: ThemeColors,
 }
 
@@ -84,6 +90,11 @@ impl SettingsView {
             range: if self.usage.range_days == 30 { 30 } else { 7 },
             mode: self.usage.heatmap_mode,
             selected: self.usage.selected_day,
+            chart_focused: self
+                .usage
+                .presentation
+                .as_ref()
+                .is_some_and(|p| p.chart_focused),
             colors: vega_theme::theme(cx).colors,
         }
     }
@@ -105,10 +116,33 @@ impl SettingsView {
             let id = ProjectionId::new();
             let (surface, mut requests) =
                 Surface::new_transparent(self.usage_snapshot(cx, id.clone()), render, window, cx);
+            let chart_focus = cx.focus_handle().tab_stop(true);
+            chart_target::register(
+                &surface,
+                cx.weak_entity(),
+                id.clone(),
+                chart_focus.clone(),
+                cx,
+            );
+            let focus_in = cx.on_focus(&chart_focus, window, |this, window, cx| {
+                if let Some(page) = &mut this.usage.presentation {
+                    page.chart_focused = page.chart_focus.is_focused(window);
+                    cx.notify();
+                }
+            });
+            let focus_out = cx.on_blur(&chart_focus, window, |this, _, cx| {
+                if let Some(page) = &mut this.usage.presentation {
+                    page.chart_focused = false;
+                    cx.notify();
+                }
+            });
             self.usage.presentation = Some(Presentation {
                 surface,
                 id,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
+                chart_focus,
+                chart_focused: false,
+                _focus_events: [focus_in, focus_out],
             });
             cx.spawn_in(window, async move |this, cx| {
                 while let Some(request) = requests.recv().await {
@@ -516,12 +550,6 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
     let data = computed(move || state.with(charts));
     let heat_width = signal(0.0f32);
     let trend_width = signal(0.0f32);
-    let chart_ref = element_ref();
-    let focused = signal(false);
-    chart_ref.on_focus_in(move || focused.set(true));
-    chart_ref.on_focus_out(move || focused.set(false));
-    let click = commands.clone();
-    let keys = commands.clone();
     view()
         .w_full()
         .gap_4()
@@ -643,64 +671,16 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                 )
                 .child(
                     view()
-                        .element_ref(&chart_ref)
-                        .role(AccessibilityRole::Button)
-                        .focusable(true)
-                        .label(move || {
-                            state.with(|_| vega_i18n::t("settings.usage.daily_model_tokens"))
-                        })
+                        .relative()
                         .outline(px(1.))
                         .outline_offset(px(-1.))
                         .outline_color(move || {
-                            crate::nsh::color(if focused.get() {
+                            crate::nsh::color(if state.get().chart_focused {
                                 state.get().colors.accent
                             } else {
                                 gpui_kit::transparent_black().into()
                             })
                         })
-                        .disabled(move || data.get().dates.is_empty())
-                        .on_press(move |event: &PressEvent| {
-                            chart_ref.focus();
-                            if let Some(index) = day_at(
-                                event.position.x.0,
-                                trend_width.get_untracked(),
-                                data.get_untracked().dates.len(),
-                            ) {
-                                actions.send(click.clone(), Action::Day(index));
-                            }
-                        })
-                        .child(when(
-                            move || focused.get() && state.get().visible && !actions.pending.get(),
-                            move || {
-                                for (key, direction) in
-                                    [("left", -1), ("right", 1), ("home", -2), ("end", 2)]
-                                {
-                                    let commands = keys.clone();
-                                    on_key_with(
-                                        key,
-                                        KeyOptions {
-                                            when: nsh_core::keymap::When::NotEditing,
-                                            ..Default::default()
-                                        },
-                                        move |_| {
-                                            let current = data.get_untracked();
-                                            if current.dates.is_empty() {
-                                                return;
-                                            }
-                                            let index = match direction {
-                                                -2 => 0,
-                                                2 => current.dates.len() - 1,
-                                                -1 => current.selected.saturating_sub(1),
-                                                _ => (current.selected + 1)
-                                                    .min(current.dates.len() - 1),
-                                            };
-                                            actions.send(commands.clone(), Action::Day(index));
-                                        },
-                                    );
-                                }
-                                view()
-                            },
-                        ))
                         .child(
                             canvas(move || {
                                 trend(&data.get(), trend_width.get(), state.get().colors)
@@ -716,6 +696,12 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                                     }
                                 },
                             ),
+                        )
+                        .child(
+                            native(chart_target::NAME)
+                                .prop("state", move || chart_target::state_key(&state.get()))
+                                .absolute()
+                                .inset_0(),
                         ),
                 )
                 .child(
