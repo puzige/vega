@@ -549,9 +549,14 @@ impl IntoElement for Mounted {
     }
 }
 
+struct PrepaintClip {
+    bounds: Bounds<Pixels>,
+    list: Option<Bounds<Pixels>>,
+}
+
 impl Element for Mounted {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<PrepaintClip>;
     fn id(&self) -> Option<ElementId> {
         Some("nsh-user-disclosure-mount".into())
     }
@@ -575,59 +580,63 @@ impl Element for Mounted {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
-        let previous = self.lease.geometry.replace(None);
+    ) -> Self::PrepaintState {
         self.lease.painted.set(None);
         *self.lease.displayed.borrow_mut() = None;
-        if let Some(id) = id {
+        let clip = id.map(|id| {
             window.with_element_state::<Rc<Mount>, _>(id, |_, _| ((), self.lease.clone()));
-            if let Some(owner) = self.owner.upgrade() {
-                let stream = owner.read(cx);
-                let list = crate::conversation_stream::selection_menu::mounted::list_bounds(
+            PrepaintClip {
+                bounds: bounds.intersect(&window.content_mask().bounds),
+                list: crate::conversation_stream::selection_menu::mounted::list_bounds(
                     &self.owner,
                     window,
                     cx,
-                )
-                .unwrap_or_else(|| stream.list.viewport_bounds());
-                let clip = bounds
-                    .intersect(&window.content_mask().bounds)
-                    .intersect(&list);
-                let scroll = stream.list.logical_scroll_top();
-                if !clip.is_empty() {
-                    self.lease.geometry.set(Some(Geometry {
-                        bounds,
-                        clip,
-                        list,
-                        viewport: window.viewport_size(),
-                        foreground: stream.foreground_height,
-                        scroll: (scroll.item_ix, scroll.offset_in_item),
-                        scale: window.scale_factor(),
-                        window: window.window_handle().window_id(),
-                    }));
-                }
+                ),
             }
-        }
-        if previous != self.lease.geometry.get() {
+        });
+        self.child.prepaint(window, cx);
+        clip
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        clip: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+        let geometry = clip.as_ref().and_then(|clip| {
+            let owner = self.owner.upgrade()?;
+            let stream = owner.read(cx);
+            let list = clip.list.unwrap_or_else(|| stream.list.viewport_bounds());
+            let visible = clip.bounds.intersect(&list);
+            if visible.is_empty() {
+                return None;
+            }
+            let scroll = stream.list.logical_scroll_top();
+            Some(Geometry {
+                bounds,
+                clip: visible,
+                list,
+                viewport: window.viewport_size(),
+                foreground: stream.foreground_height,
+                scroll: (scroll.item_ix, scroll.offset_in_item),
+                scale: window.scale_factor(),
+                window: window.window_handle().window_id(),
+            })
+        });
+        if self.lease.geometry.replace(geometry) != geometry {
             *self.lease.frame.borrow_mut() = ProjectionId::new();
             let _ = self.host.update(cx, |host, cx| {
                 host.invalidate();
                 cx.notify();
             });
         }
-        self.child.prepaint(window, cx);
-    }
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.child.paint(window, cx);
-        self.lease.painted.set(self.lease.geometry.get());
+        self.lease.painted.set(geometry);
         *self.lease.displayed.borrow_mut() = Some(self.displayed.clone());
     }
 }
