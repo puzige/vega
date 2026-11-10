@@ -1190,10 +1190,6 @@ fn scroll_to(surface: &Rc<Surface>, view: &NshView, x: f32, y: f32) {
 }
 
 #[cfg(test)]
-#[path = "access/replay_tests.rs"]
-mod replay_tests;
-
-#[cfg(test)]
 mod tests {
     use nsh_core::{
         AccessibilityActionDef, AccessibilityState, AccessibilityValue, AttributedText, ViewProps,

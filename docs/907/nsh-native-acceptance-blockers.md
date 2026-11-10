@@ -1,5 +1,69 @@
 # #907 — Native acceptance evidence inventory and blockers
 
+## Current AX repair and visual-loop boundary
+
+The user subsequently authorized the minimal fixed-version AX repair. Its implementation, 12/12 development regressions, independent closure of both review findings, restored-production-dependency checks and exact candidate binary are recorded in [AX replay repair](nsh-ax-replay-fix.md). This supersedes the earlier authorization denial below; the original crash evidence is retained as history, not a current prohibition.
+
+**Post-fix native crash replay, screenshot/action/recheck and visual parity remain unverified.** Current desktop preflight returned nonretryable `screen_recording_permission_missing` (`not_dispatched`). Enable the currently running Vega in macOS System Settings → Privacy & Security → Screen & System Audio Recording (or Screen Recording), plus Accessibility for operations. Restart if macOS requests it, then send a new message for fresh preflight. No permission was changed automatically or bypassed.
+
+The requested actual-layout overlay has not started because the user explicitly placed the real screenshot/operation/recheck loop first. No native row is newly complete; no merge or release is authorized.
+
+## Historical macOS attempt — 2026-11-10, native AX crash; repair then unauthorized
+
+At the time of this attempt, this section superseded the earlier macOS missing-permission/missing-observation status below. The current status above now supersedes it. It does not supersede the nine acceptance requirements or claim user sign-off. The user's latest feedback is that the development application differs substantially from the expected product; historical review and green CI do not resolve that feedback.
+
+### Version and isolation
+
+- Worktree branch `feat/907-nsh-full`, source HEAD `080a755caec8c5ccc9e48fe40b7aa4728d159ade`; production-source freeze `c5cd4ffeceda9665dace2602f1d2429fbf9849b1`. Fetch and fast-forward update found no remote increment; fetched master is already an ancestor. Only the pre-existing untracked Python cache directories were present before this attempt.
+- Host Darwin 24.6.0 arm64. Queried official rustc `1.98.0 (88d9e12ae 2026-08-18)` and Cargo `1.98.0 (797e8a9bc 2026-08-05)`; no new compilation or behavior suite was run.
+- Production executable `target/official-nsh-validation/debug/vega`, SHA-256 `bad6faffc8604cfbccfbae1796b28dc642160a5dd14320db771ab50d274ead46`. Two local test application identities contain byte-identical executable copies. They are local automation wrappers, not distribution packages or installed applications; no preview/demo was used.
+- Existing daily application is version `0.1.412`, executable SHA-256 `6d63bf0703842f2cc72142394b5eecfe54ac2730a05c9052341117511ba31553`. Its PID 43353 and production window were observed read-only; no input was dispatched to it, no active task was stopped, and no installed bytes were changed. Its source commit is unknown.
+- New test root `target/nsh-native-macos-20261110-r1-home` was created through the existing `VEGA_HOME` entry point. The previous `target/nsh-native-manual-home` was not used, copied or deleted. The new test root and wrappers are retained. No credentials were copied.
+
+### Reproduction and actual observations
+
+1. Launched the existing full production executable with the new absolute `VEGA_HOME`; the bare process was not addressable by the available computer-use tool. Stopped only that owned test process, PID 88510.
+2. Created an independent local test identity `ai.vega.nsh907.native.r1` under `target/native-907-r1/`, containing the identical executable and isolated-home environment. Native computer-use discovery read a real production AX tree: sidebar/navigation, Settings, empty-task content, composer field, permission/model controls and workspace toggles. The daily application was a different process and identifier.
+3. Subsequent screenshot/input attempts returned missing screenshot files or an inactive computer-use target. These errors were initially mistaken for an automation-identity issue. macOS crash reports then established that each observed test process had aborted after AX activation; repeated discovery had relaunched the crashing application. Do not count the failed screenshot or input requests as completed interactions.
+4. To capture the actual error, launched the identical executable under a second independent identity, `ai.vega.nsh907.native.r2`, with `RUST_BACKTRACE=1`, the same isolated root and redirected stderr. Native AX discovery again exposed the full application's initial controls; the process then aborted. Changing the test identity/process name did not prevent the failure.
+5. Raw stderr records `TreeUpdate includes duplicate child #13343736181152719449` in `accesskit_consumer 0.38.0`, `tree.rs:225`. The main-thread backtrace passes through AccessKit macOS tree update and GPUI Fast `Window::draw_roots`. macOS records SIGABRT. The duplicate ID deterministically maps to NSH surface key 35, node 9 using NSH's existing ID hash.
+
+This is an observed product failure during native accessibility activation, not a screen-recording permission denial. It is not evidence that every launch crashes without an AX client. No NSH screenshot was successfully obtained, so the user's visual/layout discrepancy remains uncharacterized. Empty isolated data explains only the observed lack of history/configuration, not an inferred layout result.
+
+Source-derived diagnosis: NSH `access.rs::synthetic` submits hierarchical nodes through a leaf-only synthetic builder and then rewrites parent children. Fast 0.1.9 retained-frame replay reattaches those leaves to the open parent; nested child references retained in their own nodes then duplicate parentage. This diagnosis has not been validated by a corrective patch. No Kit/Fast source was modified.
+
+### Evidence retained locally
+
+`target/nsh-native-20261110-ax-crash-evidence/` contains six original macOS crash reports, both attempts' stdout/stderr, the local wrapper plists and a hash manifest. Raw reports stay local because they include machine paths/identifiers. The initial bare-process stdout/stderr are empty and do not establish success. The tool-returned AX observations above are summarized, not represented as a saved raw transcript.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| `manifest.json` | `e30c3ba27e7f30b26f47f3d4e5dae68e9959e64d4cbbae6f905eb2ef50265ad9` |
+| `vega-907-native-r2.stderr` | `cd8d9f8bf5f76c98ed26ed6ace21b624d7fa261b50a41df646c9f3eb097d0e08` |
+| `VegaNSH907-2026-11-10-093204.ips` | `17beeb2be7fa6f45d74a2736b97fefbbe473f221ac4269203df39482f5762a39` |
+
+### Existing nine-row matrix — this attempt only
+
+All rows bind to source/binary/platform above. No row is complete. AX discovery is an observation, not an AX action/focus/IME pass.
+
+| Existing row | Status | Actual step/result | Remaining prerequisite/action |
+| --- | --- | --- | --- |
+| Main window/navigation | PARTIAL | Full production window and initial navigation controls observed through native AX; application subsequently crashed. | All task/project actions, draft/persistence, settings open/close and restart behavior remain unrun. |
+| Conversation | BLOCKED | No test history/provider configured; no conversation interaction. | Stable app plus authorized service/history; stream, Markdown/tools/thinking/subagents, anchors, selection/copy and scroll. |
+| Composer | BLOCKED | Initial input and controls observed only; no confirmed input dispatch. | Stable app; native Chinese candidates, editing, send/stop/recovery/queue, attachments/completion, selectors and Undo/Redo. |
+| Permissions/questions | NOT RUN | No approval/question/danger/CUA state prepared or acted on. | Stable app and harmless authorized pending requests; verify every option without bypassing permission. |
+| Settings | BLOCKED | Settings entry observed; attempted activation did not dispatch because the test target had exited. | All pages/fields, scroll/save/failure/retry/close/reopen; preserve credential privacy. |
+| Workspace | BLOCKED | Initial panel toggle states observed only. | Disposable project/files and stable app; files/images/Diff/commit/branch/artifacts/automation/subagents and safety fences. |
+| Terminal | NOT RUN | No PTY opened or input sent. | Stable app; real PTY I/O, native IME, resize and background identity across hide/switch. |
+| Cross-cutting | FAIL | Native AX client activation followed by duplicate-child panic and process abort. | Fix requires new authorization; pixels/themes/languages/narrow window, shortcuts/focus/Tab/menu/lifecycle/AX actions remain unrun. |
+| Release/platform evidence | PARTIAL | Source and executable hashes verified; this native failure is macOS-only evidence. | No merge/release/install; no new head CI or user acceptance claimed. Windows/Linux remain NOT RUN with the historical environment/action checklists below. |
+
+### User decision and recovery boundary
+
+The user selected **“暂不批准，保留崩溃证据”** when asked to extend the fixed-version NSH patch scope to `vendor/nsh-platform-gpui/src/access.rs`. Existing backend authorization covers reading/selection, native editing, wheel routing and synchronous caret geometry; it does not authorize this AX adapter correction. No implementation file, vendor source, dependency pin, permission setting or daily data was changed. AX was not disabled and no alternative event/screenshot mechanism bypassed the failure.
+
+Implementation and reliable native regression are blocked on that explicit decision. First recovery action, only after authorization changes: specify the minimal AX hierarchy/replay correction, retain all semantic nodes/actions/focus, implement within the permitted fixed-version package, rebuild, and repeat the native crash scenario before visual/navigation/settings/composer testing. Independent review and new-version CI apply to any later implementation. Issue remains OPEN/In progress; PR remains Draft; no merge, release, installation or user sign-off.
+
 ## Current clarification — final-source gates and native boundary
 
 The inventory below is a historical, delegated read-only snapshot from `2026-11-10T00:11:38Z`. Its prohibitions on network, Git mutation, application launch and desktop operations applied to that documentation assignment, **not to the parent agent or user globally**. They are not evidence that macOS native acceptance is impossible or that the user prohibited it. Current production source is committed at `c5cd4ffeceda9665dace2602f1d2429fbf9849b1`; both P2 findings and cleanup reviews are closed, development tests are remotely archived and removed, and the source-gate CI succeeded. See [current final-version gates](nsh-final-version-gates.md) for precise evidence and the separate final documentation-head check. The historical pending-gate statements below do not override those later results.

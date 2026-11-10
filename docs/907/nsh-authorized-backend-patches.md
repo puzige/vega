@@ -1,5 +1,21 @@
 # Authorized fixed-version NSH backend patches
 
+## Current authorized AX replay repair provenance
+
+This section and `nsh-backend-current-manifest.json` supersede earlier current-state counts, hashes and authorization boundaries below. The user explicitly authorized a minimal AX repair inside fixed NSH 0.4.0 while retaining semantics/actions, with real screenshot/operation/recheck before any layout overlay and **no merge or release**. See [AX replay repair and validation](nsh-ax-replay-fix.md) for exact review, regression, dependency distinction and native limitations.
+
+Only `nsh-platform-gpui/src/access.rs` changes production bytes relative to `de594c84ab176a7a7dd28df5b1774280bf620bf5`. Its final SHA-256 is `a86b0b861c75ce9b8e6ae235f2b2e780fb134d4ab17283e5d2c4bb6e63429024`. Original upstream tests remain; new development tests and exclusive wiring were removed only after verified remote archive commit `48ee1bd67b6723f3c60576e2e0a8995e52259657`, tag `evidence/907-ax-development-12-tests`.
+
+The exact full-file inventory verifier was run after cleanup: **231 current files, 20 delta files, zero missing originals or symlinks**. The extra delta compared with the preceding 19-file production inventory is the newly authorized original `src/access.rs`; the six production additions are unchanged. Original cached archive maps, manifest hashes, VCS metadata and all fixed pins were verified. Root Cargo.toml, Cargo.lock and the temporarily adjusted upstream text-test path match the base byte-for-byte.
+
+| Identity | SHA-256 |
+| --- | --- |
+| Combined backend tree | `16b001fdce721729a75dc71eeace994f1ed9287177be4366aaa266930e961448` |
+| Combined backend delta | `67aa0366217fbba724cb87fd526cf9da76a00a3a3653a4fd0e78bb3aba56dfeb` |
+| Current JSON manifest | `a08e648e85af9d54684569fba2cb8fceb74058dcd0c64155975dd62b8d853697` |
+
+Historical verifier snippets below retain their snapshot-specific counts; do not run their old hard-coded 19-file assertion against this new authorized 20-file delta. This is a provenance change, not an acceptance relaxation. Development tests executed 12/12 under the separately archived temporary vendor-test graph; final production Clippy/build/fmt and Python checks used the restored production graph. Final workspace Nextest is **0 discovered / 0 executed, no Rust tests**, not behavioral success. Native AX activation after the repair, pixels, OS actions and the requested visual loop remain unverified because desktop preflight denied screen-recording permission. No overlay, merge, release or installation was performed.
+
 ## Current development-only native text observation provenance
 
 Observed UTC `2026-11-09T10:57:13.997769+00:00`. **This section and the current JSON manifest supersede all current-state identities/counts and verifier results in the historical ledger below.** Parent-provided dirty HEAD remains `0b5ea426abfd8d4358489e916273d89474fb190f`; no Git command was run. `observed_origin_master` in the manifest is retained as the preceding historical observation, not a fresh #922 ancestry claim. Parent-reported #922 / `2a29adf9` imports and ordinary fixture changes are outside this vendor-only inventory. This lane writes only this document and `nsh-backend-current-manifest.json`; no integrated-validation document, vendor, application, Cargo or lockfile writes.
