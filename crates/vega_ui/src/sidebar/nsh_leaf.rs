@@ -36,6 +36,7 @@ pub(super) struct Item {
     pub running: bool,
     motion: bool,
     pub emphasis: bool,
+    pub thread_title: bool,
     pub hint: Option<String>,
     pub wrap: bool,
     label_style: Option<LabelStyle>,
@@ -74,6 +75,7 @@ impl Item {
             running: false,
             motion: false,
             emphasis: false,
+            thread_title: false,
             hint: None,
             wrap: false,
             label_style: None,
@@ -674,6 +676,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     || a.resting != b.resting
                     || a.running != b.running
                     || a.emphasis != b.emphasis
+                    || a.thread_title != b.thread_title
                     || a.hint != b.hint
                     || a.wrap != b.wrap
                     || a.label_style != b.label_style
@@ -910,7 +913,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             let layout = commands.clone();
             let id = snapshot.id.clone();
             let measured = ns::signal((0.0f32, 0.0f32));
-            let mut content = ns::view().w_full().flex_col().gap(ns::px(4.)).on_layout(
+            let mut content = ns::view().w_full().flex_col().on_layout(
                 move |bounds: &nsh_core::Bounds<nsh_core::Points>| {
                     let width = bounds.size.width.0;
                     let height = bounds.size.height.0;
@@ -936,6 +939,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             if let Some(text) = &snapshot.text {
                 content = content.child(
                     ns::text(text.clone())
+                        .mb(ns::px(4.))
                         .text_size(ns::px(Typography::SIDEBAR))
                         .text_color(crate::nsh::color(colors.text_primary)),
                 );
@@ -1033,6 +1037,16 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                             });
                         }
                     });
+                if item.thread_title {
+                    // The GPUI row owns the leading gutter for drag and context-menu events.
+                    button = button.border(ns::px(0.)).pl(ns::px(0.)).pr(ns::px(8.));
+                    if snapshot.selected == Some(index) {
+                        button = button
+                            .outline(ns::px(1.))
+                            .outline_offset(ns::px(-1.))
+                            .outline_color(crate::nsh::color(colors.accent));
+                    }
+                }
                 if let Some(icon) = item.icon.filter(|_| !quiet) {
                     let source = nsh_source(icon).unwrap_or_default();
                     button = button.child(
@@ -1153,6 +1167,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 .child(ns::dynamic(move || {
                     if failed.get() {
                         ns::text(vega_i18n::t("ui.reload_view"))
+                            .mt(ns::px(4.))
                             .text_color(crate::nsh::color(colors.danger))
                             .into_element()
                     } else {

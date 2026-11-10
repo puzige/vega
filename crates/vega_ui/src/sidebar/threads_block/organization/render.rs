@@ -406,6 +406,7 @@ impl ThreadsBlock {
                         .text_size(px(Typography::SIDEBAR_SECTION))
                         .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                         .text_color(colors.text_tertiary)
+                        .pl(px(Layout::SIDEBAR_LABEL_INSET))
                         .child(self.section_label(label, cx)),
                 )
                 .child(

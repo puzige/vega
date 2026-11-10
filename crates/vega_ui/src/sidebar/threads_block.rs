@@ -1486,6 +1486,7 @@ impl ThreadsBlock {
             item.selected = selected;
             item.emphasis = thread.unread;
             item.double_action = Some(1);
+            item.thread_title = true;
             row = row.child(
                 div()
                     .flex_1()
