@@ -319,6 +319,8 @@ fn control(
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 actions.state.get().colors.accent
+            } else if focus.is_none() {
+                gpui_kit::transparent_black().into()
             } else {
                 actions.state.get().colors.border_subtle
             })
@@ -396,9 +398,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .element_ref(&root)
         .w_full()
         .flex_shrink_0()
-        .gap_2()
+        .gap_1()
         .text_size(px(Typography::BODY))
-        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).floor()))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
@@ -482,6 +484,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     .children(super::super::PERMISSION_MODES.into_iter().map(move |mode| {
                         let commands = commands.clone();
                         control(actions, element_ref(), None, focused)
+                            .py_1()
                             .label(move || {
                                 state.with(|_| super::super::permission_mode_label(mode))
                             })
@@ -503,6 +506,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             .text_color(move || {
                                 crate::nsh::color(if mode == "full_access" {
                                     state.get().colors.warning
+                                } else if state.get().mode == mode {
+                                    state.get().colors.brand_primary
                                 } else {
                                     state.get().colors.text_primary
                                 })
