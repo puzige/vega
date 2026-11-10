@@ -1412,6 +1412,12 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if matches!(call.name.as_str(), "bash_wait" | "bash_cancel") {
+        return (call.input_json == "{}"
+            || super::shell_operations::valid_control_input(&call.name, &call.input_json))
+        .then_some(())
+        .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if call.name == "read_conversation" {
         return super::pipeline::valid_history_call_projection(&call.input_json)
             .then_some(())

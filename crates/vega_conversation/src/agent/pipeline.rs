@@ -3142,6 +3142,12 @@ pub(crate) fn approval_source_matches(
     source: ApprovalSource,
     invalid_projection: bool,
 ) -> bool {
+    if matches!(tool, "bash_wait" | "bash_cancel") {
+        return !invalid_projection
+            && super::shell_operations::valid_control_input(tool, input_json)
+            && status != RuntimeToolStatus::Rejected
+            && source == ApprovalSource::ReadonlyTool;
+    }
     if tool == "read_conversation" {
         let valid_input = vega_runtime::ConversationReadRequest::parse(input_json).is_some();
         return !invalid_projection

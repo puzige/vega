@@ -57,6 +57,8 @@ mod ordinary;
 mod permission_queue;
 mod scope_permission;
 mod scoped_bash;
+#[cfg(test)]
+mod shell_control_tests;
 mod shell_operations;
 pub use ordinary::{
     OrdinaryHistoryObservation, OrdinaryRun, finish_ordinary_worker, observe_ordinary_history,
