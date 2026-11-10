@@ -127,3 +127,6 @@ mod service;
 
 pub(crate) use authority::*;
 pub(crate) use parsing::*;
+
+#[cfg(test)]
+mod prepared_count;
