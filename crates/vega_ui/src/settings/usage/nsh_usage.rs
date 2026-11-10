@@ -211,6 +211,10 @@ impl Actions {
     }
 }
 
+fn line_height(font_size: f32) -> Points {
+    px((font_size * Typography::BODY_LINE_HEIGHT).floor())
+}
+
 fn group(state: Signal<Snapshot>) -> nsh_core::element::View {
     view()
         .w_full()
@@ -269,8 +273,9 @@ fn control(
         })
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .px_3()
-        .py_2()
+        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
+        .py_1()
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 actions.state.get().colors.accent
@@ -531,15 +536,23 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                     move |metric, _| {
                         view()
                             .flex_1()
-                            .min_w(px(Layout::SETTINGS_LABEL_WIDTH))
+                            .basis(px(Layout::SETTINGS_LABEL_WIDTH))
+                            .min_w_0()
+                            .max_w(relative(1.))
                             .gap_1()
                             .child(
                                 text(move || metric.get().1)
-                                    .text_size(px(Typography::HEADING_CARD)),
+                                    .text_size(px(Typography::HEADING_CARD))
+                                    .line_height(px((Typography::HEADING_CARD
+                                        * Typography::BODY_LINE_HEIGHT)
+                                        .floor())),
                             )
                             .child(
                                 text(move || metric.get().0)
                                     .text_size(px(Typography::METADATA))
+                                    .line_height(px((Typography::METADATA
+                                        * Typography::BODY_LINE_HEIGHT)
+                                        .floor()))
                                     .text_color(move || {
                                         crate::nsh::color(state.get().colors.text_secondary)
                                     }),
@@ -579,6 +592,8 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         .flex_row()
                         .justify_between()
                         .text_size(px(Typography::METADATA))
+                        .line_height(line_height(Typography::METADATA))
+                        .text_color(move || crate::nsh::color(state.get().colors.text_tertiary))
                         .child(text(move || data.get().first))
                         .child(text(move || data.get().last)),
                 )
@@ -597,6 +612,7 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         .flex_row()
                         .justify_between()
                         .text_size(px(Typography::METADATA))
+                        .line_height(line_height(Typography::METADATA))
                         .text_color(move || crate::nsh::color(state.get().colors.text_tertiary))
                         .child(local(state, "settings.usage.heatmap_weeks"))
                         .child(local(state, "settings.usage.heatmap_scale")),
@@ -618,7 +634,11 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                                     &[("count", &data.get().peak.to_string())],
                                 )
                             })
-                            .text_size(px(Typography::METADATA)),
+                            .text_size(px(Typography::METADATA))
+                            .line_height(line_height(Typography::METADATA))
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
+                            }),
                         ),
                 )
                 .child(
@@ -629,12 +649,13 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         .label(move || {
                             state.with(|_| vega_i18n::t("settings.usage.daily_model_tokens"))
                         })
-                        .border(px(1.))
-                        .border_color(move || {
+                        .outline(px(1.))
+                        .outline_offset(px(-1.))
+                        .outline_color(move || {
                             crate::nsh::color(if focused.get() {
                                 state.get().colors.accent
                             } else {
-                                state.get().colors.border_subtle
+                                gpui_kit::transparent_black().into()
                             })
                         })
                         .disabled(move || data.get().dates.is_empty())
@@ -702,6 +723,8 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         .flex_row()
                         .justify_between()
                         .text_size(px(Typography::METADATA))
+                        .line_height(line_height(Typography::METADATA))
+                        .text_color(move || crate::nsh::color(state.get().colors.text_tertiary))
                         .child(text(move || {
                             data.get().dates.first().cloned().unwrap_or_default()
                         }))
@@ -710,58 +733,63 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                         })),
                 )
                 .child(
-                    text(move || {
-                        let data = data.get();
-                        vega_i18n::t_args(
-                            "settings.usage.chart_hint",
-                            &[(
-                                "date",
-                                data.dates
-                                    .get(data.selected)
-                                    .map(String::as_str)
-                                    .unwrap_or_default(),
-                            )],
+                    view()
+                        .gap_1()
+                        .text_size(px(Typography::METADATA))
+                        .line_height(line_height(Typography::METADATA))
+                        .child(
+                            text(move || {
+                                let data = data.get();
+                                vega_i18n::t_args(
+                                    "settings.usage.chart_hint",
+                                    &[(
+                                        "date",
+                                        data.dates
+                                            .get(data.selected)
+                                            .map(String::as_str)
+                                            .unwrap_or_default(),
+                                    )],
+                                )
+                            })
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
+                            }),
                         )
-                    })
-                    .text_size(px(Typography::METADATA)),
-                )
-                .child(each(
-                    move || (0..data.get().models.len()).collect::<Vec<_>>(),
-                    |index| *index,
-                    move |index, _| {
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap_2()
-                            .child(view().size(px(8.)).rounded(px(4.)).bg(move || {
-                                crate::nsh::color(palette(index.get(), state.get().colors))
-                            }))
-                            .child(
-                                text(move || {
-                                    let data = data.get();
-                                    let Some(model) = data.models.get(index.get()) else {
-                                        return String::new();
-                                    };
-                                    vega_i18n::t_args(
-                                        "settings.usage.day_tokens",
-                                        &[
-                                            ("model", &model.name),
-                                            (
-                                                "count",
-                                                &model
-                                                    .values
-                                                    .get(data.selected)
-                                                    .copied()
-                                                    .unwrap_or(0)
-                                                    .to_string(),
-                                            ),
-                                        ],
-                                    )
-                                })
-                                .text_size(px(Typography::METADATA)),
-                            )
-                    },
-                )),
+                        .child(each(
+                            move || (0..data.get().models.len()).collect::<Vec<_>>(),
+                            |index| *index,
+                            move |index, _| {
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(view().size(px(8.)).rounded(px(4.)).bg(move || {
+                                        crate::nsh::color(palette(index.get(), state.get().colors))
+                                    }))
+                                    .child(text(move || {
+                                        let data = data.get();
+                                        let Some(model) = data.models.get(index.get()) else {
+                                            return String::new();
+                                        };
+                                        vega_i18n::t_args(
+                                            "settings.usage.day_tokens",
+                                            &[
+                                                ("model", &model.name),
+                                                (
+                                                    "count",
+                                                    &model
+                                                        .values
+                                                        .get(data.selected)
+                                                        .copied()
+                                                        .unwrap_or(0)
+                                                        .to_string(),
+                                                ),
+                                            ],
+                                        )
+                                    }))
+                            },
+                        )),
+                ),
         )
         .child(
             group(state)
@@ -791,7 +819,17 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
                                             text(move || compact(data.get().total))
                                                 .text_size(px(Typography::HEADING_CARD)),
                                         )
-                                        .child(local(state, "settings.usage.tokens")),
+                                        .child(
+                                            view()
+                                                .text_size(px(Typography::METADATA))
+                                                .line_height(line_height(Typography::METADATA))
+                                                .text_color(move || {
+                                                    crate::nsh::color(
+                                                        state.get().colors.text_secondary,
+                                                    )
+                                                })
+                                                .child(local(state, "settings.usage.tokens")),
+                                        ),
                                 ),
                         )
                         .child(view().flex_1().min_w(px(180.)).gap_2().child(each(
@@ -866,8 +904,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap(px(Layout::SETTINGS_SECTION_GAP))
+        .gap(px(Layout::SETTINGS_CONTENT_GAP))
         .text_size(px(Typography::BODY))
+        .line_height(line_height(Typography::BODY))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
@@ -906,7 +945,13 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     Action::Range(30),
                     "settings.usage.last_30_days",
                 ))
-                .child(local(state, "settings.usage.utc")),
+                .child(
+                    view()
+                        .text_size(px(Typography::METADATA))
+                        .line_height(line_height(Typography::METADATA))
+                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                        .child(local(state, "settings.usage.utc")),
+                ),
         )
         .child(when(
             move || state.get().error,
