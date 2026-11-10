@@ -28,6 +28,7 @@ actions!(
 );
 mod draft;
 mod host;
+mod measurement;
 mod model;
 mod nsh_view;
 mod panel;

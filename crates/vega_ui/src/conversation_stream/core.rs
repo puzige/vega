@@ -320,6 +320,10 @@ impl ConversationStream {
         if stream.read(cx).reading_navigation_blocked != blocked {
             stream.update(cx, |this, cx| {
                 this.reading_navigation_blocked = blocked;
+                if blocked {
+                    this.commit_panel
+                        .update(cx, |panel, cx| panel.suspend_presentation(cx));
+                }
                 this.suspend_reading_navigation(cx);
                 cx.notify();
             });

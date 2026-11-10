@@ -233,6 +233,7 @@
 "ui.commit" = "Commit (⌘↵)"
 "ui.commit_changes" = "Commit changes"
 "ui.commit_message_enter_newline_cmd_enter_commit" = "Commit message… (Enter newline · Cmd+Enter commit)"
+"ui.commit_message_placeholder" = "Commit message…"
 "ui.commit_staged_files" = "Staged files · {count}"
 "ui.commit_unavailable_code" = "Commit unavailable: {code}"
 "ui.compacting_context" = "Compacting context"

@@ -174,6 +174,7 @@ impl VegaWindow {
         .detach();
         window.focus(&view.read(cx).focus_handle(cx), cx);
         self.palette.view = Some(view);
+        self.block_conversation_controls(true, cx);
         self.search_palette(String::new(), cx);
         cx.notify();
     }

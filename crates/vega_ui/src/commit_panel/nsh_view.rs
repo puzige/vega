@@ -1,4 +1,5 @@
 use super::draft::{Draft, Value};
+use super::measurement::{MeasurementLease, Viewport};
 use super::{COMMIT_ROW_HEIGHT, CommitOperationId, CommitPanelFocus, CommitPanelStage};
 use crate::nsh::{OrderedCommands, ProjectionId, color};
 use nsh_core::prelude::*;
@@ -80,6 +81,13 @@ impl Snapshot {
         Some(apply(&mut draft))
     }
 
+    pub(super) fn panel_height(&self) -> f32 {
+        // The checklist keeps its own scroll position after six visible rows.
+        // Leave room for the multiline draft and the prepared-commit actions.
+        let controls = if self.prepared.is_some() { 324. } else { 140. };
+        controls + COMMIT_ROW_HEIGHT * self.rows.len().min(6) as f32
+    }
+
     pub fn actionable(&self) -> bool {
         !self.disabled && !self.failure && self.pending.is_none()
     }
@@ -118,35 +126,12 @@ pub(super) enum Request {
     Displayed(Snapshot),
     Edit(ProjectionId),
     Focused(Snapshot),
-    Measured(Snapshot, [f32; 4], Weak<()>),
+    Measured(Snapshot, Option<[f32; 4]>, MeasurementLease),
     Action(Snapshot, Action, Option<Weak<()>>),
 }
 
-fn measure_control(
-    target: ElementRef,
-    observed: Snapshot,
-    commands: OrderedCommands<Request>,
-    lease: Weak<()>,
-) {
-    spawn(async move {
-        if let Some(bounds) = target.measure().await
-            && target.node().is_some()
-        {
-            commands.send(Request::Measured(
-                observed,
-                [
-                    bounds.page.x.0,
-                    bounds.page.y.0,
-                    bounds.frame.size.width.0,
-                    bounds.frame.size.height.0,
-                ],
-                lease,
-            ));
-        }
-    });
-}
-
 pub(super) fn button(
+    viewport: Viewport,
     observed: Snapshot,
     commands: OrderedCommands<Request>,
     label: &'static str,
@@ -157,18 +142,20 @@ pub(super) fn button(
     let colors = observed.colors;
     let target = element_ref();
     let lease = signal_with(Arc::new(()), SignalEquals::Never);
-    let measured = observed.clone();
-    let measure = commands.clone();
+    if focused {
+        viewport.follow(
+            target,
+            None,
+            observed.clone(),
+            commands.clone(),
+            Arc::downgrade(&lease.get_untracked()),
+        );
+    }
     view()
         .element_ref(&target)
         .on_layout(move |_: &Bounds<Points>| {
             if focused {
-                measure_control(
-                    target,
-                    measured.clone(),
-                    measure.clone(),
-                    Arc::downgrade(&lease.get_untracked()),
-                );
+                viewport.invalidate();
             }
         })
         .role(AccessibilityRole::Button)
@@ -209,17 +196,17 @@ pub(super) fn button(
 }
 
 pub(super) fn recovery(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement {
+    let viewport = Viewport::new(state);
     let commands = OrderedCommands::new(sender);
     let displayed = commands.clone();
     effect(move || displayed.send(Request::Displayed(state.get())));
-    dynamic(move || {
+    let content = dynamic(move || {
         let observed = state.get();
         view()
             .flex_col()
             .gap_3()
             .p_4()
             .w_full()
-            .h_full()
             .bg(color(observed.colors.bg_base))
             .child(text(vega_i18n::t("ui.commit_changes")))
             .child(
@@ -230,6 +217,7 @@ pub(super) fn recovery(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -
                 .text_color(color(observed.colors.danger)),
             )
             .child(button(
+                viewport,
                 observed.clone(),
                 commands.clone(),
                 vega_i18n::t("settings.action.reload"),
@@ -238,6 +226,7 @@ pub(super) fn recovery(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -
                 observed.focus == CommitPanelFocus::Confirm,
             ))
             .child(button(
+                viewport,
                 observed.clone(),
                 commands.clone(),
                 vega_i18n::t("ui.cancel"),
@@ -246,11 +235,18 @@ pub(super) fn recovery(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -
                 observed.focus == CommitPanelFocus::Cancel,
             ))
             .into_element()
-    })
-    .into_element()
+    });
+    scroll()
+        .size_full()
+        .element_ref(&viewport.root)
+        .on_layout(move |bounds: &Bounds<Points>| viewport.resized(bounds, false))
+        .on_scroll(move |e: &ScrollEvent| viewport.scrolled(e.offset.y.0, false))
+        .child(content)
+        .into_element()
 }
 
 pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> AnyElement {
+    let viewport = Viewport::new(state);
     let commands = OrderedCommands::new(sender);
     let displayed = commands.clone();
     effect(move || displayed.send(Request::Displayed(state.get())));
@@ -259,6 +255,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
     let local_revision = signal(None::<u64>);
     let input_ref = element_ref();
     let list_ref = element_ref();
+    viewport.follow_input(input_ref);
     let focused_revision = signal(None::<u64>);
     effect(move || {
         let observed = state.get();
@@ -293,9 +290,9 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
     let compositions = commands.clone();
     let focused = commands.clone();
     let input_keys = commands.clone();
-    view()
+    let content = view()
         .w_full()
-        .h_full()
+        .h(move || px(state.get().panel_height()))
         .flex_col()
         .gap_3()
         .p_4()
@@ -309,6 +306,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                 return view()
                     .flex_col()
                     .child(button(
+                        viewport,
                         observed.clone(),
                         send.clone(),
                         vega_i18n::t("settings.action.reload"),
@@ -317,6 +315,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                         false,
                     ))
                     .child(button(
+                        viewport,
                         observed.clone(),
                         send,
                         vega_i18n::t("ui.cancel"),
@@ -343,6 +342,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                             .text_size(px(Typography::HEADING_BLOCK)),
                     )
                     .child(button(
+                        viewport,
                         observed.clone(),
                         send,
                         vega_i18n::t("ui.cancel"),
@@ -393,18 +393,20 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                         let send = send.clone();
                         let staged = observed.rows.iter().take_while(|row| row.forced).count();
                         let target = element_ref();
-                        let measured = observed.clone();
-                        let measure = send.clone();
+                        if focused {
+                            viewport.follow(
+                                target,
+                                Some(list_ref),
+                                observed.clone(),
+                                send.clone(),
+                                weak.clone(),
+                            );
+                        }
                         view()
                             .element_ref(&target)
                             .on_layout(move |_: &Bounds<Points>| {
                                 if focused {
-                                    measure_control(
-                                        target,
-                                        measured.clone(),
-                                        measure.clone(),
-                                        Arc::downgrade(&lease.get_untracked()),
-                                    );
+                                    viewport.invalidate();
                                 }
                             })
                             .native_id(&super::commit_row_key(
@@ -465,6 +467,8 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                 },
             )
             .element_ref(&list_ref)
+            .on_layout(move |bounds: &Bounds<Points>| viewport.resized(bounds, true))
+            .on_scroll(move |e: &ScrollEvent| viewport.scrolled(e.offset.y.0, true))
             .estimated_item_size(px(COMMIT_ROW_HEIGHT))
             .flex_1()
             .min_h(px(0.))
@@ -493,6 +497,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                             .label(vega_i18n::t(
                                 "ui.commit_message_enter_newline_cmd_enter_commit",
                             ))
+                            .placeholder(vega_i18n::t("ui.commit_message_placeholder"))
                             .multiline(true)
                             .submit_behavior(SubmitBehavior::Newline)
                             .value(move || message.get())
@@ -577,6 +582,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                     actions = actions.child(text("…"));
                 }
                 actions = actions.child(button(
+                    viewport,
                     observed.clone(),
                     send.clone(),
                     vega_i18n::t("ui.generate_message"),
@@ -587,6 +593,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
             }
             actions
                 .child(button(
+                    viewport,
                     observed.clone(),
                     send,
                     if observed.prepared.is_some() {
@@ -599,6 +606,12 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                     observed.focus == CommitPanelFocus::Confirm,
                 ))
                 .into_element()
-        }))
+        }));
+    scroll()
+        .size_full()
+        .element_ref(&viewport.root)
+        .on_layout(move |bounds: &Bounds<Points>| viewport.resized(bounds, false))
+        .on_scroll(move |e: &ScrollEvent| viewport.scrolled(e.offset.y.0, false))
+        .child(content)
         .into_element()
 }

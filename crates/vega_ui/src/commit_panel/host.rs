@@ -6,35 +6,27 @@ use gpui_kit::{
     AnyElement, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, KeyDownEvent,
     LayoutId, Pixels, div, px,
 };
-use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-#[derive(Default)]
-struct Geometry {
-    visible: bool,
-    bounds: Option<Bounds<Pixels>>,
-}
 
 struct Page {
     surface: Surface<Snapshot, Request>,
     recovery: Option<Surface<Snapshot, Request>>,
     id: ProjectionId,
     lease: Weak<()>,
-    geometry: Rc<RefCell<Geometry>>,
     visible: Arc<AtomicBool>,
     shown: Snapshot,
     displayed: Option<Snapshot>,
     failed: bool,
-    measured: Option<(Snapshot, [f32; 4], std::sync::Weak<()>)>,
+    measured: Option<(Snapshot, [f32; 4], super::measurement::MeasurementLease)>,
     language: &'static str,
     appearance: vega_theme::Appearance,
 }
 
 impl Page {
     fn live(&self) -> bool {
-        self.lease.upgrade().is_some() && self.geometry.borrow().visible
+        self.lease.upgrade().is_some() && self.visible.load(Ordering::Acquire)
     }
 }
 
@@ -64,7 +56,6 @@ impl State {
     pub fn unmount(&mut self) {
         if let Some(page) = self.page.take() {
             page.visible.store(false, Ordering::Release);
-            page.geometry.borrow_mut().visible = false;
         }
         if let Ok(mut draft) = self.draft.0.lock() {
             draft.page = None;
@@ -137,6 +128,15 @@ impl CommitPanel {
     }
 
     fn accept(&self, observed: &Snapshot, cx: &App) -> bool {
+        if cx
+            .try_global::<crate::settings::SettingsOpen>()
+            .is_some_and(|state| state.0)
+            || cx
+                .try_global::<crate::sidebar::PendingDeleteConfirm>()
+                .is_some_and(|modal| modal.0.is_some())
+        {
+            return false;
+        }
         self.presentation.page.as_ref().is_some_and(|page| {
             self.model.is_open()
                 && page.live()
@@ -184,7 +184,6 @@ impl CommitPanel {
             recovery: None,
             id,
             lease: Weak::new(),
-            geometry: Rc::new(RefCell::new(Geometry::default())),
             visible: Arc::new(AtomicBool::new(false)),
             shown: snapshot,
             displayed: None,
@@ -256,17 +255,22 @@ impl CommitPanel {
             }
             Request::Measured(observed, rect, lease) => {
                 if self.accept(&observed, cx)
-                    && lease.upgrade().is_some()
-                    && rect.iter().all(|value| value.is_finite())
-                    && rect[2] > 0.
-                    && rect[3] > 0.
+                    && lease.live()
                     && let Some(page) = &mut self.presentation.page
                 {
-                    let unchanged = page.measured.as_ref().is_some_and(|(shown, previous, _)| {
-                        shown.same_authority(&observed) && *previous == rect
-                    });
-                    page.measured = Some((observed, rect, lease));
-                    if !unchanged {
+                    let rect =
+                        rect.filter(|r| r.iter().all(|v| v.is_finite()) && r[2] > 0. && r[3] > 0.);
+                    let changed = match (&page.measured, rect) {
+                        (Some((before, old_rect, old_lease)), Some(rect)) => {
+                            !before.same_authority(&observed)
+                                || *old_rect != rect
+                                || !old_lease.live()
+                        }
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    page.measured = rect.map(|rect| (observed, rect, lease));
+                    if changed {
                         cx.notify();
                     }
                 }
@@ -401,6 +405,16 @@ impl CommitPanel {
             return;
         };
         if !self.cancel_focus.is_focused(window) {
+            return;
+        }
+        if action.is_none()
+            && !self
+                .presentation
+                .page
+                .as_ref()
+                .and_then(|page| page.measured.as_ref())
+                .is_some_and(|(shown, _, lease)| shown.same_authority(&observed) && lease.live())
+        {
             return;
         }
         if observed.focus == CommitPanelFocus::Draft
@@ -547,6 +561,7 @@ impl CommitPanel {
             return div().hidden().into_any_element();
         };
         let snapshot = self.snapshot(page.id.clone(), page.failed, cx);
+        let panel_height = snapshot.panel_height();
         let needs_recovery = page.failed && page.recovery.is_none();
         if needs_recovery {
             let (surface, requests) =
@@ -559,9 +574,8 @@ impl CommitPanel {
         }
         let proxy = self.presentation.page.as_ref().and_then(|page| {
             let (observed, rect, lease) = page.measured.as_ref()?;
-            let bounds = page.geometry.borrow().bounds?;
-            (self.accept(observed, cx) && lease.upgrade().is_some())
-                .then(|| (observed.clone(), *rect, lease.clone(), bounds))
+            (self.accept(observed, cx) && lease.live())
+                .then(|| (observed.clone(), *rect, lease.clone()))
         });
         let Some(page) = &mut self.presentation.page else {
             return div().hidden().into_any_element();
@@ -591,7 +605,6 @@ impl CommitPanel {
         let lease = Rc::new(());
         let mount = Arc::new(());
         page.lease = Rc::downgrade(&lease);
-        let geometry = page.geometry.clone();
         let visible = page.visible.clone();
         if let Ok(mut draft) = self.presentation.draft.0.lock() {
             draft.mount = Arc::downgrade(&mount);
@@ -641,9 +654,14 @@ impl CommitPanel {
                 this.move_host_focus(true, window, cx)
             }))
             .absolute()
-            .inset_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(panel_height))
+            .max_h_full()
+            .occlude()
             .child(entity);
-        if let Some((observed, rect, lease, bounds)) = proxy
+        if let Some((observed, rect, lease)) = proxy
             && observed.focus != CommitPanelFocus::Draft
         {
             let label = match observed.focus {
@@ -669,8 +687,8 @@ impl CommitPanel {
                 div()
                     .id("commit-panel-focused-control")
                     .absolute()
-                    .left(px(rect[0] - f32::from(bounds.origin.x)))
-                    .top(px(rect[1] - f32::from(bounds.origin.y)))
+                    .left(px(rect[0]))
+                    .top(px(rect[1]))
                     .w(px(rect[2]))
                     .h(px(rect[3]))
                     .role(gpui_kit::Role::Button)
@@ -678,7 +696,7 @@ impl CommitPanel {
                     .aria_active_descendant()
                     .on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, window, cx| {
                         let _ = weak.update(cx, |this, cx| {
-                            if lease.upgrade().is_some() && this.accept(&observed, cx) {
+                            if lease.live() && this.accept(&observed, cx) {
                                 this.activate_host(None, window, cx);
                             }
                         });
@@ -689,7 +707,6 @@ impl CommitPanel {
             child: root.into_any_element(),
             lease,
             mount,
-            geometry,
             visible,
         }
         .into_any_element()
@@ -700,7 +717,6 @@ struct Mounted {
     child: AnyElement,
     lease: Rc<()>,
     mount: Arc<()>,
-    geometry: Rc<RefCell<Geometry>>,
     visible: Arc<AtomicBool>,
 }
 
@@ -745,10 +761,6 @@ impl Element for Mounted {
         }
         let visible = bounds.intersect(&window.content_mask().bounds);
         let visible = visible.size.width > px(0.) && visible.size.height > px(0.);
-        *self.geometry.borrow_mut() = Geometry {
-            visible,
-            bounds: Some(bounds),
-        };
         self.visible.store(visible, Ordering::Release);
         self.child.prepaint(window, cx);
     }

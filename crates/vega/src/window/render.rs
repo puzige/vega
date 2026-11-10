@@ -754,10 +754,7 @@ impl Render for VegaWindow {
             || self.palette.view.is_some()
             || pending_delete.is_some()
             || self.sidebar.read(cx).opening_thread(cx).is_some();
-        if let Some((_, stream)) = &self.stream_view {
-            ConversationStream::set_reading_navigation_blocked(stream, reading_blocked, cx);
-        }
-        self.set_subagent_reading_navigation_blocked(reading_blocked, cx);
+        self.block_conversation_controls(reading_blocked, cx);
         let preparation_error = self.render_preparation_error(cx);
         div()
             .key_context("VegaWindow")
@@ -847,6 +844,13 @@ impl Render for VegaWindow {
 }
 
 impl VegaWindow {
+    pub(crate) fn block_conversation_controls(&mut self, blocked: bool, cx: &mut Context<Self>) {
+        if let Some((_, stream)) = &self.stream_view {
+            ConversationStream::set_reading_navigation_blocked(stream, blocked, cx);
+        }
+        self.set_subagent_reading_navigation_blocked(blocked, cx);
+    }
+
     fn render_sidebar_resizer(
         &self,
         colors: ThemeColors,

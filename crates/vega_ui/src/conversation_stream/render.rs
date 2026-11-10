@@ -194,10 +194,7 @@ impl ConversationStream {
                     .when(self.privacy.opened, |column| {
                         column.child(self.render_privacy_control(cx))
                     })
-                    .child(self.render_composer(window, cx))
-                    .when(!self.thread.is_standalone(), |column| {
-                        column.child(self.commit_panel.clone())
-                    }),
+                    .child(self.render_composer(window, cx)),
             )
             .into_any_element()
     }
@@ -977,8 +974,11 @@ impl Render for ConversationStream {
                     view.child(self.render_privacy_control(cx))
                 })
                 .child(self.render_composer(window, cx))
-                .when(project_bound, |root| root.child(self.commit_panel.clone()))
             })
+            .when(
+                !self.reading_preview && !self.reading_navigation_blocked && project_bound,
+                |root| root.child(self.commit_panel.clone()),
+            )
             .when(self.reading_preview, |root| {
                 root.child(self.render_resume_tail(cx))
             })
