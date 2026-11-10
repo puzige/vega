@@ -2250,6 +2250,21 @@ struct ReadingScroll(nsh_core::prelude::Signal<f32>);
 #[derive(Clone)]
 struct TableWeights(std::collections::BTreeMap<String, String>);
 
+fn code_icon(
+    kind: crate::icons::Icon,
+    state: nsh_core::prelude::Signal<Projection>,
+) -> nsh_core::prelude::AnyElement {
+    use nsh_core::prelude::*;
+    svg(nsh_core::element::ImageSrc::svg_markup(
+        &crate::icons::nsh_source(kind).unwrap_or_default(),
+    ))
+    .size(px(vega_theme::Layout::ICON_SIZE))
+    .flex_shrink_0()
+    .text_color(move || crate::nsh::color(state.get().colors.text_primary))
+    .tint_color(move || crate::nsh::color(state.get().colors.text_primary))
+    .into_element()
+}
+
 fn native_code_action(
     binding: String,
     state: nsh_core::prelude::Signal<Projection>,
@@ -2287,8 +2302,16 @@ fn native_code_action(
             }
         }));
     });
-    text(vega_i18n::t("ui.copy"))
+    view()
+        .size(px(vega_theme::Layout::COPY_ACTION_SIZE))
+        .items_center()
+        .justify_center()
+        .rounded(px(vega_theme::Layout::SETTINGS_CONTROL_RADIUS))
+        .hover(move |style| style.bg(crate::nsh::color(state.get().colors.bg_hover)))
         .element_ref(&target)
+        .label(move || state.with(|_| vega_i18n::t("ui.copy_code")))
+        .tooltip(text(move || state.with(|_| vega_i18n::t("ui.copy_code"))))
+        .child(code_icon(crate::icons::Icon::Copy, state))
         .select_none()
         .role(AccessibilityRole::Button)
         .on_layout(move |_: &Bounds<Points>| {
@@ -2520,18 +2543,37 @@ fn native_blocks(
                     ))
                     .app_class(Some("whitespace-nowrap".into()))
                     .px(px(vega_theme::Layout::MARKDOWN_CODE_PADDING))
-                    .py(px(vega_theme::Layout::MARKDOWN_CODE_PADDING));
+                    .pt(px(vega_theme::Layout::COPY_ACTION_GAP))
+                    .pb(px(vega_theme::Layout::MARKDOWN_CODE_PADDING));
+                let language =
+                    vega_markdown::language_display_name(code.language.as_deref()).to_owned();
                 view()
                     .flex_col()
-                    .rounded(px(vega_theme::Layout::MARKDOWN_INLINE_CODE_RADIUS))
+                    .rounded(px(vega_theme::Layout::TOOL_DETAIL_RADIUS))
                     .bg(move || {
                         state.with(|projection| crate::nsh::color(projection.colors.code_bg))
                     })
-                    .child(view().flex_row().justify_end().child(native_code_action(
-                        binding.clone(),
-                        state,
-                        commands.clone(),
-                    )))
+                    .child(
+                        view()
+                            .w_full()
+                            .flex_row()
+                            .items_center()
+                            .px(px(vega_theme::Layout::MARKDOWN_CODE_PADDING))
+                            .pt(px(vega_theme::Layout::MARKDOWN_CODE_PADDING))
+                            .gap(px(vega_theme::Layout::COPY_ACTION_GAP * 2.))
+                            .child(code_icon(crate::icons::Icon::Code, state))
+                            .child(
+                                text(language)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(nsh_core::prelude::FontWeight(500))
+                                    .text_color(move || {
+                                        crate::nsh::color(state.get().colors.text_primary)
+                                    }),
+                            )
+                            .child(native_code_action(binding.clone(), state, commands.clone())),
+                    )
                     .child(scroll().horizontal().scrollbar(true).child(content))
                     .into_element()
             }
@@ -2619,9 +2661,17 @@ fn native_blocks(
             _ => view().into_element(),
         })
         .collect::<Vec<_>>();
+    let list_items = blocks
+        .iter()
+        .all(|block| matches!(block, Block::Custom(node) if node.name == "vega-reading-list-item"));
+    let gap = if list_items {
+        vega_theme::Layout::MARKDOWN_LIST_ITEM_GAP
+    } else {
+        vega_theme::Layout::MARKDOWN_BLOCK_GAP
+    };
     view()
         .flex_col()
-        .gap(px(vega_theme::Layout::MARKDOWN_BLOCK_GAP))
+        .gap(px(gap))
         .children(children)
         .into_element()
 }

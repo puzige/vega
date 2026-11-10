@@ -518,7 +518,7 @@ impl SettingsView {
         if self.skills.presentation.is_none() {
             let id = ProjectionId::new();
             let (surface, mut requests) =
-                Surface::new(self.skills_snapshot(id.clone(), cx), render, window, cx);
+                Surface::new_transparent(self.skills_snapshot(id.clone(), cx), render, window, cx);
             self.skills.presentation = Some(Presentation {
                 surface,
                 id,
@@ -721,32 +721,40 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .gap_2()
                 .child(
                     text(move || state.with(|_| vega_i18n::t("settings.skills.title")))
-                        .text_size(px(Typography::HEADING_BLOCK)),
+                        .text_size(px(Typography::HEADING_BLOCK))
+                        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
                 )
-                .children(
-                    [
-                        (SkillAction::Reload, "settings.action.refresh"),
-                        (SkillAction::ToggleSources, "settings.skills.sources"),
-                        (SkillAction::ToggleAdd, "settings.skills.add"),
-                    ]
-                    .into_iter()
-                    .map(|(action, key)| {
-                        let item = stored((key, action));
-                        control(
-                            actions,
-                            commands.clone(),
-                            move || {
-                                item.with(|(key, action)| {
-                                    (
-                                        state.with(|_| vega_i18n::t(key).to_owned()),
-                                        action.clone(),
-                                        None,
-                                    )
-                                })
-                            },
-                            move || state.get().authority,
-                        )
-                    }),
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .children(
+                            [
+                                (SkillAction::Reload, "settings.action.refresh"),
+                                (SkillAction::ToggleSources, "settings.skills.sources"),
+                                (SkillAction::ToggleAdd, "settings.skills.add"),
+                            ]
+                            .into_iter()
+                            .map(|(action, key)| {
+                                let item = stored((key, action));
+                                control(
+                                    actions,
+                                    commands.clone(),
+                                    move || {
+                                        item.with(|(key, action)| {
+                                            (
+                                                state.with(|_| vega_i18n::t(key).to_owned()),
+                                                action.clone(),
+                                                None,
+                                            )
+                                        })
+                                    },
+                                    move || state.get().authority,
+                                )
+                            }),
+                        ),
                 ),
         )
         .child(
@@ -762,7 +770,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
                 .px_3()
                 .py_2()
-                .w_full()
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w(relative(1.))
+                .self_end()
                 .border_color(move || {
                     crate::nsh::color(if search_focused.get() {
                         state.get().colors.accent
@@ -802,6 +812,16 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             |(row, _)| row.key.clone(),
             move |entry, _| {
                 let row = computed(move || entry.get().0);
+                if matches!(
+                    row.get_untracked().key.as_str(),
+                    "no-sources" | "no-matches"
+                ) {
+                    return view().child(super::super::nsh_form::status(
+                        move || state.get().colors,
+                        move || state.get().colors.text_secondary,
+                        text(move || row.get().label),
+                    ));
+                }
                 let commands = rows_commands.clone();
                 view()
                     .w_full()

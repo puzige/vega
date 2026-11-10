@@ -437,17 +437,14 @@ impl ThreadsBlock {
         }
         body.into_any_element()
     }
-    pub(super) fn section_label(&self, text: &str, cx: &App) -> AnyElement {
+    pub(super) fn section_label(&self, text: &str, _: &App) -> AnyElement {
         let section = [
             vega_i18n::t("sidebar.pinned"),
             vega_i18n::t("sidebar.projects"),
             vega_i18n::t("sidebar.recents"),
         ]
         .contains(&text);
-        let _ = cx;
-        let mut item = nsh_leaf::Item::action(text, None);
-        item.enabled = false;
-        item.section = section;
+        let item = nsh_leaf::Item::label(text, section);
         nsh_leaf::host(
             format!("sidebar-label-{text}"),
             None,

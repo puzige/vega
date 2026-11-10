@@ -47,6 +47,7 @@ pub(super) fn background(
     div()
         .absolute()
         .inset_0()
+        .size_full()
         .child(host(key, PixelsInput::Background(color), window, cx))
         .into_any_element()
 }
@@ -55,6 +56,7 @@ pub(super) fn group(colors: ThemeColors, window: &mut Window, cx: &mut App) -> A
     div()
         .absolute()
         .inset_0()
+        .size_full()
         .child(host(
             "settings-defaults-group",
             PixelsInput::Group {
@@ -205,6 +207,7 @@ struct Host {
     height: f32,
     ready: bool,
     surface: Option<Surface<Snapshot, Measurement>>,
+    observation: Option<Subscription>,
     _release: Subscription,
 }
 
@@ -227,6 +230,7 @@ impl Host {
     }
 
     fn reset(&mut self, cx: &App) {
+        self.observation = None;
         if let Some(surface) = self.surface.take() {
             surface.entity().read(cx).stop();
         }
@@ -249,6 +253,7 @@ fn host(
         id: ProjectionId::new(),
         width: 0.,
         surface: None,
+        observation: None,
         _release: cx.on_release(|host: &mut Host, cx| {
             if let Some(surface) = host.surface.take() {
                 surface.entity().read(cx).stop();
@@ -280,6 +285,7 @@ impl Render for Host {
                 cx,
             );
             surface.focus_handle(cx).tab_stop(false);
+            self.observation = Some(cx.observe(&surface.entity(), |_, _, cx| cx.notify()));
             self.surface = Some(surface);
             cx.spawn_in(window, async move |host, cx| {
                 while let Some(measurement) = measurements.recv().await {
@@ -400,76 +406,73 @@ impl Element for Passive {
 }
 
 fn pixels(state: ns::Signal<Snapshot>, measurements: mpsc::Sender<Measurement>) -> ns::AnyElement {
-    ns::dynamic(move || {
-        let snapshot = state.get();
-        let base = ns::view().size_full().accessibility_elements_hidden(true);
-        match snapshot.input {
-            PixelsInput::Background(color) | PixelsInput::Rule(color) => {
-                base.bg(crate::nsh::color(color)).into_element()
-            }
-            PixelsInput::Group { fill, border } => base
-                .bg(crate::nsh::color(fill))
-                .border(ns::px(1.))
-                .border_color(crate::nsh::color(border))
-                .rounded(ns::px(Layout::PANEL_RADIUS))
-                .into_element(),
-            PixelsInput::Label {
-                text,
-                color,
-                font,
-                size,
-            } => {
-                let mut families = vec![font.family.to_string()];
-                if let Some(fallbacks) = &font.fallbacks {
-                    families.extend(fallbacks.fallback_list().iter().cloned());
-                }
-                let mut label = ns::text(text.clone())
-                    .label(text)
-                    .w_full()
-                    .flex_shrink_0()
-                    .text_size(ns::px(size))
-                    .line_height(ns::px(size * Typography::BODY_LINE_HEIGHT))
-                    .text_color(crate::nsh::color(color))
-                    .font_weight(ns::FontWeight(font.weight.0 as u16))
-                    .font_family(
-                        families
-                            .iter()
-                            .map(|family| format!("\"{family}\""))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    );
-                if font.style != gpui_kit::FontStyle::Normal {
-                    label = label.italic();
-                }
-                for (tag, value) in font.features.tag_value_list() {
-                    if *value != 1 {
-                        continue;
-                    }
-                    label = match tag.as_str() {
-                        "smcp" => label.small_caps(),
-                        "onum" => label.oldstyle_nums(),
-                        "lnum" => label.lining_nums(),
-                        "tnum" => label.tabular_nums(),
-                        "pnum" => label.proportional_nums(),
-                        _ => label,
-                    };
-                }
-                let measurements = measurements.clone();
-                ns::view()
-                    .w(ns::px(snapshot.width))
-                    .flex_col()
-                    .flex_shrink_0()
-                    .on_layout(move |bounds: &ns::Bounds<ns::Points>| {
-                        let _ = measurements.try_send(Measurement {
-                            id: snapshot.id.clone(),
-                            width: snapshot.width,
-                            height: bounds.size.height.0,
-                        });
-                    })
-                    .child(label)
-                    .into_element()
-            }
+    let snapshot = state.get_untracked();
+    let base = ns::view().size_full().accessibility_elements_hidden(true);
+    match snapshot.input {
+        PixelsInput::Background(color) | PixelsInput::Rule(color) => {
+            base.bg(crate::nsh::color(color)).into_element()
         }
-    })
-    .into_element()
+        PixelsInput::Group { fill, border } => base
+            .bg(crate::nsh::color(fill))
+            .border(ns::px(1.))
+            .border_color(crate::nsh::color(border))
+            .rounded(ns::px(Layout::PANEL_RADIUS))
+            .into_element(),
+        PixelsInput::Label {
+            text,
+            color,
+            font,
+            size,
+        } => {
+            let mut families = vec![font.family.to_string()];
+            if let Some(fallbacks) = &font.fallbacks {
+                families.extend(fallbacks.fallback_list().iter().cloned());
+            }
+            let mut label = ns::text(text.clone())
+                .label(text)
+                .w_full()
+                .flex_shrink_0()
+                .text_size(ns::px(size))
+                .line_height(ns::px(size * Typography::BODY_LINE_HEIGHT))
+                .text_color(crate::nsh::color(color))
+                .font_weight(ns::FontWeight(font.weight.0 as u16))
+                .font_family(
+                    families
+                        .iter()
+                        .map(|family| format!("\"{family}\""))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            if font.style != gpui_kit::FontStyle::Normal {
+                label = label.italic();
+            }
+            for (tag, value) in font.features.tag_value_list() {
+                if *value != 1 {
+                    continue;
+                }
+                label = match tag.as_str() {
+                    "smcp" => label.small_caps(),
+                    "onum" => label.oldstyle_nums(),
+                    "lnum" => label.lining_nums(),
+                    "tnum" => label.tabular_nums(),
+                    "pnum" => label.proportional_nums(),
+                    _ => label,
+                };
+            }
+            let measurements = measurements.clone();
+            ns::view()
+                .w(ns::px(snapshot.width))
+                .flex_col()
+                .flex_shrink_0()
+                .on_layout(move |bounds: &ns::Bounds<ns::Points>| {
+                    let _ = measurements.try_send(Measurement {
+                        id: snapshot.id.clone(),
+                        width: snapshot.width,
+                        height: bounds.size.height.0,
+                    });
+                })
+                .child(label)
+                .into_element()
+        }
+    }
 }

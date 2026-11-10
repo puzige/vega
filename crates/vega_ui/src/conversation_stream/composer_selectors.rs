@@ -686,7 +686,7 @@ impl Host {
             return;
         }
         let (surface, mut requests) =
-            Surface::new(self.snapshot.clone(), pixels::render, window, cx);
+            Surface::new_transparent(self.snapshot.clone(), pixels::render, window, cx);
         cx.spawn(async move |this, cx| {
             while let Some(request) = requests.recv().await {
                 if this

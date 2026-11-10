@@ -19,6 +19,7 @@ struct Snapshot {
     revision: u64,
     phase: UpdatePhase,
     automatic: bool,
+    help_open: bool,
     pending: bool,
     version: String,
     latest: Option<String>,
@@ -28,6 +29,8 @@ struct Snapshot {
     notes: String,
     colors: ThemeColors,
 }
+
+const HELP_ID: &str = "settings-updater-help";
 
 struct Decision {
     id: ProjectionId,
@@ -41,6 +44,7 @@ struct Decision {
 enum Request {
     Decide(Decision),
     Layout(f32),
+    Help(ProjectionId, bool),
     OpenLink(String),
 }
 
@@ -64,6 +68,23 @@ fn allowed(phase: &UpdatePhase, automatic: bool, action: UpdateRequest) -> bool 
 }
 
 impl SettingsView {
+    pub(in crate::settings) fn close_updater_help(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.settings_help_open.as_deref() != Some(HELP_ID) {
+            return false;
+        }
+        self.settings_help_open = None;
+        if let Some(page) = &self.updater_presentation {
+            page.surface.publish(self.update_snapshot(cx));
+            page.surface.focus(window, cx);
+        }
+        cx.notify();
+        true
+    }
+
     pub(in crate::settings) fn publish_updater(&mut self, cx: &App) {
         if let Some(presentation) = &mut self.updater_presentation {
             presentation.pending = false;
@@ -113,6 +134,7 @@ impl SettingsView {
             revision: self.updater_revision,
             phase: self.updater.phase.clone(),
             automatic: self.updater.automatic,
+            help_open: self.settings_help_open.as_deref() == Some(HELP_ID),
             pending: self
                 .updater_presentation
                 .as_ref()
@@ -138,10 +160,10 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::{IntoElement, ParentElement, Styled};
+        use gpui_kit::{InteractiveElement as _, IntoElement, ParentElement, Styled};
         if self.updater_presentation.is_none() {
             let (surface, mut requests) =
-                Surface::new(self.update_snapshot(cx), render, window, cx);
+                Surface::new_transparent(self.update_snapshot(cx), render, window, cx);
             self.updater_presentation = Some(Presentation {
                 surface,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
@@ -181,6 +203,12 @@ impl SettingsView {
                                     }
                                     let _ = command.reply.send(accepted);
                                 }
+                                Request::Help(id, open)
+                                    if this.section == 1 && this.updater_identity.matches(&id) =>
+                                {
+                                    this.settings_help_open = open.then(|| HELP_ID.to_owned());
+                                    cx.notify();
+                                }
                                 Request::Layout(height) if height.is_finite() && height > 0. => {
                                     if let Some(page) = &mut this.updater_presentation
                                         && (page.height - height).abs() > 0.5
@@ -218,6 +246,12 @@ impl SettingsView {
         page.surface.sync_environment(cx);
         page.surface.publish(snapshot);
         gpui_kit::div()
+            .on_mouse_down_out(cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
+                if this.settings_help_open.as_deref() == Some(HELP_ID) {
+                    this.settings_help_open = None;
+                    cx.notify();
+                }
+            }))
             .w_full()
             .flex_shrink_0()
             .h(gpui_kit::px(page.height))
@@ -266,7 +300,7 @@ impl Actions {
     }
 }
 
-fn control(state: Signal<Snapshot>) -> nsh_core::element::View {
+fn focus_ring(state: Signal<Snapshot>, quiet: bool) -> nsh_core::element::View {
     let target = element_ref();
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
@@ -277,13 +311,13 @@ fn control(state: Signal<Snapshot>) -> nsh_core::element::View {
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 state.get().colors.accent
+            } else if quiet {
+                state.get().colors.bg_base.opacity(0.)
             } else {
                 state.get().colors.border_subtle
             })
         })
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .px_3()
-        .py_2()
 }
 
 fn action_button(
@@ -292,7 +326,7 @@ fn action_button(
     key: &'static str,
     action: UpdateRequest,
 ) -> AnyElement {
-    control(actions.state)
+    focus_ring(actions.state, false)
         .role(AccessibilityRole::Button)
         .label(move || actions.state.with(|_| vega_i18n::t(key)))
         .disabled(move || {
@@ -310,23 +344,86 @@ fn action_button(
         .into_element()
 }
 
+fn update_help(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    let trigger = focus_ring(state, true)
+        .focusable(true)
+        .role(AccessibilityRole::Button)
+        .label(move || state.with(|_| vega_i18n::t("settings.updater.help_label")))
+        .hint(move || state.with(|_| vega_i18n::t("settings.updater.help")))
+        .accessibility_state(move || AccessibilityState {
+            expanded: Some(state.get().help_open),
+            ..Default::default()
+        })
+        .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+        .items_center()
+        .justify_center()
+        .bg(move || {
+            let colors = state.get().colors;
+            crate::nsh::color(if state.get().help_open {
+                colors.bg_active
+            } else {
+                colors.bg_base.opacity(0.)
+            })
+        })
+        .hover(move |style| style.bg(crate::nsh::color(state.get().colors.bg_hover)))
+        .tooltip(text(move || {
+            state.with(|_| vega_i18n::t("settings.updater.help"))
+        }))
+        .child(
+            svg(nsh_core::element::ImageSrc::svg_markup(
+                &crate::icons::nsh_source(crate::icons::Icon::Help).unwrap_or_default(),
+            ))
+            .size(px(Layout::ICON_SIZE))
+            .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+            .tint_color(move || crate::nsh::color(state.get().colors.text_secondary).to_hsla()),
+        );
+    nsh_base::popover()
+        .open(move || Some(state.get().help_open))
+        .align(nsh_core::overlay::Align::End)
+        .on_open_change(move |event: &nsh_base::PopoverEvent| {
+            if let nsh_base::PopoverEvent::OpenChange(value, _) = event {
+                let commands = commands.clone();
+                let request = Request::Help(state.get_untracked().id, *value);
+                spawn(async move {
+                    let _ = commands.send(request).await;
+                });
+            }
+        })
+        .trigger(trigger)
+        .child(
+            view()
+                .w(px(Layout::SETTINGS_LABEL_WIDTH))
+                .max_w(relative(1.))
+                .p_3()
+                .rounded(px(Layout::MENU_RADIUS))
+                .border(px(1.))
+                .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
+                .bg(move || crate::nsh::color(state.get().colors.bg_elevated))
+                .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                .child(text(move || {
+                    state.with(|_| vega_i18n::t("settings.updater.help"))
+                })),
+        )
+        .into_element()
+}
+
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
         state,
         waiting: signal(false),
         failed: signal(false),
     };
-    let help = signal(false);
     let notes_open = signal(false);
     let measured = signal(0.0f32);
     let layout = commands.clone();
     let automatic = commands.clone();
     let buttons = commands.clone();
+    let help_commands = commands.clone();
     let links = commands;
     view()
         .w_full()
         .flex_shrink_0()
-        .gap_3()
+        .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .rounded(px(Layout::PANEL_RADIUS))
         .border(px(1.))
@@ -334,6 +431,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
             if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5
@@ -354,54 +452,44 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .justify_between()
                 .child(
                     text(move || state.with(|_| vega_i18n::t("settings.updater.title")))
-                        .text_size(px(Typography::HEADING_CARD)),
+                        .text_size(px(Typography::HEADING_BLOCK))
+                        .line_height(px(Typography::HEADING_BLOCK * Typography::BODY_LINE_HEIGHT))
+                        .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
                 )
-                .child(
-                    control(state)
-                        .role(AccessibilityRole::Button)
-                        .label(move || state.with(|_| vega_i18n::t("settings.updater.help_label")))
-                        .accessibility_state(move || nsh_core::AccessibilityState {
-                            expanded: Some(help.get()),
-                            ..Default::default()
-                        })
-                        .on_press(move |_: &nsh_core::PressEvent| {
-                            help.update(|value| *value = !*value)
-                        })
-                        .child(text(move || {
-                            state.with(|_| vega_i18n::t("settings.updater.help_label"))
-                        })),
-                ),
+                .child(update_help(state, help_commands)),
         )
-        .child(when(
-            move || help.get(),
-            move || text(move || state.with(|_| vega_i18n::t("settings.updater.help"))),
-        ))
-        .child(text(move || {
-            vega_i18n::t_args(
-                "settings.updater.current_version",
-                &[("version", &state.get().version)],
-            )
-        }))
-        .child(when(
-            move || state.get().latest.is_some(),
-            move || {
-                text(move || {
+        .child(super::super::nsh_form::field(
+            move || state.get().colors,
+            text(move || state.with(|_| vega_i18n::t("settings.updater.version"))),
+            Some(text(move || state.get().checked).into_element()),
+            view()
+                .gap_1()
+                .child(text(move || {
                     vega_i18n::t_args(
-                        "settings.updater.latest_version",
-                        &[("version", &state.get().latest.unwrap_or_default())],
+                        "settings.updater.current_version",
+                        &[("version", &state.get().version)],
                     )
-                })
-            },
+                }))
+                .child(when(
+                    move || state.get().latest.is_some(),
+                    move || {
+                        text(move || {
+                            vega_i18n::t_args(
+                                "settings.updater.latest_version",
+                                &[("version", &state.get().latest.unwrap_or_default())],
+                            )
+                        })
+                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
+                    },
+                )),
         ))
-        .child(
-            text(move || state.get().checked)
-                .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
-        )
-        .child(
-            control(state)
-                .flex_row()
-                .items_center()
-                .gap_2()
+        .child(super::super::nsh_form::field(
+            move || state.get().colors,
+            text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
+            None,
+            focus_ring(state, true)
+                .self_start()
+                .focusable(true)
                 .role(AccessibilityRole::Switch)
                 .label(move || state.with(|_| vega_i18n::t("settings.updater.automatic")))
                 .accessibility_state(move || nsh_core::AccessibilityState {
@@ -415,16 +503,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .disabled(move || {
                     actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase))
                 })
-                .bg(move || {
-                    crate::nsh::color(if state.get().automatic {
-                        state.get().colors.bg_active
-                    } else {
-                        state.get().colors.bg_elevated
-                    })
-                })
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .px_3()
-                .py_2()
                 .on_press(move |_: &nsh_core::PressEvent| {
                     actions.send(
                         automatic.clone(),
@@ -459,11 +537,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                 .rounded(px(Layout::ICON_SIZE / 2.))
                                 .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
                         ),
-                )
-                .child(text(move || {
-                    state.with(|_| vega_i18n::t("settings.updater.automatic"))
-                })),
-        )
+                ),
+        ))
         .child(when(
             move || {
                 state.get().message.as_ref().is_some_and(|message| {
@@ -529,7 +604,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 view()
                     .gap_2()
                     .child(
-                        control(state)
+                        focus_ring(state, false)
+                            .px_3()
+                            .py_2()
                             .role(AccessibilityRole::Button)
                             .label(move || {
                                 state.with(|_| {

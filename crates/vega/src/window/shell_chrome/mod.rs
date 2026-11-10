@@ -484,7 +484,7 @@ impl Host {
         if self.surface.is_some() {
             return;
         }
-        let (surface, mut requests) = Surface::new(snapshot, view::render, window, cx);
+        let (surface, mut requests) = Surface::new_transparent(snapshot, view::render, window, cx);
         let mut errors = surface.errors();
         cx.spawn(async move |this, cx| {
             while let Some(request) = requests.recv().await {

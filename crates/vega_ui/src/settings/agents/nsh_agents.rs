@@ -241,7 +241,7 @@ impl SettingsView {
         if self.agents_presentation.is_none() {
             let id = ProjectionId::new();
             let (surface, mut requests) =
-                Surface::new(self.agents_snapshot(id.clone(), cx), render, window, cx);
+                Surface::new_transparent(self.agents_snapshot(id.clone(), cx), render, window, cx);
             self.agents_presentation = Some(Presentation {
                 surface,
                 id,
@@ -471,44 +471,12 @@ fn field_row(
     description: Option<&'static str>,
     control: AnyElement,
 ) -> AnyElement {
-    let mut label = view()
-        .w(px(Layout::SETTINGS_LABEL_WIDTH))
-        .max_w(relative(1.))
-        .flex_shrink_0()
-        .py_1()
-        .gap_1()
-        .child(translated(state, key));
-    if let Some(description) = description {
-        label = label.child(
-            text(move || state.with(|_| vega_i18n::t(description)))
-                .text_size(px(Typography::METADATA))
-                .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
-        );
-    }
-    view()
-        .w_full()
-        .min_w(px(0.))
-        .flex_shrink_0()
-        .flex_row()
-        .flex_wrap()
-        .items_start()
-        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
-        .gap_y_2()
-        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
-        .border_b_1()
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .child(label)
-        .child(
-            view()
-                .flex_1()
-                .basis(px(220.))
-                .min_w(px(0.))
-                .max_w(relative(1.))
-                .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-                .justify_center()
-                .child(control),
-        )
-        .into_element()
+    super::super::nsh_form::field(
+        move || state.get().colors,
+        translated(state, key),
+        description.map(|key| translated(state, key)),
+        control,
+    )
 }
 
 fn heading(state: Signal<Snapshot>, key: &'static str) -> AnyElement {
@@ -533,6 +501,16 @@ fn field(actions: Actions, draft: Draft, index: usize, key: &'static str) -> Any
         nsh_base::input()
             .element_ref(&target)
             .label(move || actions.state.with(|_| vega_i18n::t(key)))
+            .placeholder(move || {
+                actions.state.with(|_| {
+                    vega_i18n::t(match index {
+                        0 => "settings.agents.codex.name_placeholder",
+                        1 => "settings.agents.codex.executable_placeholder",
+                        _ => "settings.agents.codex.arguments_placeholder",
+                    })
+                    .to_owned()
+                })
+            })
             .value(move || value.get())
             .multiline(index == 2)
             .readonly(move || {
@@ -601,7 +579,11 @@ fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> A
     field_row(
         actions.state,
         key,
-        None,
+        Some(if desktop {
+            "settings.agents.desktop.description"
+        } else {
+            "settings.agents.browser.description"
+        }),
         view()
             .element_ref(&target)
             .role(AccessibilityRole::Switch)
@@ -686,6 +668,15 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .child(
             group(state)
                 .child(heading(state, "settings.agents.native.title"))
+                .child(
+                    text(move || {
+                        state.with(|_| vega_i18n::t("settings.agents.native.description"))
+                    })
+                    .mt_2()
+                    .text_size(px(Typography::METADATA))
+                    .line_height(px(Typography::METADATA * Typography::BODY_LINE_HEIGHT))
+                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+                )
                 .child(toggle(actions, commands.clone(), true))
                 .child(toggle(actions, commands.clone(), false))
                 .child(

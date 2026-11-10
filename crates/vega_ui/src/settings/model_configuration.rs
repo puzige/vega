@@ -16,7 +16,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.guard_default_permission_close(window, cx) {
+        if self.guard_default_permission_close(window, cx) || self.close_updater_help(window, cx) {
             cx.stop_propagation();
         } else if self.settings_help_open.take().is_some() {
             window.focus(&self.settings_help_focus, cx);

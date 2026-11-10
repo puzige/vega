@@ -69,18 +69,15 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                 .text_color(color(colors.text_primary));
             match snapshot.observation.kind {
                 Kind::Header => {
-                    body = body
-                        .border_b_1()
-                        .border_b_color(color(colors.border_subtle))
-                        .child(
-                            text(snapshot.observation.title.clone())
-                                .min_w(px(0.))
-                                .flex_1()
-                                .truncate()
-                                .text_size(px(Typography::HEADING_PAGE))
-                                .label(snapshot.observation.title.clone())
-                                .font_weight(FontWeight(Typography::HEADING_PAGE_WEIGHT.0 as u16)),
-                        );
+                    body = body.child(
+                        text(snapshot.observation.title.clone())
+                            .min_w(px(0.))
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(Typography::HEADING_PAGE))
+                            .label(snapshot.observation.title.clone())
+                            .font_weight(FontWeight(Typography::HEADING_PAGE_WEIGHT.0 as u16)),
+                    );
                 }
                 Kind::Error => {
                     let sender = commands.clone();

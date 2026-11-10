@@ -206,16 +206,18 @@ fn blocks(authority: &Authority) -> Vec<Block> {
         ),
         control(t("settings.mcp.refresh"), McpAction::Reload, idle),
     ];
+    let mut result = vec![top];
+    let mut status = block("availability", "");
     if !authority.available {
-        top.lines.push(t("settings.mcp.unavailable").into());
-        top.warning = true;
+        status.lines.push(t("settings.mcp.unavailable").into());
+        status.warning = true;
     } else if authority.loading {
-        top.lines.push(t("settings.mcp.loading").into());
+        status.lines.push(t("settings.mcp.loading").into());
     } else if authority.servers.is_empty() {
-        top.lines.push(t("settings.mcp.empty").into());
+        status.lines.push(t("settings.mcp.empty").into());
     }
     if authority.busy && !authority.loading {
-        top.lines.push(
+        status.lines.push(
             t(if authority.waiting {
                 "settings.mcp.oauth.waiting_disabled"
             } else {
@@ -224,7 +226,9 @@ fn blocks(authority: &Authority) -> Vec<Block> {
             .into(),
         );
     }
-    let mut result = vec![top];
+    if !status.lines.is_empty() {
+        result.push(status);
+    }
     if let Some(message) = &authority.message {
         let mut item = block("message", "");
         item.lines.push(message.clone());
@@ -735,7 +739,7 @@ impl SettingsView {
         if self.mcp.presentation.is_none() {
             let id = ProjectionId::new();
             let (surface, mut requests) =
-                Surface::new(self.mcp_snapshot(id.clone(), cx), render, window, cx);
+                Surface::new_transparent(self.mcp_snapshot(id.clone(), cx), render, window, cx);
             self.mcp.presentation = Some(Presentation {
                 surface,
                 id,
@@ -1393,6 +1397,41 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             |(block, _)| block.key.clone(),
             move |entry, _| {
                 let block = computed(move || entry.get().0);
+                if matches!(
+                    block.get_untracked().key.as_str(),
+                    "availability" | "message"
+                ) {
+                    return view().child(each(
+                        move || {
+                            block
+                                .get()
+                                .lines
+                                .into_iter()
+                                .enumerate()
+                                .collect::<Vec<_>>()
+                        },
+                        |(index, _)| *index,
+                        move |line, _| {
+                            super::super::nsh_form::status(
+                                move || state.get().colors,
+                                move || {
+                                    let b = block.get();
+                                    let colors = state.get().colors;
+                                    if b.warning {
+                                        if b.key == "message" {
+                                            colors.danger
+                                        } else {
+                                            colors.warning
+                                        }
+                                    } else {
+                                        colors.text_secondary
+                                    }
+                                },
+                                text(move || line.get().1),
+                            )
+                        },
+                    ));
+                }
                 let commands = rows_commands.clone();
                 let framed =
                     move || !matches!(block.get().key.as_str(), "top" | "message" | "waiting");
@@ -1420,13 +1459,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         move || !block.get().title.is_empty(),
                         move || {
                             text(move || block.get().title)
-                                .text_size(move || {
-                                    px(if block.get().key == "top" {
-                                        Typography::HEADING_PAGE
-                                    } else {
-                                        Typography::HEADING_BLOCK
-                                    })
-                                })
+                                .text_size(px(Typography::HEADING_BLOCK))
                                 .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16))
                         },
                     ))

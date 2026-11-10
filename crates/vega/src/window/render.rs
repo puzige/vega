@@ -942,6 +942,22 @@ impl VegaWindow {
             .flex()
             .items_center()
             .gap_2()
+            .relative()
+            .border_b_1()
+            .border_color(gpui_kit::transparent_black())
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .w_full()
+                    .child(nsh_workspace::separator(
+                        "nsh-main-header-rule",
+                        false,
+                        window,
+                        cx,
+                    )),
+            )
             .pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
             .when(!sidebar_visible, |header| {
                 header

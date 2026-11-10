@@ -410,7 +410,8 @@ fn selectable_user_message(
         cx,
     );
     let content = div()
-        .w_full()
+        .w(px(preview.content_width))
+        .max_w(gpui_kit::relative(1.))
         .min_w_0()
         .flex()
         .flex_col()

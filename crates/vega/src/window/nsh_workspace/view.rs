@@ -7,43 +7,12 @@ use vega_ui::icons::Icon;
 use vega_ui::nsh::{OrderedCommands, color};
 
 fn glyph(kind: Icon, ink: gpui_kit::Rgba) -> AnyElement {
-    let path = match kind {
-        Icon::Close => "<path d='m18 6-12 12M6 6l12 12'/>",
-        Icon::Plus => "<path d='M12 5v14M5 12h14'/>",
-        Icon::ChevronDown => "<path d='m6 9 6 6 6-6'/>",
-        Icon::ChevronRight => "<path d='m9 6 6 6-6 6'/>",
-        Icon::Maximize => "<path d='M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5'/>",
-        Icon::DockMove => {
-            "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18M6 12h6m-3-3 3 3-3 3'/>"
-        }
-        Icon::Folder => {
-            "<path d='M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z'/>"
-        }
-        Icon::Terminal => "<path d='m4 7 5 5-5 5m8 0h8'/>",
-        Icon::Bot => {
-            "<rect x='4' y='7' width='16' height='14' rx='2'/><path d='M12 7V3H9M1 13h3m16 0h3M8 12h.01M16 12h.01M9 17h6'/>"
-        }
-        Icon::Split => "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M12 3v18'/>",
-        Icon::Camera => {
-            "<path d='M14 4h-4L8 7H4a2 2 0 0 0-2 2v11h20V9a2 2 0 0 0-2-2h-4Z'/><circle cx='12' cy='13' r='3'/>"
-        }
-        Icon::Goal => {
-            "<circle cx='12' cy='12' r='9'/><circle cx='12' cy='12' r='5'/><circle cx='12' cy='12' r='1'/>"
-        }
-        Icon::Refresh => {
-            "<path d='M3 11a9 9 0 0 1 15-6l3 3M21 3v5h-5M21 13A9 9 0 0 1 6 19l-3-3M3 21v-5h5'/>"
-        }
-        _ => {
-            "<path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z'/><path d='M14 2v6h6M8 13h8M8 17h6'/>"
-        }
-    };
-    let source = format!(
-        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>{path}</svg>"
-    );
+    let source = vega_ui::icons::nsh_source(kind).unwrap_or_default();
     svg(ImageSrc::svg_markup(&source))
         .size(px(Layout::ICON_SIZE))
         .flex_shrink_0()
         .text_color(color(ink))
+        .tint_color(color(ink).to_hsla())
         .into_element()
 }
 
@@ -191,6 +160,7 @@ fn button(
     let accessibility_commands = commands.clone();
     let activation_observed = observed.clone();
     let chosen = control.chosen;
+    let grouped = matches!(control.action, Action::Select(_));
     let name = control.label.clone();
     let mut result = view()
         .element_ref(&target)
@@ -231,7 +201,7 @@ fn button(
                 },
             )
         })
-        .bg(color(if chosen {
+        .bg(color(if chosen && !grouped {
             colors.bg_active_alpha
         } else {
             colors.bg_base.alpha(0.)
@@ -250,6 +220,9 @@ fn button(
                 action.clone(),
             ))
         });
+    if control.icon_only {
+        result = result.w(px(Layout::TAB_HEIGHT)).px_0().justify_center();
+    }
     if let Some(icon) = control.icon {
         result = result.child(glyph(icon, colors.text_secondary));
     }
@@ -279,40 +252,45 @@ pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>
         .child(dynamic(move || {
             let snapshot = content.get();
             let colors = snapshot.colors;
-            let mut root = scroll().size_full().min_w_0().bg(color(
-                if snapshot.mode == Mode::Environment || snapshot.mode == Mode::Menu {
-                    colors.bg_elevated
-                } else {
-                    colors.bg_base
-                },
-            ));
-            if snapshot.mode == Mode::Header {
+            let body = if snapshot.mode == Mode::Header {
                 let viewport = element_ref();
                 let offset = signal((0f32, 0f32));
                 let scroll_commands = commands.clone();
                 let scroll_id = snapshot.id.clone();
-                root = root
+                let mut root = view()
+                    .size_full()
+                    .min_w_0()
+                    .flex_row()
+                    .items_center()
+                    .px_1()
+                    .gap_1();
+                if let Some(hide) = snapshot.controls.first().cloned() {
+                    root = root.child(button(state, &snapshot, hide, commands.clone(), None));
+                }
+                let mut strip = scroll()
+                    .min_w_0()
+                    .flex_1()
+                    .h_full()
+                    .horizontal()
                     .element_ref(&viewport)
                     .flex_row()
                     .items_center()
                     .gap_1()
-                    .px_1()
-                    .horizontal()
                     .on_scroll(move |event: &ScrollEvent| {
                         offset.set((event.offset.x.0, event.offset.y.0));
                         scroll_commands.send(Request::Scrolled(scroll_id.clone()));
                     });
-                if let Some(hide) = snapshot.controls.first().cloned() {
-                    root = root.child(button(
-                        state,
-                        &snapshot,
-                        hide,
-                        commands.clone(),
-                        Some((viewport, offset, true)),
-                    ));
-                }
                 for tab in snapshot.tabs.clone() {
-                    root = root
+                    let group = view()
+                        .flex_row()
+                        .items_center()
+                        .flex_shrink_0()
+                        .rounded(px(Layout::TAB_RADIUS))
+                        .bg(color(if tab.open.chosen {
+                            colors.bg_active_alpha
+                        } else {
+                            colors.bg_base.alpha(0.)
+                        }))
                         .child(button(
                             state,
                             &snapshot,
@@ -327,17 +305,15 @@ pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>
                             commands.clone(),
                             Some((viewport, offset, true)),
                         ));
+                    strip = strip.child(group);
                 }
+                root = root.child(strip);
                 for control in snapshot.controls.iter().skip(1).cloned() {
-                    root = root.child(button(
-                        state,
-                        &snapshot,
-                        control,
-                        commands.clone(),
-                        Some((viewport, offset, true)),
-                    ));
+                    root = root.child(button(state, &snapshot, control, commands.clone(), None));
                 }
+                root.into_element()
             } else {
+                let mut root = scroll().size_full().min_w_0();
                 let viewport = element_ref();
                 let offset = signal((0f32, 0f32));
                 let scroll_commands = commands.clone();
@@ -370,17 +346,29 @@ pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>
                         Some((viewport, offset, false)),
                     ));
                 }
-            }
-            root.child(when(
-                move || failed.get(),
-                move || {
-                    label(
-                        vega_i18n::t("app.workspace.load_failed").into(),
-                        colors.danger,
-                    )
-                },
-            ))
-            .into_element()
+                root.into_element()
+            };
+            view()
+                .size_full()
+                .min_w_0()
+                .bg(color(
+                    if snapshot.mode == Mode::Environment || snapshot.mode == Mode::Menu {
+                        colors.bg_elevated
+                    } else {
+                        colors.bg_base
+                    },
+                ))
+                .child(body)
+                .child(when(
+                    move || failed.get(),
+                    move || {
+                        label(
+                            vega_i18n::t("app.workspace.load_failed").into(),
+                            colors.danger,
+                        )
+                    },
+                ))
+                .into_element()
         }))
         .into_element()
 }

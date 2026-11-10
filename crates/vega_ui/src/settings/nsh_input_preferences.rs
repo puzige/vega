@@ -72,7 +72,7 @@ impl SettingsView {
         use gpui_kit::{IntoElement, ParentElement, Styled};
         if self.input_preferences_presentation.is_none() {
             let id = ProjectionId::new();
-            let (surface, mut requests) = Surface::new(
+            let (surface, mut requests) = Surface::new_transparent(
                 self.input_preferences_snapshot(cx, id.clone()),
                 render,
                 window,
@@ -262,7 +262,20 @@ fn running_button(
         .on_press(move |_: &nsh_core::PressEvent| {
             actions.send(commands.clone(), Action::Running(behavior))
         })
+        .flex_row()
+        .items_center()
+        .gap_2()
         .child(text(move || actions.state.with(|_| behavior.label())))
+        .child(view().size(px(Layout::ICON_SIZE)).child(when(
+            move || actions.state.get().running == behavior.as_str(),
+            move || {
+                svg(nsh_core::element::ImageSrc::svg_markup(
+                    &crate::icons::nsh_source(crate::icons::Icon::Check).unwrap_or_default(),
+                ))
+                .size(px(Layout::ICON_SIZE))
+                .text_color(move || crate::nsh::color(actions.state.get().colors.text_primary))
+            },
+        )))
         .into_element()
 }
 
@@ -272,39 +285,12 @@ fn field_row(
     description: Option<&'static str>,
     control: AnyElement,
 ) -> AnyElement {
-    view()
-        .w_full()
-        .min_w_0()
-        .flex_shrink_0()
-        .flex_row()
-        .flex_wrap()
-        .items_start()
-        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
-        .gap_y_2()
-        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
-        .border_b_1()
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .child(
-            view()
-                .w(px(Layout::SETTINGS_LABEL_WIDTH))
-                .max_w(relative(1.))
-                .flex_shrink_0()
-                .py_1()
-                .gap_1()
-                .child(text(move || state.with(|_| vega_i18n::t(key))))
-                .child(when(
-                    move || description.is_some(),
-                    move || {
-                        text(move || {
-                            state.with(|_| description.map(vega_i18n::t).unwrap_or_default())
-                        })
-                        .text_size(px(Typography::METADATA))
-                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
-                    },
-                )),
-        )
-        .child(view().flex_1().basis(px(220.)).min_w_0().child(control))
-        .into_element()
+    super::nsh_form::field(
+        move || state.get().colors,
+        text(move || state.with(|_| vega_i18n::t(key))),
+        description.map(|key| text(move || state.with(|_| vega_i18n::t(key))).into_element()),
+        control,
+    )
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
@@ -320,13 +306,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .w_full()
         .flex_shrink_0()
         .gap_0()
-        .p(px(Layout::SETTINGS_GROUP_PADDING))
-        .border(px(1.))
-        .rounded(px(Layout::PANEL_RADIUS))
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
             if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5

@@ -448,6 +448,8 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(Typography::SIDEBAR_SECTION))
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
@@ -550,6 +552,8 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(px(Typography::SIDEBAR_SECTION))
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)

@@ -955,7 +955,7 @@ impl SettingsView {
             let id = snapshot.id.clone();
             let version = snapshot.version.clone();
             let fence = self.provider_controller_fence(cx);
-            let (surface, mut requests) = Surface::new(snapshot, render, window, cx);
+            let (surface, mut requests) = Surface::new_transparent(snapshot, render, window, cx);
             self.provider_management.presentation = Some(Presentation {
                 surface,
                 id,
@@ -1190,6 +1190,12 @@ fn button(
         &action,
         Action::Submit(_) | Action::Command(Command::SaveModel)
     );
+    let reload = matches!(&action, Action::Command(Command::Reload));
+    let quiet = matches!(
+        &action,
+        Action::Command(Command::Add | Command::Reload | Command::PriceLibrary)
+    ) || (matches!(&action, Action::Command(Command::Cancel))
+        && actions.state.get_untracked().authority.form);
     let rendered = computed(move || {
         actions.state.get();
         actions.edits.get();
@@ -1220,7 +1226,7 @@ fn button(
             }
         });
     }
-    view()
+    let control = view()
         .element_ref(&target)
         .role(AccessibilityRole::Button)
         .focusable(true)
@@ -1251,7 +1257,11 @@ fn button(
             crate::nsh::color(if focused.get() {
                 actions.state.get().colors.accent
             } else {
-                actions.state.get().colors.border_subtle
+                if quiet {
+                    actions.state.get().colors.bg_base.opacity(0.)
+                } else {
+                    actions.state.get().colors.border_subtle
+                }
             })
         })
         .bg(move || {
@@ -1264,6 +1274,8 @@ fn button(
                 }
             } else if item.get().selected == Some(true) {
                 colors.bg_active
+            } else if quiet {
+                colors.bg_base.opacity(0.)
             } else {
                 colors.bg_elevated
             })
@@ -1280,7 +1292,14 @@ fn button(
                 colors.text_primary
             })
         })
-        .tooltip(text(move || item.get().reason))
+        .tooltip(text(move || {
+            let item = item.get();
+            if reload && item.reason.is_empty() {
+                item.label
+            } else {
+                item.reason
+            }
+        }))
         .on_press(move || {
             let s = rendered.get_untracked();
             actions.send(
@@ -1290,9 +1309,16 @@ fn button(
                 action.clone(),
                 secret,
             );
-        })
-        .child(text(move || item.get().label))
-        .into_element()
+        });
+    if reload {
+        control
+            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .p_0()
+            .child(icon(crate::icons::Icon::Refresh, actions.state))
+            .into_element()
+    } else {
+        control.child(text(move || item.get().label)).into_element()
+    }
 }
 
 fn field(
@@ -1305,7 +1331,15 @@ fn field(
     readonly: bool,
 ) -> AnyElement {
     let value = secret.unwrap_or_else(|| signal(draft.read().text[index].clone()));
-    let multiline = index == 2 && actions.state.get_untracked().authority.form;
+    let form = actions.state.get_untracked().authority.form;
+    let multiline = index == 2 && form;
+    let placeholder = match (form, index) {
+        (true, 1) => "settings.field.base_url",
+        (true, 2) => "settings.provider.models_placeholder",
+        (false, 1) => "settings.provider.input_limit_placeholder",
+        (false, 2) => "settings.provider.output_limit_placeholder",
+        _ => key,
+    };
     let line_height = Typography::BODY * Typography::BODY_LINE_HEIGHT;
     let min_height = line_height * crate::settings::state::PROVIDER_MODELS_MIN_ROWS as f32;
     let max_height = line_height * crate::settings::state::PROVIDER_MODELS_MAX_ROWS as f32;
@@ -1337,6 +1371,7 @@ fn field(
         nsh_base::input()
             .element_ref(&target)
             .label(move || actions.state.with(|_| t(key)))
+            .placeholder(move || actions.state.with(|_| t(placeholder).to_owned()))
             .value(move || value.get())
             .masked(secret.is_some())
             .hint(move || {
@@ -1671,7 +1706,6 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
     });
     let back_commands = commands.clone();
     let mut body = view()
-        .element_ref(&root)
         .w_full()
         .min_w(px(0.))
         .flex_shrink_0()
@@ -1725,11 +1759,7 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
                 )
             },
         ))
-        .child(
-            view()
-                .mb_3()
-                .child(heading(t("settings.provider.add_update"))),
-        )
+        .child(view().child(heading(t("settings.provider.add_update"))))
         .child(
             view()
                 .flex_row()
@@ -1804,7 +1834,6 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
                 .flex_row()
                 .flex_wrap()
                 .items_center()
-                .mt_3()
                 .gap_2()
                 .child(button(
                     actions,
@@ -1812,16 +1841,22 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
                     Action::Submit(0),
                     None,
                     Some(secret),
-                ))
-                .child(button(
-                    actions,
-                    commands,
-                    Action::Command(Command::Cancel),
-                    None,
-                    None,
                 )),
         );
-    body.into_element()
+    view()
+        .element_ref(&root)
+        .w_full()
+        .min_w_0()
+        .gap(px(Layout::SETTINGS_CONTENT_GAP))
+        .child(body)
+        .child(button(
+            actions,
+            commands,
+            Action::Command(Command::Cancel),
+            None,
+            None,
+        ))
+        .into_element()
 }
 fn menu(actions: Actions, commands: mpsc::Sender<Request>, model: Option<String>) -> AnyElement {
     let open = signal(false);

@@ -231,6 +231,23 @@ impl DraftRecovery {
         state.saved = Some(state.local.clone());
     }
 
+    fn preserve_unsynchronized(&self, authoritative: &str) {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.local != authoritative {
+            state.saved = Some(state.local.clone());
+        }
+    }
+
+    fn consume_restored(&self, restored: &str) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.saved.as_deref() == Some(restored) {
+            state.saved = None;
+            true
+        } else {
+            false
+        }
+    }
+
     fn restarted(&self, text: String) -> Self {
         Self(Arc::new(Mutex::new(RecoveryState {
             local: text,
@@ -494,7 +511,7 @@ impl TextInput {
             if editor.native.attached() {
                 editor.draft.local(&editor.native.local_draft().text);
             }
-            editor.draft.preserve();
+            editor.draft.preserve_unsynchronized(&self.content);
             editor.restarting = true;
             editor.surface.entity().read(cx).stop();
             if let Some(page) = &editor.recovery_page {
@@ -961,8 +978,12 @@ impl TextInput {
                     native: transactional.then(|| native.clone()),
                     node: node_tx.clone(),
                 };
-                let (surface, mut requests) =
-                    crate::nsh::Surface::new(initial, render_composer_editor, window, cx);
+                let (surface, mut requests) = crate::nsh::Surface::new_transparent(
+                    initial,
+                    render_composer_editor,
+                    window,
+                    cx,
+                );
                 let mut errors = surface.errors();
                 let error_gate = gate.clone();
                 let error_draft = draft.clone();
@@ -1210,7 +1231,7 @@ impl TextInput {
                 editor.native.fail();
                 if editor.recovery_page.is_none() {
                     editor.draft.preserve();
-                    let (page, mut reloads) = crate::nsh::Surface::new(
+                    let (page, mut reloads) = crate::nsh::Surface::new_transparent(
                         RecoveryProjection {
                             id: editor.id.clone(),
                             draft: editor.draft.clone(),
@@ -1300,6 +1321,7 @@ impl TextInput {
                     && bridge
                         .is_some_and(|bridge| self.restore_native_draft(&bridge, &token, &after));
                 if accepted && let Some(editor) = &mut self.nsh_composer {
+                    editor.draft.consume_restored(&after);
                     editor.restarting = true;
                     editor.surface.entity().read(cx).stop();
                 }
@@ -1682,6 +1704,10 @@ impl Dispatch {
     }
 
     fn send(&self, operation: EditorOperation) {
+        self.enqueue(operation, None);
+    }
+
+    fn enqueue(&self, operation: EditorOperation, restored: Option<String>) {
         self.gate.close();
         if self.failed.get_untracked() {
             return;
@@ -1767,6 +1793,12 @@ impl Dispatch {
                                 } else {
                                     dispatch.revision.set(snapshot.revision);
                                     dispatch.selection_revision.set(selection_revision);
+                                    if let Some(restored) = &restored
+                                        && snapshot.text.as_ref() == restored.as_str()
+                                        && dispatch.draft.consume_restored(restored)
+                                    {
+                                        dispatch.recovery.set(None);
+                                    }
                                 }
                                 if decision == ReceiptDecision::Synchronize {
                                     dispatch.set_value(snapshot.text.to_string());
@@ -2164,11 +2196,17 @@ fn editor(
                                         } else {
                                             authority_failed.set(true);
                                         }
-                                    } else {
+                                    } else if restore.draft.saved().as_ref() == Some(&after) {
                                         restore.gate.close();
                                         let before = Arc::from(value.get_untracked());
                                         restore.set_value(after.clone());
-                                        restore.send(EditorOperation::Replace { before, after });
+                                        restore.enqueue(
+                                            EditorOperation::Replace {
+                                                before,
+                                                after: after.clone(),
+                                            },
+                                            Some(after),
+                                        );
                                     }
                                 }
                             })

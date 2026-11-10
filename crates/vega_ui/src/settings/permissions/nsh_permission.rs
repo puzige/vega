@@ -149,8 +149,12 @@ impl SettingsView {
         use gpui_kit::{IntoElement, ParentElement, Styled};
         if self.default_permission.presentation.is_none() {
             let id = ProjectionId::new();
-            let (surface, mut requests) =
-                Surface::new(self.permission_snapshot(cx, id.clone()), render, window, cx);
+            let (surface, mut requests) = Surface::new_transparent(
+                self.permission_snapshot(cx, id.clone()),
+                render,
+                window,
+                cx,
+            );
             self.default_permission.presentation = Some(Presentation {
                 surface,
                 id,
@@ -394,6 +398,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .flex_shrink_0()
         .gap_2()
         .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
@@ -444,6 +449,10 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 ..Default::default()
             })
             .disabled(move || actions.pending.get() || !state.get().enabled)
+            .self_start()
+            .max_w(relative(1.))
+            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+            .py_1()
             .flex_row()
             .items_center()
             .justify_between()

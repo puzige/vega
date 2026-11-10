@@ -29,11 +29,28 @@ pub(super) struct Item {
     pub emphasis: bool,
     pub hint: Option<String>,
     pub wrap: bool,
-    pub section: bool,
+    label_style: Option<LabelStyle>,
     pub tint: Option<gpui_kit::Rgba>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelStyle {
+    Heading,
+    Detail,
+}
+
 impl Item {
+    pub(super) fn label(text: impl Into<String>, heading: bool) -> Self {
+        let mut item = Self::action(text, None);
+        item.enabled = false;
+        item.label_style = Some(if heading {
+            LabelStyle::Heading
+        } else {
+            LabelStyle::Detail
+        });
+        item
+    }
+
     pub(super) fn action(label: impl Into<String>, icon: Option<Icon>) -> Self {
         Self {
             label: label.into(),
@@ -50,7 +67,7 @@ impl Item {
             emphasis: false,
             hint: None,
             wrap: false,
-            section: false,
+            label_style: None,
             tint: None,
         }
     }
@@ -640,7 +657,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     || a.emphasis != b.emphasis
                     || a.hint != b.hint
                     || a.wrap != b.wrap
-                    || a.section != b.section
+                    || a.label_style != b.label_style
                     || a.tint != b.tint
             });
         if changed {
@@ -900,6 +917,36 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 actions = actions.flex_row();
             }
             for (index, item) in items.into_iter().enumerate() {
+                if let Some(style) = item.label_style {
+                    let heading = style == LabelStyle::Heading;
+                    let mut label = ns::text(item.label.clone())
+                        .label(item.label)
+                        .w_full()
+                        .truncate()
+                        .text_size(ns::px(if heading {
+                            Typography::SIDEBAR_SECTION
+                        } else {
+                            Typography::SIDEBAR
+                        }))
+                        .text_color(crate::nsh::color(colors.text_tertiary));
+                    if heading {
+                        label = label.font_weight(ns::FontWeight(
+                            Typography::SIDEBAR_SECTION_WEIGHT.0 as u16,
+                        ));
+                    }
+                    actions = actions.child(
+                        ns::view()
+                            .w_full()
+                            .h(ns::px(if heading {
+                                28.
+                            } else {
+                                Typography::SIDEBAR_LINE_HEIGHT
+                            }))
+                            .justify_center()
+                            .child(label),
+                    );
+                    continue;
+                }
                 let sender = commands.clone();
                 let id = snapshot.id.clone();
                 let hover = ns::signal(false);
@@ -1031,13 +1078,6 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                         .min_w(ns::px(0.));
                     if !item.wrap {
                         label = label.truncate();
-                    }
-                    if item.section {
-                        label = label
-                            .text_size(ns::px(Typography::SIDEBAR_SECTION))
-                            .font_weight(nsh_core::element::FontWeight(
-                                Typography::SIDEBAR_SECTION_WEIGHT.0 as u16,
-                            ));
                     }
                     if item.emphasis {
                         label = label.font_weight(nsh_core::element::FontWeight(

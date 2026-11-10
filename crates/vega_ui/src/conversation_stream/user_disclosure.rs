@@ -17,6 +17,7 @@ pub(super) struct UserDisclosure {
 pub(super) struct UserPreview {
     pub(super) model: StreamModel,
     pub(super) collapsible: bool,
+    pub(super) content_width: f32,
     pub(super) height: f32,
     full_height: f32,
 }
@@ -48,6 +49,7 @@ pub(super) fn preview(
     let target = (Layout::USER_MESSAGE_COLLAPSE_LINES - 1) as f32 * line_height;
     let mut height = 0.;
     let mut visible_height = 0.;
+    let mut content_width: f32 = 0.;
     let mut visible = Vec::new();
     let mut stopped = false;
     let mut index = 0;
@@ -64,6 +66,7 @@ pub(super) fn preview(
         let mut end = index + 1;
         let mut table_preview = None;
         let (block_height, cutoff) = if line.kind == LineKind::Code {
+            content_width = width;
             while end < lines.len() && lines[end].continues_code_block(line) {
                 end += 1;
             }
@@ -79,6 +82,7 @@ pub(super) fn preview(
                 None,
             )
         } else if let Some(table) = &line.table {
+            content_width = width;
             let row_heights = table_row_heights(line, table, width, colors, window);
             let mut preview_height = 0.;
             let mut rows = 0;
@@ -98,6 +102,7 @@ pub(super) fn preview(
             }
             (row_heights.iter().sum(), None)
         } else if line.kind == LineKind::Rule {
+            content_width = width;
             (9., None)
         } else {
             let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
@@ -127,6 +132,7 @@ pub(super) fn preview(
                 px((width - inset).max(1.)),
                 window,
             );
+            content_width = content_width.max(inset + f32::from(flow.size.width));
             let remaining = target - height - gap;
             let cutoff = flow
                 .fragments
@@ -165,6 +171,7 @@ pub(super) fn preview(
     let preview = Rc::new(UserPreview {
         model: StreamModel::from_visible_lines(visible),
         collapsible,
+        content_width: content_width.ceil().clamp(1., width.max(1.)),
         height: visible_height,
         full_height: height,
     });
@@ -207,7 +214,9 @@ fn measure_text(
     };
     let mut offset = 0;
     let mut y = px(0.);
+    let mut widest = px(0.);
     for line in lines {
+        widest = widest.max(line.width());
         let mut from = 0;
         for to in line
             .wrap_boundaries
@@ -226,7 +235,7 @@ fn measure_text(
         }
         offset += line.len() + 1;
     }
-    result.size = gpui_kit::size(width, y);
+    result.size = gpui_kit::size(widest.min(width), y);
     result
 }
 

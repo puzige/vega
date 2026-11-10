@@ -1,5 +1,7 @@
 # #907 — Native acceptance evidence inventory and blockers
 
+2026-11-10 实机续验已在新版应用复现会话崩溃并开始修复。当前结果见[原版与 NSH 生产窗口对照](nsh-native-parity-loop.md)；下文各版本的取证时间与状态保留。
+
 ## Current AX repair and visual-loop boundary
 
 The user subsequently authorized the minimal fixed-version AX repair. Its implementation, 12/12 development regressions, independent closure of both review findings, restored-production-dependency checks and exact candidate binary are recorded in [AX replay repair](nsh-ax-replay-fix.md). This supersedes the earlier authorization denial below; the original crash evidence is retained as history, not a current prohibition.

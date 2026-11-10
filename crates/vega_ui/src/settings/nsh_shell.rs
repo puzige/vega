@@ -135,7 +135,7 @@ impl SettingsView {
                 |snapshot, requests| render(snapshot, requests, false)
             };
             let (surface, mut requests) =
-                Surface::new(self.shell_snapshot(id.clone(), cx), renderer, window, cx);
+                Surface::new_transparent(self.shell_snapshot(id.clone(), cx), renderer, window, cx);
             let focus = cx.focus_handle().tab_stop(!heading);
             let focus_subscriptions = if heading {
                 Vec::new()
@@ -442,16 +442,18 @@ fn button(
         .items_center()
         .gap_2()
         .px_2()
-        .py_2()
         .w_full()
-        .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
+        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+        .flex_shrink_0()
+        .text_size(px(Typography::SIDEBAR))
+        .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .border(px(1.))
         .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
         .border_color(move || {
             crate::nsh::color(if focused.get() {
                 state.get().colors.accent
             } else {
-                state.get().colors.bg_base
+                state.get().colors.bg_base.opacity(0.)
             })
         })
         .bg(move || {
@@ -459,9 +461,20 @@ fn button(
                 if section.is_some_and(|section| state.get().selected == section) {
                     state.get().colors.bg_active
                 } else {
-                    state.get().colors.bg_base
+                    state.get().colors.bg_base.opacity(0.)
                 },
             )
+        })
+        .hover(|style| {
+            style.bg(move || {
+                crate::nsh::color(
+                    if section.is_some_and(|section| state.get().selected == section) {
+                        state.get().colors.bg_active
+                    } else {
+                        state.get().colors.bg_hover
+                    },
+                )
+            })
         })
         .on_press(move |_: &PressEvent| {
             let observed = state.get_untracked();
@@ -521,6 +534,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>, heading: boo
             .child(
                 text(move || state.with(|snapshot| section_label(snapshot.authority.section)))
                     .text_size(px(Typography::SETTINGS_TITLE))
+                    .line_height(px(Typography::SETTINGS_TITLE * Typography::BODY_LINE_HEIGHT))
+                    .font_weight(FontWeight(Typography::HEADING_PAGE_WEIGHT.0 as u16))
                     .text_color(move || crate::nsh::color(state.get().colors.text_primary)),
             )
             .child(when(
@@ -538,12 +553,14 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>, heading: boo
     scroll()
         .w_full()
         .h_full()
+        .bg(move || crate::nsh::color(state.get().colors.bg_sidebar))
+        .border_r_1()
+        .border_r_color(move || crate::nsh::color(state.get().colors.border_subtle))
         .child(
             view()
                 .w_full()
                 .pt(px(Layout::MAIN_HEADER_HEIGHT))
-                .px_3()
-                .gap_2()
+                .px(px(Layout::SIDEBAR_PADDING))
                 .child(button(
                     state,
                     commands.clone(),

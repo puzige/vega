@@ -86,9 +86,9 @@ impl SettingsView {
                         colors,
                         window,
                         cx,
-                    )),
+                    ))
+                    .child(self.render_input_preferences(window, cx)),
             )
-            .child(self.render_input_preferences(window, cx))
             .child(self.render_updater(window, cx))
             .into_any_element()
     }

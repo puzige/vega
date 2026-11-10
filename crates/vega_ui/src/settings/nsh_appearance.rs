@@ -68,8 +68,12 @@ impl SettingsView {
         use gpui_kit::{IntoElement, ParentElement, Styled};
         if self.appearance_presentation.is_none() {
             let id = ProjectionId::new();
-            let (surface, mut requests) =
-                Surface::new(self.appearance_snapshot(cx, id.clone()), render, window, cx);
+            let (surface, mut requests) = Surface::new_transparent(
+                self.appearance_snapshot(cx, id.clone()),
+                render,
+                window,
+                cx,
+            );
             self.appearance_presentation = Some(Presentation {
                 surface,
                 id,
@@ -248,41 +252,19 @@ fn control(
                 actions.state.get().colors.bg_elevated
             })
         })
-        .text_color(move || {
-            crate::nsh::color(if selected(&actions.state.get(), action) {
-                actions.state.get().colors.brand_primary
-            } else {
-                actions.state.get().colors.text_primary
-            })
-        })
+        .text_color(move || crate::nsh::color(actions.state.get().colors.text_primary))
         .on_press(move |_: &nsh_core::PressEvent| actions.send(commands.clone(), action))
         .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
         .into_element()
 }
 
 fn field_row(state: Signal<Snapshot>, key: &'static str, control: AnyElement) -> AnyElement {
-    view()
-        .w_full()
-        .min_w_0()
-        .flex_shrink_0()
-        .flex_row()
-        .flex_wrap()
-        .items_start()
-        .gap_x(px(Layout::SETTINGS_FIELD_GAP))
-        .gap_y_2()
-        .py(px(Layout::SETTINGS_ROW_PADDING_Y))
-        .border_b_1()
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .child(
-            view()
-                .w(px(Layout::SETTINGS_LABEL_WIDTH))
-                .max_w(relative(1.))
-                .flex_shrink_0()
-                .py_1()
-                .child(text(move || state.with(|_| vega_i18n::t(key)))),
-        )
-        .child(view().flex_1().basis(px(220.)).min_w_0().child(control))
-        .into_element()
+    super::nsh_form::field(
+        move || state.get().colors,
+        text(move || state.with(|_| vega_i18n::t(key))),
+        None,
+        control,
+    )
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
@@ -309,6 +291,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
+        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
             if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5
@@ -324,7 +307,9 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         })
         .child(
             text(move || state.with(|_| vega_i18n::t("settings.appearance.title")))
-                .text_size(px(Typography::HEADING_CARD)),
+                .text_size(px(Typography::HEADING_BLOCK))
+                .line_height(px(Typography::HEADING_BLOCK * Typography::BODY_LINE_HEIGHT))
+                .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
         )
         .child(field_row(
             state,

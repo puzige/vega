@@ -220,7 +220,7 @@ fn inline_data(kind: Icon) -> Option<&'static [u8]> {
     })
 }
 
-pub(crate) fn nsh_source(kind: Icon) -> Option<String> {
+pub fn nsh_source(kind: Icon) -> Option<String> {
     if let Some(data) = inline_data(kind) {
         return std::str::from_utf8(data).ok().map(str::to_owned);
     }

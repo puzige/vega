@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 use vega_conversation::types::{TerminalColor, TerminalSnapshot, TerminalStatus};
-use vega_theme::{ThemeColors, Typography};
+use vega_theme::{Layout, ThemeColors, Typography};
 
 use crate::nsh::OrderedCommands;
 
@@ -14,6 +14,7 @@ const PAD: f32 = 8.;
 #[derive(Clone)]
 pub(super) struct Projection {
     pub snapshot: Option<Arc<TerminalSnapshot>>,
+    pub cell_width: Option<f32>,
     pub epoch: u64,
     pub colors: ThemeColors,
     pub status_label: String,
@@ -174,7 +175,12 @@ fn ansi(color: TerminalColor, fallback: gpui_kit::Rgba) -> Rgba {
     }
 }
 
-fn draw(projection: &Projection, metrics: Metrics, selection: Option<Selection>) -> Painter {
+fn draw(
+    projection: &Projection,
+    metrics: Metrics,
+    selection: Option<Selection>,
+    show_cursor: bool,
+) -> Painter {
     let mut painter = Painter::new();
     let Some(snapshot) = &projection.snapshot else {
         return painter;
@@ -214,14 +220,15 @@ fn draw(projection: &Projection, metrics: Metrics, selection: Option<Selection>)
                 .fill_text(&cell.text, x, y + metrics.line * 0.5);
         }
     }
-    if snapshot.scrollback == 0
+    if show_cursor
+        && snapshot.scrollback == 0
         && let Some((row, col)) = snapshot.cursor
     {
         painter = painter.fill_style(rgb(projection.colors.accent)).fill_rect(
             PAD + f32::from(col) * metrics.cell,
-            PAD + f32::from(row) * metrics.line,
+            PAD + (f32::from(row) + 1.) * metrics.line - 2.,
+            metrics.cell,
             2.,
-            metrics.line,
         );
     }
     painter
@@ -276,6 +283,7 @@ fn bindings(
     queue: InputQueue,
     projection: Signal<Projection>,
     selection: Signal<Option<Selection>>,
+    menu_open: Signal<bool>,
 ) -> impl IntoElement {
     let bind = |key: &str, bytes: Vec<u8>| {
         let queue = queue.clone();
@@ -286,14 +294,16 @@ fn bindings(
                 repeat: true,
             },
             move |_| {
-                queue.push(Command::Input(bytes.clone()));
+                if !menu_open.get_untracked() {
+                    queue.push(Command::Input(bytes.clone()));
+                }
             },
         );
     };
     for (key, value) in [
         ("enter", "\r"),
         ("tab", "\t"),
-        ("shift-tab", "\x1b[Z"),
+        ("shift+tab", "\x1b[Z"),
         ("backspace", "\x7f"),
         ("escape", "\x1b"),
         ("home", "\x1b[H"),
@@ -318,6 +328,9 @@ fn bindings(
                 repeat: true,
             },
             move |_| {
+                if menu_open.get_untracked() {
+                    return;
+                }
                 let application_cursor = projection
                     .get()
                     .snapshot
@@ -342,8 +355,8 @@ fn bindings(
     bind("ctrl+[", vec![27]);
     bind("ctrl+\\", vec![28]);
     bind("ctrl+]", vec![29]);
-    bind("ctrl+^", vec![30]);
-    bind("ctrl+_", vec![31]);
+    bind("ctrl+shift+6", vec![30]);
+    bind("ctrl+shift+-", vec![31]);
     on_key_with(
         "mod+c",
         KeyOptions {
@@ -351,12 +364,64 @@ fn bindings(
             ..Default::default()
         },
         move |_| {
-            if let Some(snapshot) = projection.get().snapshot {
+            if !menu_open.get_untracked()
+                && let Some(snapshot) = projection.get().snapshot
+            {
                 set_clipboard(copy_text(&snapshot, selection.get()));
             }
         },
     );
+    on_key_with(
+        "shift+f10",
+        KeyOptions {
+            when: nsh_core::keymap::When::Always,
+            ..Default::default()
+        },
+        move |_| menu_open.set(true),
+    );
     view()
+}
+
+fn terminal_action(
+    projection: Signal<Projection>,
+    kind: crate::icons::Icon,
+    label: fn(&Projection) -> String,
+    press: impl Fn() + 'static,
+) -> AnyElement {
+    let target = element_ref();
+    let focused = signal(false);
+    target.on_focus_in(move || focused.set(true));
+    target.on_focus_out(move || focused.set(false));
+    view()
+        .element_ref(&target)
+        .role(AccessibilityRole::Button)
+        .focusable(true)
+        .label(move || label(&projection.get()))
+        .tooltip(text(move || label(&projection.get())))
+        .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+        .border(px(1.))
+        .border_color(move || {
+            let colors = projection.get().colors;
+            rgb(if focused.get() {
+                colors.accent
+            } else {
+                colors.bg_base.opacity(0.)
+            })
+        })
+        .hover(move |style| style.bg(rgb(projection.get().colors.bg_hover)))
+        .items_center()
+        .justify_center()
+        .on_press(move |_: &nsh_core::PressEvent| press())
+        .child(
+            svg(nsh_core::element::ImageSrc::svg_markup(
+                &crate::icons::nsh_source(kind).unwrap_or_default(),
+            ))
+            .size(px(Layout::ICON_SIZE))
+            .text_color(move || rgb(projection.get().colors.text_secondary))
+            .tint_color(move || rgb(projection.get().colors.text_secondary).to_hsla()),
+        )
+        .into_element()
 }
 
 pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Request>) -> AnyElement {
@@ -375,16 +440,33 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                 let focused = signal(false);
                 let composing = signal(false);
                 let selection = signal(None::<Selection>);
-                let metrics = signal(Metrics {
-                    cell: 8.,
-                    line: 18.,
-                });
+                let metrics = Metrics {
+                    cell: projection.get_untracked().cell_width.unwrap_or_else(|| {
+                        text_metrics(&format!("{}px {FONT}", Typography::CODE), "M")
+                            .width
+                            .0
+                            .max(1.)
+                    }),
+                    line: Typography::CODE * 1.5,
+                };
                 let bounds = signal(Size {
                     width: px(0.),
                     height: px(0.),
                 });
                 let scroll_ref = element_ref();
                 let native_input = element_ref();
+                let menu_open = signal(false);
+                let menu_items = [element_ref(), element_ref()];
+                let menu_selection = signal(0usize);
+                let menu_focused = signal(false);
+                for (index, item) in menu_items.into_iter().enumerate() {
+                    item.on_focus_in(move || menu_selection.set(index));
+                }
+                let leave_menu = move || {
+                    menu_open.set(false);
+                    menu_focused.set(false);
+                    native_input.focus();
+                };
                 let text_value = signal(String::new());
                 let commit = queue.clone();
                 let paste = queue.clone();
@@ -394,15 +476,27 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                 let resize = commands.clone();
                 let restart = commands.clone();
                 let scrolling = commands.clone();
-                let font = format!("{}px {FONT}", Typography::CODE);
-                let measured = text_metrics(&font, "M");
-                metrics.set(Metrics {
-                    cell: measured.width.0.max(1.),
-                    line: measured.height.0.max(Typography::CODE * 1.25),
-                });
+                let menu_restart = commands.clone();
+                let choose_menu = move |index: usize| {
+                    if !menu_open.get_untracked() {
+                        return;
+                    }
+                    leave_menu();
+                    if index == 0 {
+                        if let Some(snapshot) = projection.get_untracked().snapshot {
+                            set_clipboard(copy_text(&snapshot, selection.get_untracked()));
+                        }
+                    } else {
+                        menu_restart.send(Request {
+                            epoch: epoch.get(),
+                            command: Command::Restart,
+                            sequence: None,
+                            reply: None,
+                        });
+                    }
+                };
                 effect(move || {
                     let size = bounds.get();
-                    let metrics = metrics.get();
                     if size.width.0 > PAD * 2. && size.height.0 > PAD * 2. {
                         resize.send(Request {
                             epoch: epoch.get(),
@@ -434,7 +528,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                 px(
                                     (snapshot.max_scrollback.saturating_sub(snapshot.scrollback))
                                         as f32
-                                        * metrics.get().line,
+                                        * metrics.line,
                                 ),
                             ),
                             false,
@@ -446,41 +540,83 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                     .child(when(
                         move || {
                             focused.get()
+                                && !menu_open.get()
                                 && !composing.get()
                                 && !queue_failed.get()
                                 && text_value.get().is_empty()
                         },
-                        move || bindings(keys.clone(), projection, selection),
+                        move || bindings(keys.clone(), projection, selection, menu_open),
                     ))
-                    .child(
-                        view()
-                            .flex_row()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .child(text(move || projection.get().status_label))
-                            .child(
-                                nsh_base::button()
-                                    .on_press(move || {
+                    .child(when(move || menu_open.get(), {
+                        let choose = choose_menu.clone();
+                        move || {
+                            let options = || KeyOptions {
+                                when: nsh_core::keymap::When::Always,
+                                ..Default::default()
+                            };
+                            for key in ["up", "down", "tab", "shift+tab"] {
+                                on_key_with(key, options(), move |_| {
+                                    let next = 1 - menu_selection.get_untracked();
+                                    menu_selection.set(next);
+                                    menu_items[next].focus();
+                                });
+                            }
+                            on_key_with("escape", options(), move |_| leave_menu());
+                            for key in ["enter", "space"] {
+                                let choose = choose.clone();
+                                on_key_with(key, options(), move |_| {
+                                    choose(menu_selection.get_untracked())
+                                });
+                            }
+                            view()
+                        }
+                    }))
+                    .child(when(
+                        move || !projection.get().status_label.is_empty(),
+                        move || {
+                            let restart = restart.clone();
+                            view()
+                                .h(px(Layout::TERMINAL_TOOLBAR_HEIGHT))
+                                .flex_shrink_0()
+                                .flex_row()
+                                .items_center()
+                                .gap_1()
+                                .px_3()
+                                .border_b_1()
+                                .border_color(move || rgb(projection.get().colors.border_subtle))
+                                .text_size(px(Typography::METADATA))
+                                .text_color(move || rgb(projection.get().colors.text_secondary))
+                                .child(
+                                    text(move || projection.get().status_label)
+                                        .min_w_0()
+                                        .flex_1()
+                                        .truncate(),
+                                )
+                                .child(terminal_action(
+                                    projection,
+                                    crate::icons::Icon::Document,
+                                    |p| p.copy_label.clone(),
+                                    move || {
                                         if let Some(snapshot) = projection.get().snapshot {
-                                            set_clipboard(copy_text(&snapshot, selection.get()));
+                                            set_clipboard(copy_text(&snapshot, None));
                                         }
-                                    })
-                                    .child(text(move || projection.get().copy_label)),
-                            )
-                            .child(
-                                nsh_base::button()
-                                    .on_press(move || {
+                                    },
+                                ))
+                                .child(terminal_action(
+                                    projection,
+                                    crate::icons::Icon::Refresh,
+                                    |p| p.restart_label.clone(),
+                                    move || {
                                         restart.send(Request {
                                             epoch: epoch.get(),
                                             command: Command::Restart,
                                             sequence: None,
                                             reply: None,
                                         })
-                                    })
-                                    .child(text(move || projection.get().restart_label)),
-                            ),
-                    )
+                                    },
+                                ))
+                        },
+                    ))
                     .child(when(
                         move || projection.get().input_error || queue_failed.get(),
                         move || {
@@ -500,145 +636,302 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                         },
                     ))
                     .child(
-                        scroll()
+                        nsh_base::context_menu()
+                            .open(move || Some(menu_open.get()))
+                            .disabled(move || composing.get())
+                            .on_open_change(move |event: &nsh_base::MenuEvent| {
+                                if let nsh_base::MenuEvent::OpenChange(open, _) = event {
+                                    if *open {
+                                        menu_selection.set(0);
+                                        menu_focused.set(false);
+                                        menu_open.set(true);
+                                    } else if menu_open.get_untracked() {
+                                        leave_menu();
+                                    }
+                                }
+                            })
                             .flex_1()
-                            .min_h(px(0.))
-                            .element_ref(&scroll_ref)
-                            .on_layout(move |rect: &Bounds<Points>| bounds.set(rect.size))
-                            .content_offset(point(
-                                px(0.),
-                                px(projection.get_untracked().snapshot.map_or(0, |snapshot| {
-                                    snapshot.max_scrollback.saturating_sub(snapshot.scrollback)
-                                }) as f32
-                                    * metrics.get_untracked().line),
-                            ))
-                            .on_scroll(move |event: &ScrollEvent| {
-                                let maximum = projection
-                                    .get()
-                                    .snapshot
-                                    .map_or(0, |snapshot| snapshot.max_scrollback);
-                                let offset = maximum.saturating_sub(
-                                    (event.offset.y.0 / metrics.get().line).round().max(0.)
-                                        as usize,
-                                );
-                                if projection
-                                    .get()
-                                    .snapshot
-                                    .is_some_and(|snapshot| snapshot.scrollback != offset)
-                                {
-                                    scrolling.send(Request {
-                                        epoch: epoch.get(),
-                                        command: Command::ScrollTo(offset),
-                                        sequence: None,
-                                        reply: None,
-                                    });
-                                }
-                            })
-                            .child(
+                            .w_full()
+                            .min_h_0()
+                            .trigger(
                                 view()
-                                    .w_full()
-                                    .h(move || {
-                                        px(bounds.get().height.0
-                                            + projection
-                                                .get()
-                                                .snapshot
-                                                .map_or(0, |snapshot| snapshot.max_scrollback)
-                                                as f32
-                                                * metrics.get().line)
-                                    })
+                                    .relative()
+                                    .size_full()
+                                    .overflow_hidden()
                                     .child(
-                                        canvas(move || {
-                                            draw(&projection.get(), metrics.get(), selection.get())
-                                        })
-                                        .sticky()
-                                        .top(px(0.))
-                                        .w_full()
-                                        .h(move || bounds.get().height)
-                                        .claim_touches(TouchClaim::on_start())
-                                        .on_responder_grant(move |event: &ResponderEvent| {
-                                            native_input.focus();
-                                            if let Some(snapshot) = projection.get().snapshot {
-                                                let index = cell_at(
-                                                    event.location,
-                                                    &snapshot,
-                                                    metrics.get(),
+                                        scroll()
+                                            .size_full()
+                                            .min_h(px(0.))
+                                            .element_ref(&scroll_ref)
+                                            .on_layout(move |rect: &Bounds<Points>| {
+                                                bounds.set(rect.size)
+                                            })
+                                            .content_offset(point(
+                                                px(0.),
+                                                px(projection.get_untracked().snapshot.map_or(
+                                                    0,
+                                                    |snapshot| {
+                                                        snapshot
+                                                            .max_scrollback
+                                                            .saturating_sub(snapshot.scrollback)
+                                                    },
+                                                )
+                                                    as f32
+                                                    * metrics.line),
+                                            ))
+                                            .on_scroll(move |event: &ScrollEvent| {
+                                                let maximum = projection
+                                                    .get()
+                                                    .snapshot
+                                                    .map_or(0, |snapshot| snapshot.max_scrollback);
+                                                let offset = maximum.saturating_sub(
+                                                    (event.offset.y.0 / metrics.line)
+                                                        .round()
+                                                        .max(0.)
+                                                        as usize,
                                                 );
-                                                selection.set(Some(Selection {
-                                                    generation: snapshot.generation,
-                                                    start: index,
-                                                    end: index,
-                                                }));
-                                            }
-                                        })
-                                        .on_responder_move(move |event: &ResponderEvent| {
-                                            if let Some(snapshot) = projection.get().snapshot {
-                                                let index = cell_at(
-                                                    event.location,
-                                                    &snapshot,
-                                                    metrics.get(),
-                                                );
-                                                selection.update(|selection| {
-                                                    if let Some(selection) =
-                                                        selection.as_mut().filter(|selection| {
-                                                            selection.generation
-                                                                == snapshot.generation
+                                                if projection.get().snapshot.is_some_and(
+                                                    |snapshot| snapshot.scrollback != offset,
+                                                ) {
+                                                    scrolling.send(Request {
+                                                        epoch: epoch.get(),
+                                                        command: Command::ScrollTo(offset),
+                                                        sequence: None,
+                                                        reply: None,
+                                                    });
+                                                }
+                                            })
+                                            .child(
+                                                view()
+                                                    .w_full()
+                                                    .h(move || {
+                                                        px(bounds.get().height.0
+                                                            + projection
+                                                                .get()
+                                                                .snapshot
+                                                                .map_or(0, |snapshot| {
+                                                                    snapshot.max_scrollback
+                                                                })
+                                                                as f32
+                                                                * metrics.line)
+                                                    })
+                                                    .child(
+                                                        canvas(move || {
+                                                            draw(
+                                                                &projection.get(),
+                                                                metrics,
+                                                                selection.get(),
+                                                                focused.get() && !composing.get(),
+                                                            )
                                                         })
+                                                        .sticky()
+                                                        .top(px(0.))
+                                                        .w_full()
+                                                        .h(move || bounds.get().height)
+                                                        .claim_touches(TouchClaim::on_start())
+                                                        .on_responder_grant(
+                                                            move |event: &ResponderEvent| {
+                                                                native_input.focus();
+                                                                if let Some(snapshot) =
+                                                                    projection.get().snapshot
+                                                                {
+                                                                    let index = cell_at(
+                                                                        event.location,
+                                                                        &snapshot,
+                                                                        metrics,
+                                                                    );
+                                                                    selection.set(Some(
+                                                                        Selection {
+                                                                            generation: snapshot
+                                                                                .generation,
+                                                                            start: index,
+                                                                            end: index,
+                                                                        },
+                                                                    ));
+                                                                }
+                                                            },
+                                                        )
+                                                        .on_responder_move(
+                                                            move |event: &ResponderEvent| {
+                                                                if let Some(snapshot) =
+                                                                    projection.get().snapshot
+                                                                {
+                                                                    let index = cell_at(
+                                                                        event.location,
+                                                                        &snapshot,
+                                                                        metrics,
+                                                                    );
+                                                                    selection.update(|selection| {
+                                                                if let Some(selection) = selection
+                                                                    .as_mut()
+                                                                    .filter(|selection| {
+                                                                        selection.generation
+                                                                            == snapshot.generation
+                                                                    })
+                                                                {
+                                                                    selection.end = index;
+                                                                }
+                                                            });
+                                                                }
+                                                            },
+                                                        ),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        nsh_core::element::input()
+                                            .absolute()
+                                            .left(move || {
+                                                px(PAD
+                                                    + projection
+                                                        .get()
+                                                        .snapshot
+                                                        .and_then(|s| s.cursor)
+                                                        .map_or(0., |(_, col)| {
+                                                            f32::from(col) * metrics.cell
+                                                        }))
+                                            })
+                                            .top(move || {
+                                                px(PAD
+                                                    + projection
+                                                        .get()
+                                                        .snapshot
+                                                        .and_then(|s| s.cursor)
+                                                        .map_or(0., |(row, _)| {
+                                                            f32::from(row) * metrics.line
+                                                        }))
+                                            })
+                                            .w(move || {
+                                                let col = projection
+                                                    .get()
+                                                    .snapshot
+                                                    .and_then(|s| s.cursor)
+                                                    .map_or(0., |(_, col)| f32::from(col));
+                                                px(
+                                                    if composing.get()
+                                                        || !text_value.get().is_empty()
                                                     {
-                                                        selection.end = index;
-                                                    }
-                                                });
-                                            }
-                                        }),
+                                                        (bounds.get().width.0
+                                                            - PAD * 2.
+                                                            - col * metrics.cell)
+                                                            .max(metrics.cell)
+                                                    } else {
+                                                        metrics.cell
+                                                    },
+                                                )
+                                            })
+                                            .h(px(metrics.line))
+                                            .line_height(px(metrics.line))
+                                            .p_0()
+                                            .bg(move || {
+                                                rgb(projection.get().colors.bg_base.opacity(0.))
+                                            })
+                                            .element_ref(&native_input)
+                                            .value(text_value)
+                                            .label(vega_i18n::t("ui.terminal"))
+                                            .accessibility_actions(vec![
+                                                nsh_core::AccessibilityActionDef {
+                                                    name: "show-menu".into(),
+                                                    label: Some(vega_i18n::t("ui.actions").into()),
+                                                },
+                                            ])
+                                            .on_accessibility_action(move |name: &str| {
+                                                if name == "show-menu" && !composing.get_untracked()
+                                                {
+                                                    menu_open.set(true);
+                                                }
+                                            })
+                                            .font_family(FONT.to_owned())
+                                            .text_size(px(Typography::CODE))
+                                            .auto_correct(false)
+                                            .caret(move || composing.get())
+                                            .readonly(move || {
+                                                menu_open.get()
+                                                    || queue_failed.get()
+                                                    || projection.get().snapshot.is_none_or(
+                                                        |snapshot| {
+                                                            snapshot.status
+                                                                != TerminalStatus::Running
+                                                        },
+                                                    )
+                                            })
+                                            .max_length(MAX_PASTE as u32)
+                                            .submit_behavior(SubmitBehavior::Submit)
+                                            .paste_behavior(PasteBehavior::Report)
+                                            .on_focus(move |_: &()| focused.set(true))
+                                            .on_blur(move |_: &()| focused.set(false))
+                                            .on_composition_change(move |event: &Composition| {
+                                                composing.set(event.composing)
+                                            })
+                                            .on_change(move |text: &str| {
+                                                if menu_open.get_untracked() {
+                                                    return;
+                                                }
+                                                text_value.set(text.to_owned());
+                                                if !text.is_empty()
+                                                    && commit.push(Command::Input(
+                                                        text.as_bytes().to_vec(),
+                                                    ))
+                                                {
+                                                    text_value.set(String::new());
+                                                }
+                                            })
+                                            .on_paste(move |event: &PasteEvent| {
+                                                if !menu_open.get_untracked()
+                                                    && !event.text.is_empty()
+                                                    && !paste
+                                                        .push(Command::Paste(event.text.clone()))
+                                                {
+                                                    text_value
+                                                        .update(|text| text.push_str(&event.text));
+                                                }
+                                            })
+                                            .on_submit(move |text: &str| {
+                                                if !menu_open.get_untracked()
+                                                    && !composing.get()
+                                                    && !queue_failed.get()
+                                                    && !text.is_empty()
+                                                    && submit.push(Command::Paste(text.to_owned()))
+                                                {
+                                                    text_value.set(String::new());
+                                                }
+                                            }),
                                     ),
-                            ),
-                    )
-                    .child(
-                        nsh_core::element::input()
-                            .element_ref(&native_input)
-                            .value(text_value)
-                            .label(vega_i18n::t("ui.terminal"))
-                            .font_family(FONT.to_owned())
-                            .text_size(px(Typography::CODE))
-                            .auto_correct(false)
-                            .caret(true)
-                            .readonly(move || {
-                                queue_failed.get()
-                                    || projection.get().snapshot.is_none_or(|snapshot| {
-                                        snapshot.status != TerminalStatus::Running
+                            )
+                            .children(menu_items.into_iter().enumerate().map(|(index, item)| {
+                                let choose = choose_menu.clone();
+                                view()
+                                    .role(AccessibilityRole::Menuitem)
+                                    .element_ref(&item)
+                                    .focusable(true)
+                                    .on_layout(move |_: &Bounds<Points>| {
+                                        if index == 0
+                                            && menu_open.get_untracked()
+                                            && !menu_focused.get_untracked()
+                                        {
+                                            menu_focused.set(true);
+                                            item.focus();
+                                        }
                                     })
-                            })
-                            .max_length(MAX_PASTE as u32)
-                            .submit_behavior(SubmitBehavior::Submit)
-                            .paste_behavior(PasteBehavior::Report)
-                            .on_focus(move |_: &()| focused.set(true))
-                            .on_blur(move |_: &()| focused.set(false))
-                            .on_composition_change(move |event: &Composition| {
-                                composing.set(event.composing)
-                            })
-                            .on_change(move |text: &str| {
-                                text_value.set(text.to_owned());
-                                if !text.is_empty()
-                                    && commit.push(Command::Input(text.as_bytes().to_vec()))
-                                {
-                                    text_value.set(String::new());
-                                }
-                            })
-                            .on_paste(move |event: &PasteEvent| {
-                                if !event.text.is_empty()
-                                    && !paste.push(Command::Paste(event.text.clone()))
-                                {
-                                    text_value.update(|text| text.push_str(&event.text));
-                                }
-                            })
-                            .on_submit(move |text: &str| {
-                                if !composing.get()
-                                    && !queue_failed.get()
-                                    && !text.is_empty()
-                                    && submit.push(Command::Paste(text.to_owned()))
-                                {
-                                    text_value.set(String::new());
-                                }
-                            }),
+                                    .px_3()
+                                    .py_1()
+                                    .bg(move || {
+                                        let colors = projection.get().colors;
+                                        rgb(if menu_selection.get() == index {
+                                            colors.bg_active
+                                        } else {
+                                            colors.bg_elevated
+                                        })
+                                    })
+                                    .on_press(move |_: &nsh_core::PressEvent| choose(index))
+                                    .child(text(move || {
+                                        if index == 0 {
+                                            projection.get().copy_label
+                                        } else {
+                                            projection.get().restart_label
+                                        }
+                                    }))
+                            })),
                     )
             },
         ))

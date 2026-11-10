@@ -104,7 +104,7 @@ impl SettingsView {
         if self.usage.presentation.is_none() {
             let id = ProjectionId::new();
             let (surface, mut requests) =
-                Surface::new(self.usage_snapshot(cx, id.clone()), render, window, cx);
+                Surface::new_transparent(self.usage_snapshot(cx, id.clone()), render, window, cx);
             self.usage.presentation = Some(Presentation {
                 surface,
                 id,
@@ -286,7 +286,6 @@ fn control(
             })
         })
         .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
-        .child(when(selected, || text("✓")))
         .child(text(label))
         .into_element()
 }
@@ -926,7 +925,13 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     .as_ref()
                     .is_some_and(|data| data.lifetime.calls == 0)
             },
-            move || local(state, "settings.usage.empty"),
+            move || {
+                super::super::nsh_form::status(
+                    move || state.get().colors,
+                    move || state.get().colors.text_secondary,
+                    local(state, "settings.usage.empty"),
+                )
+            },
         ))
         .child(when(
             move || {

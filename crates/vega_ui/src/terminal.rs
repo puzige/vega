@@ -15,6 +15,7 @@ pub struct TerminalView {
     focus: FocusHandle,
     session: Option<TerminalSession>,
     snapshot: Option<Arc<TerminalSnapshot>>,
+    cell_width: Option<f32>,
     size: (u16, u16),
     requested_size: (u16, u16),
     input_error: bool,
@@ -32,6 +33,16 @@ impl TerminalView {
 
     pub fn for_target(target: TerminalTarget, cx: &mut Context<Self>) -> Self {
         let session = TerminalSession::start_target(target.clone()).ok();
+        let text_system = cx.text_system();
+        let cell_width = text_system
+            .advance(
+                text_system.resolve_font(&font(crate::conversation_stream::MONOFONT)),
+                px(vega_theme::Typography::CODE),
+                'M',
+            )
+            .ok()
+            .map(|advance| f32::from(advance.width))
+            .filter(|width| width.is_finite() && *width > 0.);
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -48,6 +59,7 @@ impl TerminalView {
             focus: cx.focus_handle(),
             session,
             snapshot: None,
+            cell_width,
             size: (0, 0),
             requested_size: (0, 0),
             input_error: false,
@@ -106,6 +118,7 @@ impl TerminalView {
         };
         Projection {
             snapshot: self.snapshot.clone(),
+            cell_width: self.cell_width,
             epoch: self.epoch,
             colors: theme(cx).colors,
             status_label,
