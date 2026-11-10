@@ -15,16 +15,8 @@ impl Action {
         match self {
             Self::Retry => vega_i18n::t("ui.retry"),
             Self::Quit => vega_i18n::t("app.startup.quit"),
-            Self::Reload => localized("Reload startup view", "重新加载启动界面"),
+            Self::Reload => vega_i18n::t("app.startup.reload_view"),
         }
-    }
-}
-
-pub(super) fn localized(english: &'static str, chinese: &'static str) -> &'static str {
-    if vega_i18n::language() == "zh-CN" {
-        chinese
-    } else {
-        english
     }
 }
 

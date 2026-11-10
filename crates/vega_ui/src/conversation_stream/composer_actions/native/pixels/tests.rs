@@ -138,6 +138,42 @@ fn production_popup_mount_keeps_skill_state_reason_and_input_highlight_without_a
 }
 
 #[test]
+fn production_primary_and_pending_mount_native_button_states_without_activation() {
+    for (kind, label, enabled) in [
+        (Kind::Trigger, "Add context", true),
+        (Kind::RunningSend, "Queue message", true),
+        (Kind::RunningSend, "Steer", false),
+        (Kind::Primary, "Send", true),
+        (Kind::Primary, "Resume", false),
+        (Kind::ResumePending, "Resume pending", false),
+    ] {
+        let mut snapshot = super::super::tests::snapshot();
+        snapshot.kind = kind;
+        snapshot.source.resume = label != "Send";
+        snapshot.rows.truncate(1);
+        snapshot.rows[0].label = label.into();
+        snapshot.rows[0].accessible = label.into();
+        snapshot.rows[0].checked = None;
+        snapshot.rows[0].action = None;
+        snapshot.rows[0].enabled = enabled;
+        INITIAL.with(|slot| *slot.borrow_mut() = Some(snapshot));
+        let mut core = Core::new(ApproxTextEngine, ns::size(px(32.), px(32.)));
+        core.mount_root(&Root::of::<ComposerFixture>());
+        let batch = core.commit().expect("production primary chrome");
+        assert!(batch.items.iter().any(|item| matches!(item,
+            MountItem::ViewProps { props, .. }
+                if props.accessibility.role == AccessibilityRole::Button
+                    && props.accessibility.label.as_deref() == Some(label)
+                    && props.accessibility.state.disabled == !enabled)));
+        core.run_component_tasks();
+        let mut requests = REQUESTS.with(|slot| slot.borrow_mut().take().expect("requests"));
+        while let Ok(request) = requests.try_recv() {
+            assert!(!matches!(request, Request::Activate(..)));
+        }
+    }
+}
+
+#[test]
 fn production_stop_mount_remains_enabled_without_assistant_permission() {
     let mut snapshot = super::super::tests::snapshot();
     snapshot.kind = Kind::Stop;

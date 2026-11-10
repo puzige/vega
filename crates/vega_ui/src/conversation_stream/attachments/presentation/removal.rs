@@ -307,7 +307,7 @@ impl IntoElement for Mounted {
 
 impl Element for Mounted {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = (Bounds<Pixels>, Bounds<Pixels>, Size<Pixels>);
     fn id(&self) -> Option<ElementId> {
         Some("attachment-removal-mounted".into())
     }
@@ -331,9 +331,28 @@ impl Element for Mounted {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
-        let visible = bounds.intersect(&window.content_mask().bounds);
+    ) -> Self::PrepaintState {
+        let mask = window.content_mask().bounds;
+        let viewport = window.viewport_size();
         self.lease.geometry.set(None);
+        if let Some(id) = id {
+            window.with_element_state::<Rc<Mount>, _>(id, |_, _| ((), self.lease.clone()));
+        }
+        self.child.prepaint(window, cx);
+        (bounds, mask, viewport)
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        state: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let (bounds, mask, viewport) = *state;
+        let visible = bounds.intersect(&mask);
         let geometry = {
             let host = self.host.read(cx);
             host.owner.upgrade().and_then(|owner| {
@@ -351,7 +370,7 @@ impl Element for Mounted {
                                 parent,
                                 viewport: stream.list.viewport_bounds(),
                                 foreground: stream.foreground_height,
-                                window: window.viewport_size(),
+                                window: viewport,
                             },
                         )
                     })
@@ -366,21 +385,6 @@ impl Element for Mounted {
                 }
             }
         });
-        if let Some(id) = id {
-            window.with_element_state::<Rc<Mount>, _>(id, |_, _| ((), self.lease.clone()));
-        }
-        self.child.prepaint(window, cx);
-    }
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
         self.child.paint(window, cx);
     }
 }

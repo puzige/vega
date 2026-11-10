@@ -49,6 +49,10 @@ pub(super) fn snapshot() -> Snapshot {
             pending_mode_revision: 0,
             state: vec![false; 21],
             attachments: 0,
+            interrupted: None,
+            resume: false,
+            pending_behavior: PendingMessageBehavior::Queue,
+            appearance: vega_theme::Appearance::Light,
         },
         kind: Kind::Menu,
         rows: (0..12)
@@ -74,6 +78,89 @@ pub(super) fn snapshot() -> Snapshot {
         geometry: None,
         activation: None,
     }
+}
+
+#[test]
+fn stable_presentation_preserves_identity_but_real_feedback_and_theme_changes_publish() {
+    let original = snapshot();
+    assert!(original.same_presentation(&original.clone()));
+    let mut changed = original.clone();
+    changed.source.appearance = vega_theme::Appearance::Dark;
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.selected = Some(0);
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.request_activation(0, Origin::Keyboard);
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.selection = ProjectionId::new();
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.rows[0].enabled = false;
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.geometry = Some(Geometry {
+        bounds: gpui_kit::Bounds {
+            origin: gpui_kit::point(px(0.), px(0.)),
+            size: gpui_kit::size(px(32.), px(32.)),
+        },
+        viewport: gpui_kit::size(px(600.), px(400.)),
+        trigger: None,
+        foreground: px(400.),
+    });
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.colors = vega_theme::Theme::dark().colors;
+    assert!(!original.same_presentation(&changed));
+    let mut changed = original.clone();
+    changed.colors.brand_primary = vega_theme::Theme::dark().colors.brand_primary;
+    assert!(!original.same_presentation(&changed));
+}
+
+#[test]
+fn running_send_rejects_old_queue_steer_choice_and_input_revision() {
+    let mut current = snapshot();
+    current.kind = Kind::RunningSend;
+    current.rows.truncate(1);
+    current.rows[0].checked = None;
+    current.rows[0].action = None;
+    assert!(current.accepts_activation(&current, 0, Origin::Pointer));
+    let queued = current.clone();
+    current.source.pending_behavior = PendingMessageBehavior::Steer;
+    assert!(!current.accepts_activation(&queued, 0, Origin::Pointer));
+    let before_edit = current.clone();
+    current.source.revision += 1;
+    assert!(!current.accepts_activation(&before_edit, 0, Origin::Pointer));
+    assert!(current.accepts_activation(&current, 0, Origin::Pointer));
+}
+
+#[test]
+fn primary_action_rejects_changed_resume_identity_and_pending_state() {
+    let mut current = snapshot();
+    current.kind = Kind::Primary;
+    current.rows.truncate(1);
+    current.rows[0].checked = None;
+    current.rows[0].action = None;
+    assert!(current.accepts_activation(&current, 0, Origin::Pointer));
+    let previous = current.clone();
+    current.source.interrupted = Some(vega_conversation::types::InterruptedAssistant {
+        message_id: "interrupted-message".into(),
+        seq: 42,
+    });
+    current.source.resume = true;
+    assert!(!current.accepts_activation(&previous, 0, Origin::Pointer));
+    let previous = current.clone();
+    current.source.interrupted.as_mut().expect("tail").seq = 43;
+    assert!(!current.accepts_activation(&previous, 0, Origin::Pointer));
+    current.kind = Kind::ResumePending;
+    current.rows[0].enabled = false;
+    for origin in [Origin::Pointer, Origin::Keyboard, Origin::Accessibility] {
+        current.request_activation(0, origin);
+        assert!(!current.accepts_activation(&current, 0, origin));
+    }
+    current.rows[0].enabled = true;
+    assert!(!current.accepts_activation(&current, 0, Origin::Pointer));
 }
 
 #[test]

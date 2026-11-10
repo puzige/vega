@@ -62,22 +62,30 @@ impl SettingsView {
             .gap(px(Layout::SETTINGS_SECTION_GAP))
             .child(self.render_appearance(window, cx))
             .child(
-                settings_group(colors)
+                settings_group(colors, window, cx)
                     .child(section_title(
                         t("settings.defaults.title"),
                         colors.text_primary,
+                        window,
+                        cx,
                     ))
                     .child(settings_field(
+                        "settings-defaults-permission-field",
                         t("settings.defaults.permission_mode"),
                         None,
                         self.render_permission_picker(window, cx),
                         colors,
+                        window,
+                        cx,
                     ))
                     .child(settings_field(
+                        "settings-defaults-model-field",
                         t("settings.defaults.model"),
                         None,
                         self.render_default_model(window, cx),
                         colors,
+                        window,
+                        cx,
                     )),
             )
             .child(self.render_input_preferences(window, cx))
@@ -173,7 +181,13 @@ impl Render for SettingsView {
             .size_full()
             .flex()
             .flex_row()
-            .bg(colors.bg_base)
+            .relative()
+            .child(super::nsh_tail::background(
+                "settings-page-background",
+                colors.bg_base,
+                window,
+                cx,
+            ))
             .text_color(colors.text_primary)
             .text_size(px(Typography::BODY))
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
@@ -189,7 +203,13 @@ impl Render for SettingsView {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .bg(colors.bg_base)
+                    .relative()
+                    .child(super::nsh_tail::background(
+                        "settings-content-background",
+                        colors.bg_base,
+                        window,
+                        cx,
+                    ))
                     .px(px(24.))
                     .pt(px(Layout::SETTINGS_SECTION_GAP))
                     .pb(px(24.))

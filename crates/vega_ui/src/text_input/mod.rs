@@ -129,11 +129,17 @@ pub struct TextInput {
 }
 
 mod bindings;
+pub mod editing_core;
+#[cfg(test)]
+mod editing_core_tests;
 mod element;
 mod history;
 mod input_handler;
 mod mouse_selection;
+mod native_adapter;
 pub(crate) mod nsh;
+#[cfg(feature = "nsh-reading-integration")]
+pub use nsh::mounted_native_recovery_history_ax_and_submit_close_production_loop;
 mod skill_query;
 mod state;
 

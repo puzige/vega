@@ -1,11 +1,16 @@
+use super::nsh_leaf::chrome::ScrollFadeExt;
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::MouseMoveEvent;
 use vega_conversation::types::ThreadUpdate;
 mod organization;
 mod pin;
 mod reload;
+mod rename;
+#[cfg(feature = "nsh-reading-integration")]
+mod rename_tests;
 use organization::{Organization, OrganizationSection};
+#[cfg(feature = "nsh-reading-integration")]
+pub use rename_tests::mounted_rename_native_ack_ime_cancel_rebind_and_persistence;
 
 /// Events emitted by the session block.
 pub enum ThreadsBlockEvent {
@@ -81,6 +86,8 @@ pub(crate) struct RenameSession {
     pub(crate) thread_id: String,
     row_key: String,
     pub(crate) input: Entity<TextInput>,
+    binding: rename::RenameBinding,
+    _shortcut_subscription: Subscription,
 }
 
 impl ThreadsBlock {
@@ -482,9 +489,6 @@ impl ThreadsBlock {
         cx.refresh_windows();
     }
 
-    /// Double-click = rename: builds the inline editor pre-filled with the
-    /// current title and moves focus into it. (合成键盘事件送不进 GPUI：键入
-    /// 与 Enter/Esc 提交路径为人工验收；提交/取消的纯逻辑见 [`resolve_rename`]。)
     fn start_rename(
         &mut self,
         thread: &Thread,
@@ -493,27 +497,20 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) {
         self.close_actions();
-        if let Some(session) = self
+        let input = if let Some(session) = self
             .editing
-            .as_mut()
+            .as_ref()
             .filter(|session| session.thread_id == thread.id)
         {
-            session.row_key = row_key;
-            window.focus(&session.input.read(cx).focus_handle(cx), cx);
-            cx.notify();
-            return;
-        }
-        let input = cx
-            .new(|cx| TextInput::new(cx, "", false).with_placeholder_key("ui.conversation_title"));
-        input.update(cx, |input, cx| input.set_text(&thread.title, cx));
-        self.editing = Some(RenameSession {
-            thread_id: thread.id.clone(),
-            row_key,
-            input: input.clone(),
-        });
-        let focus_handle = input.read(cx).focus_handle(cx);
-        window.focus(&focus_handle, cx);
-        cx.notify();
+            session.input.clone()
+        } else {
+            let input = cx.new(|cx| {
+                TextInput::new(cx, "", false).with_placeholder_key("ui.conversation_title")
+            });
+            input.update(cx, |input, cx| input.set_text(&thread.title, cx));
+            input
+        };
+        self.bind_rename(thread.id.clone(), row_key, input, window, cx);
     }
 
     /// Enter on the rename editor: an empty title cancels (不写库); otherwise
@@ -551,8 +548,6 @@ impl ThreadsBlock {
         }
     }
 
-    /// Esc on the rename editor (intercepted from the global `CloseSettings`
-    /// action while the editor is mounted): exits editing without writing.
     fn cancel_rename(&mut self, cx: &mut Context<Self>) {
         if self.editing.take().is_some() {
             cx.notify();
@@ -1475,7 +1470,7 @@ impl ThreadsBlock {
                 }),
             );
         if let Some(session) = editing_session {
-            row = row.child(self.render_rename_editor(session, rename_inset, cx));
+            row = row.child(rename::mount(session, rename_inset, cx));
         } else {
             let observed = thread.clone();
             let weak = cx.weak_entity();
@@ -1630,10 +1625,10 @@ impl ThreadsBlock {
             item.enabled = !pending;
             item.compact = true;
             item.quiet = !menu_open;
+            item.running =
+                !waiting && (running || self.row_pending.as_deref() == Some(thread.id.as_str()));
             item.resting = Some(if waiting {
                 "Ⅱ".to_owned()
-            } else if running || self.row_pending.as_deref() == Some(thread.id.as_str()) {
-                "↻".to_owned()
             } else if thread.unread {
                 "●".to_owned()
             } else if show_timestamp_at_rest {
@@ -1740,7 +1735,6 @@ impl ThreadsBlock {
         action_prefix: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
         let mut actions = vec![
             (
                 if thread.pinned {
@@ -1794,7 +1788,7 @@ impl ThreadsBlock {
                 .map(|(label, _)| (label, false)),
         );
         let thread_id = thread.id.clone();
-        div()
+        let content = div()
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-menu-{thread_id}").into(),
             ))
@@ -1813,11 +1807,7 @@ impl ThreadsBlock {
             .flex_col()
             .gap_1()
             .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .p_1()
-            .shadow_sm()
+            .p(px(5.))
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -1883,37 +1873,16 @@ impl ThreadsBlock {
                     },
                 )
             })
-            .tracked_scroll_edge_fade(
+            .sidebar_scroll_fade(
+                format!("{action_prefix}thread-menu-fade-{}", thread.id),
                 self.actions_scroll.clone(),
-                colors.bg_elevated,
-                ScrollFade::compact(),
+                true,
             )
-            .into_any_element()
-    }
-
-    /// The inline rename editor mounted in place of the row body: the shared
-    /// [`TextInput`] under a `ThreadRename` key context. Enter dispatches
-    /// [`ConfirmRename`] (bound to this context in `vega_ui::init`); Esc is
-    /// intercepted from the global [`CloseSettings`] action, which the
-    /// editor consumes so settings never closes mid-rename.
-    fn render_rename_editor(
-        &self,
-        session: &RenameSession,
-        leading_inset: f32,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex_1()
-            .min_w_0()
-            .pl(px(leading_inset))
-            .pr_1()
-            .key_context("ThreadRename")
-            .track_focus(&session.input.read(cx).focus_handle(cx))
-            .on_action(cx.listener(|this, _: &ConfirmRename, _, cx| this.commit_rename(cx)))
-            .on_action(cx.listener(|this, _: &CloseSettings, _, cx| this.cancel_rename(cx)))
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.cancel_rename(cx)))
-            .child(session.input.clone())
-            .into_any_element()
+            .into_any_element();
+        nsh_leaf::chrome::popup(
+            format!("{action_prefix}thread-menu-chrome-{}", thread.id),
+            content,
+        )
     }
 }
 

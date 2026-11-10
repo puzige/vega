@@ -63,6 +63,10 @@ pub struct ConversationStream {
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
     pub(crate) parent_navigation: super::nsh_parent::ParentNavigation,
+    pub(super) resume_tail_ui: std::rc::Rc<std::cell::RefCell<super::resume_tail::ResumeTailUi>>,
+    pub(super) resume_tail_authority: Option<super::resume_tail::Authority>,
+    pub(super) reading_navigation_epoch: crate::nsh::ProjectionId,
+    pub(super) ui_presentations_suspended: bool,
     pub(crate) run_notice_epoch: crate::nsh::ProjectionId,
     pub(crate) delegated_run_active: bool,
     pub(crate) automation: super::automation::AutomationUi,
@@ -296,7 +300,38 @@ impl ConversationStream {
         self.hide_shell_recovery_surface();
     }
 
+    pub fn set_reading_navigation_authority(
+        &mut self,
+        authority: fn(&gpui_kit::WeakEntity<Self>, &Window, &App) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .resume_tail_authority
+            .is_some_and(|current| std::ptr::fn_addr_eq(current, authority))
+        {
+            return;
+        }
+        self.suspend_reading_navigation(cx);
+        self.resume_tail_authority = Some(authority);
+    }
+
+    pub fn suspend_reading_navigation(&mut self, cx: &mut Context<Self>) {
+        self.reading_navigation_epoch = crate::nsh::ProjectionId::new();
+        self.resume_tail_ui.borrow_mut().hide(cx);
+    }
+
     pub fn suspend_ui_presentations(&mut self, cx: &mut Context<Self>) {
+        if self.ui_presentations_suspended {
+            return;
+        }
+        self.ui_presentations_suspended = true;
+        self.suspend_reading_navigation(cx);
+        self.input
+            .update(cx, |input, cx| input.suspend_nsh_composer(cx));
+        self.suspend_business_presentations(cx);
+    }
+
+    pub(super) fn suspend_business_presentations(&mut self, cx: &mut Context<Self>) {
         self.run_notice_epoch = crate::nsh::ProjectionId::new();
         self.hide_shell_recovery_surface();
         self.parent_navigation.hide(cx);
@@ -316,10 +351,8 @@ impl ConversationStream {
         if self.reading_preview == reading {
             return;
         }
+        self.suspend_ui_presentations(cx);
         self.reading_preview = reading;
-        if reading {
-            self.suspend_ui_presentations(cx);
-        }
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
         }
@@ -555,6 +588,10 @@ impl ConversationStream {
             subagent_executions: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
             parent_navigation: super::nsh_parent::ParentNavigation::default(),
+            resume_tail_ui: std::rc::Rc::default(),
+            resume_tail_authority: None,
+            reading_navigation_epoch: crate::nsh::ProjectionId::new(),
+            ui_presentations_suspended: false,
             run_notice_epoch: crate::nsh::ProjectionId::new(),
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
@@ -1012,7 +1049,12 @@ impl ConversationStream {
             {
                 self.next_turn_model = None;
             }
+            let recovery_changed =
+                !super::shell_recovery::same_recovery_authority(&self.thread, &thread);
             self.thread = thread;
+            if recovery_changed {
+                self.reset_shell_recovery(cx);
+            }
             self.acknowledge_mode_action(cx);
             self.controller_runtime_error = None;
             self.controller_error = None;
@@ -1025,6 +1067,7 @@ impl ConversationStream {
     pub fn set_draft_route(&mut self, draft: bool, cx: &mut Context<Self>) {
         if self.draft_route != draft {
             self.draft_route = draft;
+            self.reset_shell_recovery(cx);
             cx.notify();
         }
     }
@@ -1065,6 +1108,7 @@ impl ConversationStream {
         }
         self.hide_shell_recovery_surface();
         self.thread.backend = backend;
+        self.reset_shell_recovery(cx);
         self.backend_selector_open = false;
         self.close_composer_popovers(cx);
         cx.notify();
@@ -1119,6 +1163,7 @@ impl ConversationStream {
         self.begin_computer_use_task(cx);
         self.thread = thread;
         self.project_label = label;
+        self.reset_shell_recovery(cx);
         cx.notify();
         true
     }

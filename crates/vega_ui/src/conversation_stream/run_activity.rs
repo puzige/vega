@@ -1,8 +1,12 @@
 use super::sticky_disclosure::{StickyDisclosure, StickySection, StickyState};
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use crate::tool_card::{ToolActivityCategory, sentence_initial};
-use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
+use gpui_kit::{AnyElement, ScrollHandle, div, px};
+
+#[path = "newrunactivity/mod.rs"]
+mod native;
+#[cfg(feature = "nsh-reading-integration")]
+pub use native::repeated_production_header_render_retains_unowned_mount_and_projection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {
@@ -115,6 +119,7 @@ pub(crate) struct RunActivityDisplayChanged {
 impl gpui_kit::EventEmitter<RunActivityDisplayChanged> for RunActivityGroup {}
 
 pub(crate) struct RunActivityGroup {
+    headers: std::cell::RefCell<native::Headers>,
     sticky: StickyState,
     collapsed_sticky: Option<StickyCollapse>,
     started_at: Option<Instant>,
@@ -184,6 +189,7 @@ impl RunActivityGroup {
     }
 
     pub(super) fn suspend_child_presentations(&self, cx: &mut App) {
+        self.suspend_run_headers();
         for segment in &self.segments {
             for child in &segment.children {
                 if let RunActivityChild::ToolGroup(group) = child {
@@ -298,6 +304,7 @@ impl RunActivityGroup {
             }
         }
         self.phase = RunPhase::Working;
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -326,6 +333,7 @@ impl RunActivityGroup {
                 card.progress_finished = true;
                 cx.notify();
             });
+            self.invalidate_run_headers();
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
@@ -340,36 +348,16 @@ impl RunActivityGroup {
             self.started_at = Some(started_at);
             self.work_clock = work_clock;
             self.animation_epoch = started_at;
+            self.invalidate_run_headers();
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
     }
 
-    fn schedule_clock(&mut self, cx: &mut Context<Self>) {
-        if self.terminal
-            || self.presentation_released
-            || self.started_at.is_none()
-            || self.clock_task.is_some()
-        {
-            return;
-        }
-        self.clock_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-            let _ = this.update(cx, |group, cx| {
-                group.clock_task = None;
-                if !group.terminal && !group.presentation_released {
-                    cx.emit(RunActivityDisplayChanged {
-                        segment: None,
-                        geometry: false,
-                    });
-                }
-            });
-        }));
-    }
-
     pub(crate) fn set_phase(&mut self, phase: RunPhase, cx: &mut Context<Self>) {
         if !self.terminal && self.phase != phase {
             self.phase = phase;
+            self.invalidate_run_headers();
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
@@ -410,6 +398,7 @@ impl RunActivityGroup {
             {
                 self.phase = RunPhase::Working;
             }
+            self.invalidate_run_headers();
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
@@ -445,6 +434,7 @@ impl RunActivityGroup {
             state.expanded = true;
         }
         self.phase = RunPhase::Compacting;
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -460,6 +450,7 @@ impl RunActivityGroup {
                 cx.notify();
             });
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -475,6 +466,7 @@ impl RunActivityGroup {
                 cx.notify();
             });
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -510,6 +502,7 @@ impl RunActivityGroup {
         }
         card.update(cx, |card, _| card.shimmer_epoch = None);
         self.current_thinking = Some(card);
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -534,6 +527,7 @@ impl RunActivityGroup {
             for (_, group) in &segment.compact_tool_groups {
                 group.update(cx, |group, cx| group.tool_event(card, cx));
             }
+            self.invalidate_run_headers();
             cx.notify();
         }
     }
@@ -561,6 +555,7 @@ impl RunActivityGroup {
         if self.phase == RunPhase::Compacting {
             self.phase = RunPhase::Working;
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -594,6 +589,7 @@ impl RunActivityGroup {
                 .retain(|child| !matches!(child, RunActivityChild::Compaction { .. }));
         }
         self.clock_task = None;
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -612,6 +608,7 @@ impl RunActivityGroup {
             return;
         }
         self.continuation_successor = true;
+        self.invalidate_run_headers();
         cx.notify();
     }
 
@@ -649,6 +646,7 @@ impl RunActivityGroup {
             self.expanded = false;
             self.body_in_details = true;
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -694,6 +692,7 @@ impl RunActivityGroup {
         if focused {
             self.header_focus.focus(window, cx);
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -706,12 +705,14 @@ impl RunActivityGroup {
         self.final_confirmed = false;
         self.collapse_pending = false;
         self.body_in_details = false;
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
 
     pub(crate) fn reveal(&mut self, cx: &mut Context<Self>) {
         self.expanded = true;
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -735,6 +736,7 @@ impl RunActivityGroup {
             px(0.),
             y.max(-self.scroll.max_offset().y).min(px(0.)),
         ));
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -784,6 +786,7 @@ impl RunActivityGroup {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            headers: std::cell::RefCell::new(native::Headers::default()),
             sticky: StickyState::default(),
             collapsed_sticky: None,
             started_at: None,
@@ -948,6 +951,7 @@ impl RunActivityGroup {
             scrolls: vec![ScrollHandle::new()],
             latest_progress: None,
         });
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
         self.segments.len() - 1
@@ -978,6 +982,7 @@ impl RunActivityGroup {
                         .is_some_and(|state| state.expanded)
                 };
                 if change.stage || visible && (change.header || change.geometry) {
+                    group.invalidate_run_headers();
                     cx.emit(RunActivityDisplayChanged {
                         segment: (!details).then_some(segment),
                         geometry: change.geometry
@@ -997,6 +1002,7 @@ impl RunActivityGroup {
                 segment.expanded = true;
             }
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1024,7 +1030,11 @@ impl RunActivityGroup {
             .push((card.clone(), card.read(cx).stage_activity_category()));
         match segment_state.children.last() {
             Some(RunActivityChild::Tool(first)) => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 let expanded = first.read(cx).is_expanded();
                 let group = cx.new(|_| ToolActivityGroup::new(first.clone(), card));
                 Self::observe_tool_group(&group, cx);
@@ -1034,11 +1044,19 @@ impl RunActivityGroup {
                 }
             }
             Some(RunActivityChild::ToolGroup(group)) => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 group.update(cx, |group, cx| group.append(card, cx));
             }
             _ => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 card.update(cx, |card, cx| card.set_expanded(false, cx));
                 segment_state.children.push(RunActivityChild::Tool(card));
             }
@@ -1047,6 +1065,7 @@ impl RunActivityGroup {
             segment_state.expanded = true;
         }
         self.refresh_compact_tool_groups(segment, cx);
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1062,7 +1081,11 @@ impl RunActivityGroup {
         };
         match segment_state.children.last() {
             Some(RunActivityChild::Tool(first)) => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 let group = cx.new(|_| ToolActivityGroup::new(first.clone(), card));
                 Self::observe_tool_group(&group, cx);
                 if let Some(last) = segment_state.children.last_mut() {
@@ -1070,15 +1093,24 @@ impl RunActivityGroup {
                 }
             }
             Some(RunActivityChild::ToolGroup(group)) => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 group.update(cx, |group, cx| group.append(card, cx));
             }
             _ => {
-                cx.observe(&card, |_, _, cx| cx.notify()).detach();
+                cx.observe(&card, |this, _, cx| {
+                    this.invalidate_run_headers();
+                    cx.notify();
+                })
+                .detach();
                 segment_state.children.push(RunActivityChild::Tool(card));
             }
         }
         self.refresh_compact_tool_groups(segment, cx);
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1115,12 +1147,17 @@ impl RunActivityGroup {
     }
 
     fn observe_tool_group(group: &Entity<ToolActivityGroup>, cx: &mut Context<Self>) {
-        cx.observe(group, |_, _, cx| cx.notify()).detach();
+        cx.observe(group, |this, _, cx| {
+            this.invalidate_run_headers();
+            cx.notify();
+        })
+        .detach();
     }
 
     pub(crate) fn attach_tool(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
         if !self.attached_tools.contains(&card) {
             self.attached_tools.push(card);
+            self.invalidate_run_headers();
             cx.notify();
         }
     }
@@ -1363,6 +1400,7 @@ impl RunActivityGroup {
         self.execution_duration_ms = execution_duration_ms;
         self.terminal = true;
         self.release_presentation(cx);
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1375,6 +1413,7 @@ impl RunActivityGroup {
         if self.final_confirmed {
             self.body_in_details = true;
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1449,106 +1488,21 @@ impl RunActivityGroup {
         }
         let expanded = group_ref.expanded;
         let sticky = group_ref.sticky.clone();
-        let label = group_ref.label();
-        let status_color = colors.conversation_clock;
         let can_expand = group_ref.process_in_details()
             && (group_ref.has_children()
                 || !group_ref.process_copies.is_empty()
                 || attached_details);
         let scroll = group_ref.scroll.clone();
         let focus = group_ref.focus.clone();
-        let clock = group.downgrade();
         let detail_anchor = group.downgrade();
-        let toggle = group.clone();
-        let keyboard_toggle = group.clone();
-        let disclosure_group: gpui_kit::SharedString =
-            format!("run-disclosure-{}", group.entity_id()).into();
-        let header_focus = group_ref.header_focus.clone().tab_stop(can_expand);
-        let header = div()
-            .id(("run-activity-toggle", group.entity_id()))
-            .group(disclosure_group.clone())
-            .track_focus(&header_focus)
-            .tab_stop(can_expand)
-            .aria_expanded(expanded)
-            .aria_label(vega_i18n::t_args(
-                "ui.run_disclosure",
-                &[
-                    ("label", &label),
-                    (
-                        "action",
-                        vega_i18n::t(if expanded { "ui.collapse" } else { "ui.expand" }),
-                    ),
-                ],
-            ))
-            .focus_visible(move |row| row.bg(colors.bg_hover))
-            .relative()
-            .w_full()
-            .h(px(Layout::CONVERSATION_CLOCK_HEIGHT))
-            .text_size(px(Typography::CONVERSATION))
-            .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap(px(Layout::CONVERSATION_INLINE_GAP))
-            .on_key_down(move |event, window, cx| {
-                if can_expand && event.keystroke.key == "tab" {
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
-                    }
-                    cx.stop_propagation();
-                } else if can_expand && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    keyboard_toggle.update(cx, RunActivityGroup::toggle_expanded);
-                    cx.stop_propagation();
-                }
-            })
-            .when(can_expand, |row| {
-                row.cursor_pointer().on_mouse_up(
-                    MouseButton::Left,
-                    move |_: &MouseUpEvent, _, cx| {
-                        toggle.update(cx, RunActivityGroup::toggle_expanded);
-                    },
-                )
-            })
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_shrink(1.)
-                    .truncate()
-                    .text_color(status_color)
-                    .child(label),
-            )
-            .child(crate::disclosure::inline_chevron(
-                disclosure_group,
-                &header_focus,
-                expanded,
-                can_expand,
-                colors,
-                window,
-            ))
-            .child(
-                gpui_kit::canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, cx| {
-                        if !bounds.intersect(&window.content_mask().bounds).is_empty()
-                            && window.is_window_active()
-                        {
-                            let _ = clock.update(cx, |group, cx| group.schedule_clock(cx));
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
-        let mut sections = vec![StickySection::plain(
-            div()
-                .mt(px(Layout::CONVERSATION_DIVIDER_GAP))
-                .h(px(Layout::CONVERSATION_DIVIDER_HEIGHT))
-                .w_full()
-                .bg(colors.conversation_divider)
-                .into_any_element(),
-        )];
+        let header = native::render_header(
+            group.clone(),
+            native::Target::Run,
+            attached_details,
+            window,
+            cx,
+        );
+        let mut sections = vec![StickySection::plain(native::render_divider(&group, cx))];
         if expanded && !details.is_empty() {
             sections.push(StickySection::content(
                 div()
@@ -1556,7 +1510,8 @@ impl RunActivityGroup {
                     .w_full()
                     .min_w_0()
                     .track_focus(&focus)
-                    .child(
+                    .child(crate::disclosure::scroll_chrome(
+                        format!("run-activity-chrome-{}", group.entity_id()).into(),
                         div()
                             .id(("run-activity-content", group.entity_id()))
                             .w_full()
@@ -1570,14 +1525,11 @@ impl RunActivityGroup {
                             .flex_col()
                             .gap_0()
                             .children(details)
-                            .tracked_scroll_edge_fade(
-                                scroll.clone(),
-                                colors.bg_base,
-                                ScrollFade::compact()
-                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
-                            ),
-                    )
-                    .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+                            .into_any_element(),
+                        scroll.clone(),
+                        window,
+                        cx,
+                    ))
                     .child(
                         gpui_kit::canvas(
                             |_, _, _| (),
@@ -1597,7 +1549,6 @@ impl RunActivityGroup {
             .gap_0()
             .child(StickyDisclosure::new(
                 div()
-                    .bg(colors.bg_base)
                     .block_mouse_except_scroll()
                     .child(header)
                     .into_any_element(),
@@ -1833,6 +1784,7 @@ impl RunActivityGroup {
             if let Some(card) = single_card {
                 card.update(cx, |card, cx| card.set_stage_expanded(true, cx));
             }
+            self.invalidate_run_headers();
             self.sync_thinking_visibility(cx);
             cx.notify();
         }
@@ -1853,6 +1805,7 @@ impl RunActivityGroup {
         if let Some(card) = single_card {
             card.update(cx, |card, cx| card.set_stage_expanded(expanded, cx));
         }
+        self.invalidate_run_headers();
         self.sync_thinking_visibility(cx);
         cx.notify();
     }
@@ -1922,7 +1875,6 @@ impl RunActivityGroup {
             .latest_progress
             .as_ref()
             .is_some_and(|progress| matches!(progress, StageProgress::Thinking { .. }));
-        let activity_icon = headline.icon;
         let epoch = state.animation_epoch;
         let focused_hidden_thinking = aggregate
             && !expanded
@@ -1964,105 +1916,13 @@ impl RunActivityGroup {
             title_view.update(cx, |view, cx| {
                 view.set(title.clone(), shimmering.then_some(epoch), cx)
             });
-            let disclosure_group: gpui_kit::SharedString =
-                format!("run-stage-{}-{segment_index}", group.entity_id()).into();
-            let toggle = group.clone();
-            let click_focus = header_focus.clone();
-            let keyboard = group.clone();
-            let row = div()
-                .id(("run-stage-toggle", segment_index))
-                .group(disclosure_group.clone());
-
-            header = Some(
-                row.track_focus(&header_focus)
-                    .tab_stop(can_expand)
-                    .when(can_expand, |row| row.aria_expanded(expanded))
-                    .aria_label(if can_expand {
-                        vega_i18n::t_args(
-                            "ui.stage_disclosure",
-                            &[
-                                ("title", &title),
-                                (
-                                    "action",
-                                    vega_i18n::t(if expanded {
-                                        "ui.collapse"
-                                    } else {
-                                        "ui.expand"
-                                    }),
-                                ),
-                            ],
-                        )
-                    } else {
-                        title.clone()
-                    })
-                    .when(can_expand, |row| {
-                        row.focus_visible(move |row| row.bg(colors.bg_hover))
-                    })
-                    .w_full()
-                    .min_w_0()
-                    .h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-                    .text_size(px(Typography::CONVERSATION))
-                    .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-                    .text_color(colors.conversation_stage)
-                    .flex()
-                    .items_center()
-                    .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                    .when(can_expand, |row| {
-                        row.cursor_pointer().on_mouse_up(
-                            MouseButton::Left,
-                            move |_: &MouseUpEvent, window, cx| {
-                                click_focus.focus(window, cx);
-                                toggle
-                                    .update(cx, |group, cx| group.toggle_segment(segment_index, cx))
-                            },
-                        )
-                    })
-                    .on_key_down(move |event, window, cx| {
-                        if can_expand && event.keystroke.key == "tab" {
-                            if event.keystroke.modifiers.shift {
-                                window.focus_prev(cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                            cx.stop_propagation();
-                        } else if can_expand
-                            && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                        {
-                            keyboard
-                                .update(cx, |group, cx| group.toggle_segment(segment_index, cx));
-                            cx.stop_propagation();
-                        }
-                    })
-                    .when_some(activity_icon, |row, icon| {
-                        row.child(
-                            div()
-                                .size(px(Layout::ICON_SIZE))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(crate::icons::icon(icon, colors.conversation_stage)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_shrink(1.)
-                            .truncate()
-                            .child(title_view.clone()),
-                    )
-                    .when(can_expand, |row| {
-                        row.child(crate::disclosure::inline_chevron(
-                            disclosure_group,
-                            &header_focus,
-                            expanded,
-                            true,
-                            colors,
-                            window,
-                        ))
-                    })
-                    .into_any_element(),
-            );
+            header = Some(native::render_header(
+                group.clone(),
+                native::Target::Stage(segment_index),
+                false,
+                window,
+                cx,
+            ));
         }
         let mut operation_index = 0;
         let sections = if aggregate {
@@ -2089,12 +1949,12 @@ impl RunActivityGroup {
             }
             if truncated {
                 rows.push(StickySection::plain(
-                    div()
-                        .pt(px(Layout::PROCESS_ITEM_GAP))
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .child(vega_i18n::t("ui.earlier_thinking_omitted"))
-                        .into_any_element(),
+                    super::conversation_status::omitted_thinking(
+                        group.entity_id().as_u64(),
+                        segment_index,
+                        window,
+                        cx,
+                    ),
                 ));
             }
         }
@@ -2163,7 +2023,12 @@ impl RunActivityGroup {
                     .relative()
                     .w_full()
                     .min_w_0()
-                    .child(
+                    .child(crate::disclosure::scroll_chrome(
+                        format!(
+                            "run-stage-chrome-{}-{section_index}",
+                            title_view.entity_id()
+                        )
+                        .into(),
                         div()
                             .id(gpui_kit::SharedString::from(format!(
                                 "run-stage-content-{segment_index}-{section_index}"
@@ -2179,14 +2044,11 @@ impl RunActivityGroup {
                             .flex_col()
                             .gap_0()
                             .children(details)
-                            .tracked_scroll_edge_fade(
-                                scroll.clone(),
-                                colors.bg_base,
-                                ScrollFade::compact()
-                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
-                            ),
-                    )
-                    .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+                            .into_any_element(),
+                        scroll.clone(),
+                        window,
+                        cx,
+                    ))
                     .into_any_element(),
                 reaches_header,
             ));
@@ -2194,7 +2056,6 @@ impl RunActivityGroup {
         let content = if let Some(header) = header {
             StickyDisclosure::new(
                 div()
-                    .bg(colors.bg_base)
                     .block_mouse_except_scroll()
                     .child(header)
                     .into_any_element(),

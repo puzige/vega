@@ -214,6 +214,10 @@ pub(crate) struct ComposerActions {
 }
 
 impl ComposerActions {
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping
+    }
+
     fn close_menu(&mut self) {
         self.menu = false;
         self.menu_rows.clear();
@@ -986,6 +990,10 @@ impl ConversationStream {
         matches.into_iter().map(|(_, index)| index).collect()
     }
 
+    pub(crate) fn render_composer_shell(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+        native::shell::element(window, cx)
+    }
+
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         native::NativeChrome {
             owner: cx.weak_entity(),
@@ -998,6 +1006,38 @@ impl ConversationStream {
         native::NativeChrome {
             owner: cx.weak_entity(),
             kind: native::Kind::Stop,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_trigger(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Trigger,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_primary(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Primary,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_running_send(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::RunningSend,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_resume_pending(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::ResumePending,
         }
         .into_any_element()
     }

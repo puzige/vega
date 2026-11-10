@@ -1,3 +1,4 @@
+use super::workspace::nsh_workspace;
 use super::*;
 
 fn clear_confirmed_reasoning_default_ledger(
@@ -296,6 +297,16 @@ impl Render for VegaWindow {
         self.sync_palette(window, cx);
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
+        if settings_open
+            || self.palette.view.is_some()
+            || pending_delete.is_some()
+            || self.sidebar.read(cx).opening_thread(cx).is_some()
+        {
+            if let Some((_, stream)) = &self.stream_view {
+                stream.update(cx, ConversationStream::suspend_reading_navigation);
+            }
+            self.suspend_subagent_reading_navigation(cx);
+        }
         if (settings_open || self.sidebar.read(cx).opening_thread(cx).is_some())
             && let Some((_, stream)) = &self.stream_view
         {
@@ -455,7 +466,7 @@ impl Render for VegaWindow {
             }
             match &self.settings_view {
                 Some(settings) => settings.clone().into_any_element(),
-                None => div().size_full().bg(colors.bg_base).into_any_element(),
+                None => div().size_full().into_any_element(),
             }
         } else if let Some((_, started)) = self.sidebar.read(cx).opening_thread(cx) {
             self.render_conversation_loading(Some(started), cx)
@@ -726,7 +737,7 @@ impl Render for VegaWindow {
                 .flex()
                 .flex_col()
                 .child(self.render_main_header(sidebar_visible, window, cx))
-                .children(self.render_permission_reset_notice(cx))
+                .children(self.render_permission_reset_notice(window, cx))
                 .children(
                     navigation_error
                         .map(|_| self.render_shell_chrome(shell_chrome::Kind::Error, window, cx)),
@@ -756,18 +767,29 @@ impl Render for VegaWindow {
             .flex()
             .flex_row()
             .relative()
-            .bg(colors.bg_base)
             .text_color(colors.text_primary)
+            .child(nsh_workspace::background(
+                "nsh-window-base",
+                colors.bg_base,
+                window,
+                cx,
+            ))
             .child(gpui_kit::base::TextSelectionLayer)
             .when(sidebar_visible && !cx.global::<SettingsOpen>().0, |row| {
                 row.child(self.sidebar.clone())
-                    .child(self.render_sidebar_resizer(colors, cx))
+                    .child(self.render_sidebar_resizer(colors, window, cx))
             })
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .bg(colors.bg_base)
+                    .relative()
+                    .child(nsh_workspace::background(
+                        "nsh-window-main-base",
+                        colors.bg_base,
+                        window,
+                        cx,
+                    ))
                     .overflow_hidden()
                     .flex()
                     .flex_col()
@@ -804,7 +826,12 @@ impl Render for VegaWindow {
 }
 
 impl VegaWindow {
-    fn render_sidebar_resizer(&self, colors: ThemeColors, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar_resizer(
+        &self,
+        colors: ThemeColors,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .id("sidebar-resize-handle")
             .w(px(Layout::SIDEBAR_RESIZE_HIT_AREA))
@@ -812,9 +839,20 @@ impl VegaWindow {
             .flex_shrink_0()
             .flex()
             .justify_end()
-            .bg(colors.bg_sidebar)
+            .relative()
+            .child(nsh_workspace::background(
+                "nsh-sidebar-resizer-base",
+                colors.bg_sidebar,
+                window,
+                cx,
+            ))
             .cursor_col_resize()
-            .child(div().w(px(1.)).h_full().bg(colors.border_subtle))
+            .child(nsh_workspace::separator(
+                "nsh-sidebar-separator",
+                true,
+                window,
+                cx,
+            ))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_sidebar_resize))
             .into_any_element()
     }

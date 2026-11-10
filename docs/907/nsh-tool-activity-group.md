@@ -1,5 +1,11 @@
 # ToolActivityGroup NSH migration
 
+## Current timeline/scroll lane delta
+
+Latest lane 1 replaces the expanded group's legacy GPUI scrollbar and old fade implementation with actual NSH thumb/edge paint driven by the same original ScrollHandle. The group remains a native layout/event host; child ToolCard entities/order/expansion/controllers are unchanged. Header publication now stabilizes when id/content/focus/used colors are equivalent. ToolCard's existing NSH detail scroll also uses the already-declared nsh-base built-in scrollbar with real target metrics/drag/AX and system Hover/Always preference. No dependencies or second vertical scroll state are added.
+
+Current implementation, acceptance, source-level wheel blocker, validation commands and limits are in [tool/timeline scroll composition](nsh-tool-scroll-composition.md#current-full-lane-implementation-delta) and [timeline lane](nsh-run-timeline.md#full-timelinescroll-lane-acceptance-before-implementation). Prior header-only/incomplete-paint statements below describe earlier batches, not this delta. Cross-Surface wheel remainder remains blocked by the unauthorized backend event protocol; no native/full-composition pass is claimed. Scoped rustfmt/static only; all new/affected regressions await parent unified execution and post-four-lane independent review.
+
 ## Acceptance and risk recorded before implementation
 
 Source baseline: `bd89db7d182e6d9a5c60b1388e79a4623e8cacc4`; original `tool_activity_group.rs` SHA256 `6278fac38d154bc19296bb56ec3088c97012968c77573af2a0ad97da03cd9cb7`. Parent has fetched/updated and integrated origin/master `34555cec9c0c4c4c1f7a528d739752f414e53edf`. No Git mutation is delegated. Writes are confined to `crates/vega_ui/src/tool_activity_group.rs`, its new `tool_activity_group/` subtree, and this document. No nested AGENTS.md exists under crates or docs at inspection time.

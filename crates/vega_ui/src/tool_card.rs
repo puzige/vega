@@ -1,4 +1,6 @@
 mod nsh_tool;
+#[cfg(feature = "nsh-reading-integration")]
+pub use nsh_tool::mounted_regressions as shell_control_mounted_regressions;
 use std::time::Duration;
 
 use gpui_kit::prelude::*;
@@ -107,7 +109,7 @@ impl ToolActivityState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ToolDetail {
     title: Option<String>,
     command: Option<String>,
@@ -125,6 +127,10 @@ impl ToolDetail {
     }
 }
 
+pub struct ShellControlRequested {
+    pub operation_id: String,
+}
+
 pub struct ToolCard {
     input: Option<ToolCardInputProjection>,
     description: Option<String>,
@@ -132,6 +138,8 @@ pub struct ToolCard {
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
     shell_command: Option<vega_conversation::types::ShellCommandProjection>,
+    shell_control_pending: bool,
+    shell_control_failed: bool,
     summary: String,
     summary_language: &'static str,
     output_rows: Vec<String>,
@@ -145,6 +153,7 @@ pub struct ToolCard {
 }
 
 impl gpui_kit::EventEmitter<SubagentOpenRequested> for ToolCard {}
+impl gpui_kit::EventEmitter<ShellControlRequested> for ToolCard {}
 
 impl ToolCard {
     pub fn proposed(call: &ToolCall) -> Self {
@@ -161,6 +170,8 @@ impl ToolCard {
             approval: None,
             result: corrupt.then_some(ToolCardResultProjection::Corrupt),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -189,6 +200,8 @@ impl ToolCard {
             approval: None,
             result: Some(projection),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -212,6 +225,8 @@ impl ToolCard {
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             output_rows: Vec::new(),
@@ -245,6 +260,8 @@ impl ToolCard {
             approval,
             result,
             shell_command: None,
+            shell_control_pending: false,
+            shell_control_failed: false,
             summary: String::new(),
             summary_language: vega_i18n::language(),
             expanded: false,
@@ -487,6 +504,7 @@ impl ToolCard {
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut gpui_kit::Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
+            self.invalidate_layout();
             cx.notify();
         }
     }
@@ -782,6 +800,7 @@ impl ToolCard {
             current.agent_id == snapshot.agent_id && current.message_id == snapshot.message_id
         }) {
             self.execution = Some(snapshot);
+            self.invalidate_layout();
             cx.notify();
         }
     }
@@ -823,6 +842,7 @@ impl ToolCard {
     }
 
     fn refresh_summary(&mut self) {
+        self.invalidate_layout();
         self.summary = self.build_summary();
         self.summary_language = vega_i18n::language();
     }
@@ -1109,8 +1129,41 @@ impl ToolCard {
         if !matches || !matches!(&self.input, Some(ToolCardInputProjection::Bash { .. })) {
             return false;
         }
+        if matches!(
+            command.state.as_str(),
+            "succeeded" | "failed" | "cancelled" | "timed_out"
+        ) && !command.cleanup_unresolved
+        {
+            self.shell_control_failed = false;
+        }
         self.shell_command = Some(command.clone());
         self.refresh_summary();
+        true
+    }
+
+    pub(crate) fn matches_shell_control_source(
+        &self,
+        operation_id: &str,
+        call_id: &str,
+        thread_id: &str,
+    ) -> bool {
+        self.shell_command.as_ref().is_some_and(|command| {
+            command.operation_id == operation_id
+                && command.call_id == call_id
+                && command.thread_id == thread_id
+        })
+    }
+
+    pub(crate) fn finish_shell_control(&mut self, operation_id: &str, failed: bool) -> bool {
+        if !self
+            .shell_command
+            .as_ref()
+            .is_some_and(|command| command.operation_id == operation_id)
+        {
+            return false;
+        }
+        self.shell_control_pending = false;
+        self.shell_control_failed = failed;
         true
     }
 
@@ -1181,6 +1234,7 @@ impl ToolCard {
     }
 
     pub(crate) fn release_presentation(&mut self) {
+        self.invalidate_layout();
         self.presentation_released = true;
         self.stop_live_elapsed();
     }
@@ -1193,6 +1247,14 @@ impl ToolCard {
 
     fn bash_detail_title(&self) -> String {
         let mut title = vega_i18n::t("ui.shell").to_string();
+        if self
+            .shell_command
+            .as_ref()
+            .is_some_and(|command| command.concurrent && command.cleanup_unresolved)
+        {
+            title.push_str(" · ");
+            title.push_str(vega_i18n::t("ui.shell_session.cleanup_unresolved"));
+        }
         if let Some(ToolCardResultProjection::Bash {
             truncated,
             reused,
@@ -1672,12 +1734,4 @@ pub(crate) fn contain_disclosure_scroll(
             cx.stop_propagation();
         }
     }
-}
-
-pub(crate) fn disclosure_scrollbar(scroll: &ScrollHandle, cx: &App) -> gpui_kit::base::Scrollbar {
-    gpui_kit::base::Scrollbar::vertical(scroll).mode(if cx.should_auto_hide_scrollbars() {
-        gpui_kit::base::ScrollbarMode::Hover
-    } else {
-        gpui_kit::base::ScrollbarMode::Always
-    })
 }

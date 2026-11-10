@@ -14,6 +14,7 @@ pub(super) enum Kind {
     Header,
     Slots,
     Error,
+    PermissionReset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,7 @@ enum Action {
     Environment,
     Terminal,
     Panel,
+    PermissionSettings,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -43,6 +45,11 @@ struct Observation {
     settings: bool,
     blocked: bool,
     mutation: vega_ui::navigation::TaskMutationState,
+    permission_reset: Option<(
+        vega_conversation::types::PermissionResetProjection,
+        u64,
+        bool,
+    )>,
     title: String,
     controls: Vec<Control>,
 }
@@ -205,6 +212,22 @@ impl VegaWindow {
                 .and_then(|state| state.error_message())
                 .unwrap_or_default()
                 .into(),
+            Kind::PermissionReset => {
+                if self.permission_reset.projection.authority_blocked() {
+                    controls.push(Control {
+                        action: Action::PermissionSettings,
+                        label: vega_i18n::t("ui.permission_reset_open_settings").into(),
+                        enabled: true,
+                        selected: false,
+                    });
+                }
+                vega_i18n::t(if self.permission_reset.session.is_some() {
+                    "ui.permission_reset_paused_notice"
+                } else {
+                    "ui.permission_reset_failed_notice"
+                })
+                .into()
+            }
         };
         Observation {
             kind,
@@ -223,6 +246,13 @@ impl VegaWindow {
                 .try_global::<vega_ui::navigation::TaskMutationState>()
                 .copied()
                 .unwrap_or_default(),
+            permission_reset: (kind == Kind::PermissionReset).then(|| {
+                (
+                    self.permission_reset.projection.clone(),
+                    self.permission_reset.operation,
+                    self.permission_reset.session.is_some(),
+                )
+            }),
             title,
             controls,
         }
@@ -249,26 +279,56 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let observed = self.shell_chrome_observation(kind, window, cx);
+        let notice_focus = if kind == Kind::PermissionReset {
+            Some(
+                self.permission_reset
+                    .notice_focus
+                    .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let owner = cx.weak_entity();
         let host = self
             .shell_chrome
             .hosts
             .entry(kind)
             .or_insert_with(|| {
-                cx.new(|cx| Host {
-                    owner,
-                    kind,
-                    id: cx.entity_id(),
-                    revision: ProjectionId::new(),
-                    surface: None,
-                    published: None,
-                    displayed: None,
-                    positions: None,
-                    height: Typography::METADATA * Typography::BODY_LINE_HEIGHT + 8.,
-                    focuses: Vec::new(),
-                    lease: Weak::new(),
-                    geometry: Rc::new(RefCell::new(Geometry::default())),
-                    subscriptions: Vec::new(),
+                cx.new(|cx| {
+                    let mut subscriptions = Vec::new();
+                    let focuses = if let Some(focus) = notice_focus {
+                        subscriptions.push(cx.on_focus(
+                            &focus,
+                            window,
+                            |host: &mut Host, _, cx| {
+                                host.invalidate();
+                                cx.notify();
+                            },
+                        ));
+                        subscriptions.push(cx.on_blur(&focus, window, |host: &mut Host, _, cx| {
+                            host.invalidate();
+                            cx.notify();
+                        }));
+                        vec![(Action::PermissionSettings, focus)]
+                    } else {
+                        Vec::new()
+                    };
+                    Host {
+                        owner,
+                        kind,
+                        id: cx.entity_id(),
+                        revision: ProjectionId::new(),
+                        surface: None,
+                        published: None,
+                        displayed: None,
+                        positions: None,
+                        height: Typography::METADATA * Typography::BODY_LINE_HEIGHT + 8.,
+                        focuses,
+                        lease: Weak::new(),
+                        geometry: Rc::new(RefCell::new(Geometry::default())),
+                        subscriptions,
+                    }
                 })
             })
             .clone();
@@ -366,6 +426,7 @@ impl Host {
                 Action::Environment => owner.toggle_environment(window, cx),
                 Action::Terminal => owner.workspace_toggle_bottom(window, cx),
                 Action::Panel => owner.workspace_toggle_right(window, cx),
+                Action::PermissionSettings => owner.open_permission_reset_settings(cx),
             }
         });
         cx.notify();
@@ -403,7 +464,7 @@ impl Host {
             }
             Request::Activate(snapshot, action) => self.dispatch(&snapshot, action, window, cx),
             Request::Height(snapshot, height) => {
-                if self.kind == Kind::Error
+                if matches!(self.kind, Kind::Error | Kind::PermissionReset)
                     && height.is_finite()
                     && height > 0.
                     && self.live(window, cx)
@@ -486,10 +547,16 @@ impl Render for Host {
             snapshot.revision = self.revision.clone();
         }
         self.mount(snapshot.clone(), window, cx);
+        let publish = self
+            .published
+            .as_ref()
+            .is_none_or(|previous| !previous.matches(&snapshot));
         self.published = Some(snapshot.clone());
         let child = self.surface.as_mut().map(|surface| {
             surface.sync_environment(cx);
-            surface.publish(snapshot.clone());
+            if publish {
+                surface.publish(snapshot.clone());
+            }
             let _ = surface.focus_handle(cx).tab_stop(false);
             surface.entity()
         });
@@ -499,9 +566,10 @@ impl Render for Host {
             .id("shell-chrome-native-host")
             .relative()
             .size_full()
-            .when(self.kind == Kind::Error, |host| {
-                host.h(px(self.height)).flex_shrink_0()
-            })
+            .when(
+                matches!(self.kind, Kind::Error | Kind::PermissionReset),
+                |host| host.h(px(self.height)).flex_shrink_0(),
+            )
             .children(child)
             .child(
                 canvas(

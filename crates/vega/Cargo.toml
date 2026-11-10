@@ -3,6 +3,15 @@ name = "vega"
 version.workspace = true
 edition.workspace = true
 
+[features]
+nsh-workspace-integration = ["gpui_kit/test-support"]
+
+[[test]]
+name = "nsh_workspace_mounted"
+path = "src/window/nsh_workspace/mounted_main.rs"
+harness = false
+required-features = ["nsh-workspace-integration"]
+
 [dependencies]
 vega_i18n.workspace = true
 vega_credentials = { workspace = true }

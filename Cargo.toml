@@ -16,7 +16,7 @@ members = [
     "crates/vega_i18n",
     "xtask",
 ]
-exclude = ["vendor/block", "vendor/mdstream"]
+exclude = ["vendor/block", "vendor/mdstream", "vendor/nsh-platform-gpui", "vendor/nsh-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -102,3 +102,5 @@ nsh-base = { version = "=0.4.0", default-features = false }
 [patch.crates-io]
 block = { path = "vendor/block" }
 mdstream = { path = "vendor/mdstream" }
+nsh-platform-gpui = { path = "vendor/nsh-platform-gpui" }
+nsh-core = { path = "vendor/nsh-core" }

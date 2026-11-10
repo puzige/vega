@@ -89,18 +89,8 @@ impl CodeViewport {
         }
     }
 
-    pub(super) fn scroll(mut self, scroll: CodeScrollHandle) -> Self {
-        self.scroll = Some(scroll);
-        self
-    }
-
     pub(super) fn selection(mut self, selection: Option<CodeDragSelection>) -> Self {
         self.selection = selection;
-        self
-    }
-
-    pub(super) fn height(mut self, height: Pixels) -> Self {
-        self.height = Some(height);
         self
     }
 }

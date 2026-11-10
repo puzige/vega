@@ -548,6 +548,10 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
     register_keys(composing, focused, initial.recovery, move |operation| {
         keyboard.current(operation);
     });
+    #[cfg(feature = "nsh-reading-integration")]
+    ns::effect(move || {
+        mounted_regressions::observe_projection(&state.get(), composing.get(), focused.get());
+    });
     let input_ref = ns::element_ref();
     let change = dispatch.clone();
     let composition = dispatch.clone();
@@ -905,3 +909,6 @@ impl Element for Mounted {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "nsh-reading-integration")]
+pub(super) mod mounted_regressions;

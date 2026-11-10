@@ -450,16 +450,6 @@ impl ConversationStream {
         self.submit_message(cx);
     }
 
-    /// [发送] button click — same submit path as Cmd+Enter.
-    pub(crate) fn on_send_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.activate_composer_primary(cx);
-    }
-
     /// Recalls older submitted drafts only from the first logical line; Up
     /// inside a multi-line draft remains a caret/navigation concern.
     pub(crate) fn on_previous_message(

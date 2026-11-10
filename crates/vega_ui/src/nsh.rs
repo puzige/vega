@@ -12,6 +12,7 @@ use nsh_platform_gpui::{App as NshApp, AppOptions, AppView, CacheOptions, Locale
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub(crate) mod keyboard;
+pub(crate) mod scroll;
 
 pub const COMMAND_CAPACITY: usize = 64;
 

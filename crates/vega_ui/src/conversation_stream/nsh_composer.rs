@@ -2,9 +2,24 @@ use super::*;
 use crate::text_input::nsh::{ComposerKey, ComposerRoute, ComposerShortcut};
 
 impl ConversationStream {
+    pub fn render_nsh_composer_input(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        crate::text_input::TextInput::render_nsh_composer(
+            self.input.clone(),
+            self.nsh_composer_route(cx),
+            window,
+            cx,
+        )
+    }
+
     pub(super) fn nsh_composer_route(&self, cx: &App) -> ComposerRoute {
-        let current = self.input.read(cx).text();
+        let input = self.input.read(cx);
+        let current = input.text();
         ComposerRoute {
+            policy: Default::default(),
             files: self.file_selector.is_open()
                 || self.file_selector_wanted
                 || self.file_index_loading,

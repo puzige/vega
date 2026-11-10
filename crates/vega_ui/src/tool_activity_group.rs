@@ -1,7 +1,6 @@
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, ScrollHandle, div, px};
-use vega_theme::{Layout, ThemeColors, theme};
+use vega_theme::{Layout, ThemeColors};
 
 mod nsh_header;
 
@@ -239,7 +238,6 @@ impl ToolActivityGroup {
         window: &mut gpui_kit::Window,
         cx: &mut App,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
         let (expanded, children, child_count) = {
             let group_ref = group.read(cx);
             (
@@ -251,14 +249,15 @@ impl ToolActivityGroup {
         let scroll = group.read(cx).scroll.clone();
         let scroll_id = format!("tool-group-{}", group.entity_id());
         let mut rows = Vec::with_capacity(1 + child_count);
-        rows.push(nsh_header::render_host(group, window, cx));
+        rows.push(nsh_header::render_host(group.clone(), window, cx));
         if expanded {
             rows.push(
                 div()
                     .relative()
                     .w_full()
                     .min_w_0()
-                    .child(
+                    .child(crate::disclosure::group_scroll_chrome(
+                        format!("tool-group-chrome-{}", group.entity_id()).into(),
                         div()
                             .id(gpui_kit::SharedString::from(scroll_id))
                             .w_full()
@@ -267,23 +266,25 @@ impl ToolActivityGroup {
                             .overflow_x_hidden()
                             .overflow_y_scroll()
                             .track_scroll(&scroll)
-                            .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
                             .flex()
                             .flex_col()
                             .gap(px(Layout::PROCESS_ITEM_GAP))
+                            .child(crate::disclosure::group_scroll_listener(
+                                format!("tool-group-chrome-{}", group.entity_id()).into(),
+                                &scroll,
+                                window,
+                                cx,
+                            ))
                             .children(
                                 children
                                     .into_iter()
                                     .map(|card| ToolCard::render(card, true, window, cx)),
                             )
-                            .tracked_scroll_edge_fade(
-                                scroll.clone(),
-                                colors.bg_base,
-                                ScrollFade::compact()
-                                    .vertical_gutter(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER)),
-                            ),
-                    )
-                    .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+                            .into_any_element(),
+                        scroll.clone(),
+                        window,
+                        cx,
+                    ))
                     .into_any_element(),
             );
         }

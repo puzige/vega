@@ -48,6 +48,15 @@ impl Snapshot {
     fn accepts(&self, observed: &Self) -> bool {
         self.id.matches(&observed.id) && self.same_content(observed)
     }
+
+    fn same_presentation(&self, other: &Self) -> bool {
+        self.accepts(other)
+            && self.keyboard_focus == other.keyboard_focus
+            && self.colors.conversation_tool == other.colors.conversation_tool
+            && self.colors.bg_active == other.colors.bg_active
+            && self.colors.bg_hover == other.colors.bg_hover
+            && self.colors.bg_base == other.colors.bg_base
+    }
 }
 
 struct Request {
@@ -211,9 +220,11 @@ pub(super) fn render_host(
         page.id = observed.id.clone();
         page.lease = Rc::downgrade(&lease);
         observed.keyboard_focus = page.focus.is_focused(window) && window.last_input_was_keyboard();
-        page.observed = observed.clone();
         page.surface.sync_environment(cx);
-        page.surface.publish(observed.clone());
+        if !page.observed.same_presentation(&observed) {
+            page.surface.publish(observed.clone());
+        }
+        page.observed = observed.clone();
         let keyboard_observed = observed.clone();
         let accessibility_observed = observed.clone();
         let focus = page.focus.clone();

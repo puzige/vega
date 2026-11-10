@@ -1,5 +1,6 @@
 use super::*;
 
+pub(super) mod native;
 mod render;
 use vega_conversation::types::{
     AutomationPermissionChange, AutomationPermissionConfirmed, AutomationPermissionReloadRequested,
@@ -10,16 +11,17 @@ use vega_conversation::types::{
 pub(crate) struct AutomationPermissionUi {
     operation: u64,
     task_id: Option<String>,
+    source: Option<Thread>,
     original_input: Option<String>,
     phase: Phase,
     cancel: FocusHandle,
     confirm: FocusHandle,
     reload: FocusHandle,
     details: FocusHandle,
-    details_scroll: ScrollHandle,
     focus_pending: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 enum Phase {
     Idle,
     Preparing(Box<AutomationPermissionRequested>),
@@ -29,8 +31,8 @@ enum Phase {
     Failed(Error),
 }
 
-#[derive(Clone, Copy)]
-enum Action {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Action {
     Cancel,
     Confirm,
     Reload,
@@ -41,13 +43,13 @@ impl AutomationPermissionUi {
         Self {
             operation: 0,
             task_id: None,
+            source: None,
             original_input: None,
             phase: Phase::Idle,
             cancel: cx.focus_handle().tab_stop(true),
             confirm: cx.focus_handle().tab_stop(true),
             reload: cx.focus_handle().tab_stop(true),
             details: cx.focus_handle().tab_stop(true),
-            details_scroll: ScrollHandle::new(),
             focus_pending: false,
         }
     }
@@ -83,6 +85,13 @@ impl ConversationStream {
             || self.automation.projection.busy
             || self.thread.permission_mode != PermissionMode::FullAccess
             || self.thread.mode != ThreadMode::Execute
+            || !self
+                .automation
+                .projection
+                .tasks
+                .iter()
+                .any(|current| current == &task)
+            || task.thread_id != self.thread.id
             || task.status.replaceable()
             || (resume && task.status == AutomationStatus::Active)
         {
@@ -100,9 +109,7 @@ impl ConversationStream {
         self.automation_permission.operation = operation;
         self.automation_permission.task_id = Some(task.identity);
         self.automation_permission.original_input = original_input;
-        self.automation_permission
-            .details_scroll
-            .set_offset(gpui_kit::point(px(0.), px(0.)));
+        self.automation_permission.source = Some(self.thread.clone());
         self.automation_permission.phase = Phase::Preparing(Box::new(request.clone()));
         self.automation_permission.focus_pending = true;
         self.permission_picker_open = false;
@@ -127,7 +134,7 @@ impl ConversationStream {
         if !self.owns_automation_permission_operation(operation) {
             return;
         }
-        let valid = matches!(&self.automation_permission.phase, Phase::Preparing(request) if request.task == *change.task() && request.resume == change.resumes_task() && request.source.permission_revision == self.thread.permission_revision && request.source.full_access_grant == self.thread.full_access_grant)
+        let valid = matches!(&self.automation_permission.phase, Phase::Preparing(request) if request.task == *change.task() && request.resume == change.resumes_task() && request.source == self.thread)
             && self
                 .automation
                 .projection
@@ -150,6 +157,19 @@ impl ConversationStream {
     ) -> bool {
         if self.automation_permission.operation != request.operation
             || !matches!(&self.automation_permission.phase, Phase::Confirming(change) if **change == request.change)
+            || self.automation_permission.source.as_ref() != Some(&self.thread)
+            || self.thread.backend != TaskBackend::Native
+            || self.thread.permission_mode != PermissionMode::FullAccess
+            || self.thread.mode != ThreadMode::Execute
+            || self.reading_preview
+            || self.permissions_revoked
+            || self.automation.projection.busy
+            || !self
+                .automation
+                .projection
+                .tasks
+                .iter()
+                .any(|task| task == request.change.task())
         {
             return false;
         }
@@ -247,6 +267,7 @@ impl ConversationStream {
             self.automation_permission.operation.saturating_add(1);
         self.automation_permission.phase = Phase::Idle;
         self.automation_permission.original_input = None;
+        self.automation_permission.source = None;
         self.automation_permission.focus_pending = true;
         cx.notify();
     }
@@ -291,7 +312,21 @@ impl ConversationStream {
         match action {
             Action::Cancel => self.cancel_automation_permission(cx),
             Action::Confirm => {
-                if let Phase::Confirming(change) = &self.automation_permission.phase {
+                if let Phase::Confirming(change) = &self.automation_permission.phase
+                    && self.automation_permission.source.as_ref() == Some(&self.thread)
+                    && self.thread.backend == TaskBackend::Native
+                    && self.thread.permission_mode == PermissionMode::FullAccess
+                    && self.thread.mode == ThreadMode::Execute
+                    && !self.reading_preview
+                    && !self.permissions_revoked
+                    && !self.automation.projection.busy
+                    && self
+                        .automation
+                        .projection
+                        .tasks
+                        .iter()
+                        .any(|task| task == change.task())
+                {
                     cx.emit(AutomationPermissionConfirmed {
                         operation: self.automation_permission.operation,
                         change: (**change).clone(),

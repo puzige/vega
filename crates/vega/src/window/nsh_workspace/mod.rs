@@ -4,8 +4,12 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use vega_ui::nsh::{ProjectionId, Surface};
 
+pub(in crate::window) mod controller;
 mod detail_layout;
+mod separator;
 mod view;
+
+pub(in crate::window) use separator::{background, drag_region, render as separator};
 
 pub(in crate::window) use detail_layout::detail_body;
 
@@ -352,16 +356,14 @@ impl VegaWindow {
     }
 
     fn nsh_pane_visible(&self, index: usize, window: &Window, cx: &App) -> bool {
-        let fullscreen = self.workspace_fullscreen_index();
-        self.workspace.selected[index].is_some()
-            && !self.workspace.hidden[index]
-            && (fullscreen == Some(index)
-                || (fullscreen.is_none()
-                    && if index == 0 {
-                        self.persistent_right_workspace_visible(window, cx)
-                    } else {
-                        f32::from(window.bounds().size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT
-                    }))
+        self.workspace.panes().visible(
+            index,
+            if index == 0 {
+                self.workspace_available_width(window, cx)
+            } else {
+                f32::from(window.bounds().size.height)
+            },
+        )
     }
 
     fn nsh_kind_visible(&self, kind: Kind, window: &Window, cx: &App) -> bool {

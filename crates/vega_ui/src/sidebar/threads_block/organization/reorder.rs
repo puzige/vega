@@ -310,7 +310,6 @@ impl ThreadsBlock {
         let Some(org) = &self.organization else {
             return row.into_any_element();
         };
-        let colors = theme(cx).colors;
         let bounds_cache = org.reorder.bounds.clone();
         let bounds_item = item.clone();
         let valid_target = !org.pending
@@ -322,74 +321,68 @@ impl ThreadsBlock {
         let drag_entity = cx.entity().downgrade();
         let drag_item = item.clone();
         let hover_item = item.clone();
-        row.relative()
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button.is_none()
-                    && this.organization.as_ref().is_some_and(|org| {
-                        org.reorder
-                            .pointer_order
-                            .as_ref()
-                            .is_some_and(|(source, _)| source != &hover_item)
-                    })
-                {
-                    this.clear_reorder_projection(cx);
-                }
-            }))
-            .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
-                drag_entity
-                    .update(cx, |this, cx| {
-                        this.close_actions();
-                        this.hold_reorder_projection(&drag_item);
-                        if let Some(org) = this.organization.as_mut() {
-                            org.menu = None;
-                            org.menu_anchor = None;
-                            org.reorder.source = Some(drag_item.clone());
-                            org.reorder.gesture = true;
-                            org.reorder.previous_focus = window.focused(cx);
-                            window.focus(&org.reorder.focus, cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                cx.new(|_| drag.clone())
-            })
-            .child(
-                gpui_kit::canvas(
-                    move |bounds, window, _| {
-                        bounds_cache.borrow_mut().insert(
-                            bounds_item,
-                            RowBounds {
-                                full: bounds,
-                                visible: bounds.intersect(&window.content_mask().bounds),
-                            },
-                        );
-                    },
-                    move |bounds, _, window, cx| {
-                        if valid_target
-                            && cx.has_active_drag()
-                            && bounds.contains(&window.mouse_position())
-                        {
-                            let height = px(Layout::SIDEBAR_REORDER_LINE_HEIGHT);
-                            let top = if window.mouse_position().y < bounds.center().y {
-                                bounds.top()
-                            } else {
-                                bounds.bottom() - height
-                            };
-                            window.paint_quad(gpui_kit::fill(
-                                gpui_kit::Bounds::new(
-                                    point(bounds.left(), top),
-                                    gpui_kit::size(bounds.size.width, height),
-                                ),
-                                colors.accent,
-                            ));
-                        }
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-            .into_any_element()
+        let line_key = format!(
+            "sidebar-reorder-line-{}-{}",
+            match &item {
+                ReorderItem::Project(_) => "project",
+                ReorderItem::Thread(_) => "thread",
+                ReorderItem::RecentThread(_) => "recent",
+            },
+            item.id()
+        );
+        nsh_leaf::chrome::insertion_overlay(
+            row.relative()
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_none()
+                        && this.organization.as_ref().is_some_and(|org| {
+                            org.reorder
+                                .pointer_order
+                                .as_ref()
+                                .is_some_and(|(source, _)| source != &hover_item)
+                        })
+                    {
+                        this.clear_reorder_projection(cx);
+                    }
+                }))
+                .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
+                    drag_entity
+                        .update(cx, |this, cx| {
+                            this.close_actions();
+                            this.hold_reorder_projection(&drag_item);
+                            if let Some(org) = this.organization.as_mut() {
+                                org.menu = None;
+                                org.menu_anchor = None;
+                                org.reorder.source = Some(drag_item.clone());
+                                org.reorder.gesture = true;
+                                org.reorder.previous_focus = window.focused(cx);
+                                window.focus(&org.reorder.focus, cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    cx.new(|_| drag.clone())
+                })
+                .child(
+                    gpui_kit::canvas(
+                        move |bounds, window, _| {
+                            bounds_cache.borrow_mut().insert(
+                                bounds_item,
+                                RowBounds {
+                                    full: bounds,
+                                    visible: bounds.intersect(&window.content_mask().bounds),
+                                },
+                            );
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                ),
+            line_key,
+            valid_target,
+        )
+        .into_any_element()
     }
 }

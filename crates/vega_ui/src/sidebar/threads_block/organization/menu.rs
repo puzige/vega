@@ -1,5 +1,5 @@
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+use crate::sidebar::nsh_leaf::chrome::ScrollFadeExt;
 impl ThreadsBlock {
     pub(super) fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
         let Some(org) = &self.organization else {
@@ -138,7 +138,6 @@ impl ThreadsBlock {
         cx.notify();
     }
     pub(super) fn render_organization_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
         let Some(org) = &self.organization else {
             return div().into_any_element();
         };
@@ -162,12 +161,8 @@ impl ThreadsBlock {
             .flex()
             .flex_col()
             .gap_1()
-            .p_1()
+            .p(px(5.))
             .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
@@ -183,10 +178,10 @@ impl ThreadsBlock {
                     cx.notify();
                 }),
             )
-            .tracked_scroll_edge_fade(
+            .sidebar_scroll_fade(
+                format!("organization-menu-fade-{}", org.generation),
                 org.menu_scroll.clone(),
-                colors.bg_elevated,
-                ScrollFade::compact(),
+                true,
             )
             // VegaWindow binds Escape to CloseSettings before raw key_down.
             // Handle the action in this focused menu so it cannot reach the route.
@@ -286,7 +281,13 @@ impl ThreadsBlock {
                     .position_mode(AnchoredPositionMode::Window)
                     .position(position)
                     .snap_to_window_with_margin(px(8.))
-                    .child(deferred(menu).with_priority(3)),
+                    .child(
+                        deferred(nsh_leaf::chrome::popup(
+                            format!("organization-menu-chrome-{}", org.generation),
+                            menu.into_any_element(),
+                        ))
+                        .with_priority(3),
+                    ),
             )
             .into_any_element()
     }

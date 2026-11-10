@@ -245,3 +245,195 @@ Normal command execution, compilation and tests are available; no permission res
 - Python release protection 5, computer preparation 15 and scripts 40: all passed. `git diff --check`: exit 0.
 - Latest hashes: `presentation.rs` SHA-256 `9968f6567b0f2f58772df3a90851b59fdf60da3eb16333d3aac3b362faa1c9a3`; `presentation/tests.rs` `55598e94e86fc674ff137ed15b8912201ac58c0387589b41a5ed7c17d4e89283`. `command_palette.rs` unchanged from writer handoff.
 - Branch-selector correction independent review completed with no actionable findings; all four previous findings statically resolved. Palette native IME P1 remains open. No new commit/push, exact-delta cloud CI, merge, release, installation or app execution is claimed. Rust development tests remain pending archive/removal before final delivery.
+
+## Current superseding checkpoint: authorized same-version native editing patch
+
+This is author development closure, not independent review. It supersedes the
+historical patch-authorization/blocker statements above, without deleting their
+history. The user approved the minimal native editing patch at the same pinned
+versions; Fast and dependency pins remain unchanged. The parent's dirty worktree
+has HEAD `0b5ea426abfd8d4358489e916273d89474fb190f`; the user reports fetched
+mainline `0b3dcd3603a8e97e0ef74ae25a26f17fc3a094e5` integrated in the dirty tree.
+This lane does not fetch, update Git, compile, run tests, or change production.
+
+Current source inspection finds `native_composing` before both key holding and
+keymap dispatch in `input::key` and `input::key_now`. `composition_keys` drops
+`Held::Key` while retaining `Held::Text`; `flush_pending` also checks composition.
+`events.rs` has a separate native-composition early return: it stops propagation
+without calling `prevent_default`. These facts supersede the old routing-order
+blocker, but are not proof of OS candidate delivery. Reactive key-registration
+cleanup remains required. During its publication interval an old table may still
+be installed: the native routing guarantee is non-consumption, not instantaneous
+removal of that stale table. This clarifies the original registration wording
+without relaxing candidate-key, activation, dismissal or focus safety.
+
+### Bounded regression and explicit evidence limits
+
+Extend only the existing `marked_keys_never_reach_shortcuts_or_waiting_keys`
+function. Keep all original keys/assertions, add repeat and Shift coverage, and
+install a real NSH `MountItem::Keymap` with the six palette keystrokes and their
+production repeat settings before entering composition via
+`ime::replace_and_mark_text_in_range`. Leave that table installed without engine
+updates. Exercise both `key` and `key_now`; require false (not a consumed no-op),
+no `KeyCommand`, unchanged native focus, retained text and no waiting key replay.
+After native unmark/flush, require the same bindings to emit their exact command
+IDs through both entries, including both scope directions, and an unrelated
+shortcut to work again. The table and matcher are real NSH APIs, not a replacement
+routing algorithm.
+
+The vendor host crate cannot call `vega_ui`'s private `register_keys` or mount the
+actual palette/controller through this existing test. Constructing real platform
+bindings therefore verifies stale-table native routing, not the actual palette
+registration producer, operation callbacks, selection/scope values, activation,
+or dismissal. Absence of `KeyCommand` closes this tested keyboard dispatch path;
+it is not an end-to-end assertion of those application states. The separate
+palette lifecycle tests still exercise the actual registration producer. Do not
+claim the combined native-to-palette publication-interval contract is fully
+exercised in this lane. Completing that exact integration requires a parent-owned
+cross-layer test seam; no production API expansion is authorized here.
+
+A further production limitation is visible: the current composition guards yield
+**all** keys before shortcuts/keymap, not only candidate-navigation keys. Thus
+unrelated shortcuts are only checked after composition here. If preserving their
+execution during composition is required by the original unrelated-shortcut
+contract, the current patch does not satisfy it; parent must resolve this rather
+than weaken assertions. No production correction is authorized in this lane.
+
+The existing parent log `target/nsh-current-nsh_native_host.stdout` reports
+36 passed / 0 failed, including the old wrapper at
+`crates/vega_ui/tests/nsh_native_host.rs:67`. Its SHA-256 is
+`67215571388d7bef71d9b239af10a60d74b937a9181762bca7d9f506911824f9`.
+This is pre-edit evidence only; the extended regression has **not been run**.
+Synthetic host events and OS-native IME/focus acceptance remain separate.
+
+### Measured source identity and parent next run
+
+SHA-256 measured before this lane's edits (not inferred from HEAD):
+
+| Source | SHA-256 |
+| --- | --- |
+| `vendor/nsh-platform-gpui/src/input.rs` | `895de6656a33012752b09d1c4ea5fd9fe075919366745b5fc861fbeb70850252` |
+| `vendor/nsh-platform-gpui/src/text_input.rs` | `e27b80250ce6d8ec7ab62d60b8e0b84045c2b7e133e8dd4dc17488a2923601e0` |
+| `vendor/nsh-platform-gpui/src/keymap.rs` | `f9ef92d322882e61665cc2f841c9f71eacba978a644c7e944132efedd12da0f8` |
+| `vendor/nsh-platform-gpui/src/events.rs` | `793e13597fb1c1f7f722ee89b05ceea96acde1793900df5e95277290545d4233` |
+| `crates/vega_ui/src/command_palette/presentation.rs` | `9968f6567b0f2f58772df3a90851b59fdf60da3eb16333d3aac3b362faa1c9a3` |
+| `vendor/nsh-platform-gpui/src/text_input/host_tests.rs` (pre-edit) | `36617f0604204dce3519e0c7a917d795c2f70fe56cd6790e8d956f29099a9a8d` |
+
+Final test/document hashes and exact scoped diff proof belong in the handoff,
+not a self-referential document hash. The parent owns the next central build:
+run the extended existing `nsh_native_host` regression with the existing host
+feature wiring, then the relevant palette regressions and integration checks;
+record exact commands, toolchain, final source hashes and fresh logs. Resolve
+the cross-layer/unrelated-shortcut gaps above, then obtain independent review,
+final-head required CI and user native IME/keyboard acceptance separately.
+Parent updates the vendor manifest only after the source is stable. Development
+Rust tests still require archival/removal before merge; no merge readiness,
+independent approval, installation or native acceptance is claimed here.
+
+## Current superseding contract: composition-safe global shortcuts
+
+This author-development follow-up repairs the existing requirement in line 233;
+protecting candidate keys and preserving unrelated shortcuts during composition
+are both existing acceptance, not a new behavior or a relaxation. The preceding
+broad-guard limitation and production-edit prohibition are historical: the user
+now authorizes a minimal same-version vendor-only routing repair. Parent retains
+manifest ownership; dependency versions, Fast, Core and Cargo remain unchanged.
+
+Before engine updates, native marked text is authoritative for normal, direct /
+replayed and GPUI-host key delivery. Candidate navigation (Up/Down/Left/Right,
+Enter/Escape, Tab/Shift-Tab, Home/End/PageUp/PageDown), editing keys and ordinary
+IME text must not reach the stale application keymap, native editing policy,
+navigation, focus traversal or held-key queue. Repeats and modified candidate
+keys have the same exclusion. The GPUI host stops propagation of these keys but
+does not prevent OS default delivery, including unmapped native text keys.
+
+The narrowly enabled global-shortcut class is a recognized key with the primary
+shortcut modifier (Command on macOS, Control elsewhere), without Alt/Option,
+whose actual `nsh_core::keymap::Keystroke::edits_text()` returns false, excluding
+Space explicitly because NSH classifies it as a character but IMEs use it for
+candidate confirmation. Thus
+`mod+k` remains available; select-all/cut/copy/paste/undo/redo, candidate keys,
+plain/Shift typing, macOS Control-only editing and AltGr/Option text stay native.
+This intentionally does not enable every possible OS/IME-specific shortcut.
+Only window shortcuts, the installed application keymap and menu shortcuts are
+eligible: no normal text/navigation fallback or held-key admission. Unhandled
+eligible shortcuts may bubble to the embedding app; handled ones are consumed.
+No shortcut route itself commits, clears or replaces marked text. Key releases
+must clear real keymap repeat tracking even while native composition is active.
+
+Retain all existing candidate assertions and the installed-table regression.
+Add positive `mod+k` execution during composition through normal and direct
+entries, exact command IDs, release/repress and repeat behavior, with unchanged
+marked display, focus identity and retained text-only queue; ensure no replay on
+unmark. The private palette registration/controller coverage limitation and
+separate synthetic-host / OS-native acceptance requirements above still apply.
+Implementation and measured final-source evidence follow below after editing;
+no new test execution is claimed by this contract entry.
+
+### Author repair handoff: measured final source, not executed acceptance
+
+`input::composition_key` now shares the native-state gate and restricted shortcut
+route across `key`, `key_now`, component delivery and the GPUI host. It purges
+only held keys through the existing `composition_keys`, releases actual keymap
+repeat state on key-up, and never calls the normal editing/navigation dispatch
+while composing. No queue implementation or normal dispatch chain was rewritten.
+The host applies the returned native/shortcut disposition before native-component
+routing: native down/up events stop propagation without `prevent_default`, and
+only accepted global-shortcut downs prevent default. Unknown text keys remain
+native. `text_input.rs` required no change.
+
+The same existing regression retains every prior assertion and case. Its added
+matrix covers ordinary/Shift text, editing shortcuts, navigation/Space and
+Option/AltGr; real installed `mod+k` emits its exact command ID through normal,
+direct and component entries during composition, suppresses explicit/implicit
+repeats and fires again after release. Additional existing-window-shortcut checks
+exercise both direct entries. Marked display, focus identity and the text-only
+pending queue remain asserted unchanged; an unbound global shortcut stays
+unhandled without text mutation, and unmark/flush must not replay any command.
+These are authored assertions, **not a claim that they have run**.
+
+Measured SHA-256 after the Rust edits:
+
+| Source | SHA-256 |
+| --- | --- |
+| `vendor/nsh-platform-gpui/src/input.rs` | `b61dd1f487fd5863af811d4bc0130cdf442cb583453ad8c968f7083b92b251a8` |
+| `vendor/nsh-platform-gpui/src/events.rs` | `7be330b4044795c3dfdf71b957e5a01420dd7c95f154affd6532b399b6ae6148` |
+| `vendor/nsh-platform-gpui/src/text_input/host_tests.rs` | `81a07509bac52becac0f60042afbe14d7c5f92ba985b3af1453e70494efb2d6c` |
+| `vendor/nsh-platform-gpui/src/text_input.rs` (unchanged) | `e27b80250ce6d8ec7ab62d60b8e0b84045c2b7e133e8dd4dc17488a2923601e0` |
+| `vendor/nsh-platform-gpui/src/keymap.rs` (unchanged) | `f9ef92d322882e61665cc2f841c9f71eacba978a644c7e944132efedd12da0f8` |
+
+Static evidence: the installed toolchain's direct `rustfmt` executable reports
+`rustfmt 1.9.0-stable (88d9e12ae1 2026-08-18)`. With `--edition 2024 --emit stdout
+--config skip_children=true`, final `input.rs`, `events.rs` and the existing test
+function all parsed with exit 0 and byte-identical formatting. This is parsing /
+formatting only, not type checking. No Cargo, rustc, native app, network or Git
+mutation was run. Existing 36/36 evidence remains strictly pre-repair.
+
+Exact scope proof reconstructs the measured pre-edit bytes after reversing only
+the authorized deltas: input baseline `895de6656a33012752b09d1c4ea5fd9fe075919366745b5fc861fbeb70850252`,
+events baseline `793e13597fb1c1f7f722ee89b05ceea96acde1793900df5e95277290545d4233`,
+and test baseline `27bd7a4d8bf14d9ed79658cda0b67dfc65a8734f15409936ecff23114d426953`.
+The test delta is insertion-only within the one authorized function (161 added,
+0 removed lines). Combined Rust unified diff SHA-256 is
+`66e13d40bd1db73fe2ecaf990a820334310b3820d6083cfbc1f5de74727059d1`
+(Python `difflib.unified_diff`, three context lines, input/events/test order,
+`a/` and `b/` repo-relative paths). Both documents preserve their complete prior
+byte prefixes; final document hashes belong in the handoff outside themselves.
+
+Parent next coordinated commands (not executed here), using existing dev-feature
+wiring and the parent's approved toolchain / target directory:
+
+```sh
+cargo test -p vega_ui --test nsh_native_host marked_keys_never_reach_shortcuts_or_waiting_keys --locked --offline -j 2 -- --exact
+cargo test -p vega_ui --test nsh_native_host --locked --offline -j 2
+cargo test -p vega_ui --lib command_palette::presentation::tests --locked --offline -j 2
+cargo check -p vega -p vega_ui --locked --offline -j 2
+```
+
+Record final input hashes, actual tools and fresh logs before drawing behavior
+conclusions. The existing test does not invoke the GPUI `Window` event closure;
+synthetic host propagation/default-delivery verification remains separate, as do
+OS-native IME checks and the private real palette registration/controller seam.
+Parent owns vendor-manifest stabilization, consolidated independent review,
+final-head required CI, development-test archival/removal and user acceptance.
+This author handoff is not independent review, merge readiness or native closure.

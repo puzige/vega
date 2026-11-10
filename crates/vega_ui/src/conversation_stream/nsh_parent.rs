@@ -204,7 +204,7 @@ impl ConversationStream {
         let keyboard = snapshot.clone();
         let accessibility = snapshot.clone();
         let label = if snapshot.recovery {
-            vega_i18n::t("nsh.preview.reload")
+            vega_i18n::t("ui.reload_view")
         } else {
             vega_i18n::t("ui.back_to_parent")
         };
@@ -291,7 +291,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
         let failed = commands.failed;
         let observed = snapshot.clone();
         let label = if snapshot.recovery {
-            vega_i18n::t("nsh.preview.reload")
+            vega_i18n::t("ui.reload_view")
         } else {
             vega_i18n::t("ui.back_to_parent")
         };

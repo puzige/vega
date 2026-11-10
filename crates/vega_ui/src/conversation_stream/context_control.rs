@@ -200,11 +200,10 @@ impl ConversationStream {
     }
 
     pub(crate) fn prepare_partial_compaction_menu(&self, index: usize, cx: &mut Context<Self>) {
-        use gpui_kit::component::menu::PopupMenuItem;
         let Some(copy) = self.copy_source_for_entry(index) else {
             return;
         };
-        *copy.compaction_menu.borrow_mut() = None;
+        copy.compaction_menu.borrow_mut().clear();
         use vega_conversation::types::{PartialCompactionDirection, PartialCompactionSelection};
         let Some(message_id) = self
             .entry_identities
@@ -229,44 +228,67 @@ impl ConversationStream {
         ) {
             return;
         }
-        let weak = cx.entity().downgrade();
-        *copy.compaction_menu.borrow_mut() = Some(std::rc::Rc::new(move |mut menu, _, _| {
-            for (direction, label) in [
-                (
-                    PartialCompactionDirection::UpTo,
-                    "ui.compact_before_message",
-                ),
-                (PartialCompactionDirection::From, "ui.compact_from_message"),
-            ] {
-                let weak = weak.clone();
-                let selection = PartialCompactionSelection {
-                    message_id: message_id.clone(),
-                    source_fingerprint: fingerprint.clone(),
-                    direction,
-                };
-                menu = menu.item(PopupMenuItem::new(vega_i18n::t(label)).on_click(
-                    move |_, _, cx| {
-                        let _ = weak.update(cx, |stream, cx| {
-                            if !stream.message_actions_enabled() || stream.context_control.busy() {
-                                return;
-                            }
-                            let Some(request_id) = stream.reserve_context_operation_id(cx) else {
-                                return;
-                            };
-                            stream.context_control.compact_pending = Some(request_id);
-                            cx.emit(ContextCompactionRequested {
-                                thread_id: stream.thread.id.clone(),
-                                model: stream.thread.model.clone(),
-                                request_id,
-                                selection: Some(selection.clone()),
-                                summary_requirements: String::new(),
-                            });
-                        });
-                    },
-                ));
-            }
-            menu
-        }));
+        *copy.compaction_menu.borrow_mut() = [
+            PartialCompactionDirection::UpTo,
+            PartialCompactionDirection::From,
+        ]
+        .into_iter()
+        .map(|direction| super::selection_menu::CompactCommand {
+            thread: self.thread.id.clone(),
+            model: self.thread.model.clone(),
+            source: copy.id,
+            selection: PartialCompactionSelection {
+                message_id: message_id.clone(),
+                source_fingerprint: fingerprint.clone(),
+                direction,
+            },
+        })
+        .collect();
+        let _ = cx;
+    }
+
+    pub(super) fn request_reading_compaction(
+        &mut self,
+        command: &super::selection_menu::CompactCommand,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread.id != command.thread
+            || self.thread.model != command.model
+            || !self.message_actions_enabled()
+            || self.context_control.busy()
+            || self.reading_preview
+            || self.permissions_revoked
+            || self.permission_change_pending()
+            || self.context_control.source_fingerprint.as_ref()
+                != Some(&command.selection.source_fingerprint)
+            || !self.entries.iter().enumerate().any(|(index, entry)| {
+                matches!(
+                    entry,
+                    StreamEntry::User { .. } | StreamEntry::Assistant { .. }
+                ) && self
+                    .entry_identities
+                    .get(index)
+                    .and_then(|id| id.message_id.as_ref())
+                    == Some(&command.selection.message_id)
+                    && self
+                        .copy_source_for_entry(index)
+                        .is_some_and(|copy| copy.id == command.source)
+            })
+        {
+            return;
+        }
+        let Some(request_id) = self.reserve_context_operation_id(cx) else {
+            return;
+        };
+        self.context_control.compact_pending = Some(request_id);
+        cx.emit(ContextCompactionRequested {
+            thread_id: self.thread.id.clone(),
+            model: self.thread.model.clone(),
+            request_id,
+            selection: Some(command.selection.clone()),
+            summary_requirements: String::new(),
+        });
+        cx.notify();
     }
 
     pub(crate) fn context_usage_display(&self) -> context_usage::ContextUsageDisplay {

@@ -1,18 +1,6 @@
-use super::context_usage::ContextUsageDisplay;
 use super::*;
-use crate::interaction::InteractionExt;
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade, ScrollFadeTopGuards};
-use gpui_kit::component::Sizable as _;
-use gpui_kit::{
-    Anchor, AnchoredPositionMode, Focusable, PathBuilder, Role, anchored, canvas, point,
-};
-// Re-exported so the permission picker's copy is testable from the suite the
-// same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
-use super::composer_actions::{
-    PERMISSION_ORDER, permission_description, permission_icon, permission_is_warning,
-    permission_label,
-};
-pub(crate) use super::composer_actions::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
+use gpui_kit::{Focusable, canvas};
 
 pub(crate) const PICKER_EFFORT_LABEL: &str = "ui.select_effort";
 
@@ -50,7 +38,7 @@ impl ConversationStream {
         self.emit_open_diff(cx);
     }
 
-    fn focus_reasoning_retry_neighbor(
+    pub(super) fn focus_reasoning_retry_neighbor(
         &self,
         index: usize,
         backwards: bool,
@@ -105,24 +93,27 @@ impl ConversationStream {
         self.previous_composer_control(action, window, cx);
     }
 
-    fn copy_selected_text(&mut self, _: &CopySelectedText, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(copy) = self.entries.iter().find_map(|entry| {
+    fn copy_selected_text(
+        &mut self,
+        _: &CopySelectedText,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let reading = self.entries.iter().find_map(|entry| {
             let copy = match entry {
                 StreamEntry::User { copy, .. } | StreamEntry::Assistant { copy, .. } => copy,
                 _ => return None,
             };
-            copy.has_selected_text().then_some(copy)
-        }) {
-            copy.copy_selected_text(cx);
+            copy.nsh_reading
+                .borrow()
+                .as_ref()
+                .filter(|binding| binding.selection_current(cx))
+                .cloned()
+        });
+        if let Some(reading) = reading {
+            reading.copy(window, cx);
+            cx.stop_propagation();
         }
-    }
-
-    fn on_resume_tail(&mut self, _: &ResumeTail, _: &mut Window, cx: &mut Context<Self>) {
-        self.resume_tail(cx);
-    }
-
-    fn on_resume_tail_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.resume_tail(cx);
     }
 
     fn render_conversation_foreground(
@@ -130,13 +121,7 @@ impl ConversationStream {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = theme(cx).colors;
         let stream = cx.entity().downgrade();
-        let fade = gpui_kit::linear_gradient(
-            180.,
-            gpui_kit::linear_color_stop(colors.bg_base.opacity(0.), 0.),
-            gpui_kit::linear_color_stop(colors.bg_base, 1.),
-        );
         div()
             .absolute()
             .bottom_0()
@@ -176,7 +161,9 @@ impl ConversationStream {
                     .left_0()
                     .w_full()
                     .h(px(Layout::CONVERSATION_BOTTOM_FADE_HEIGHT))
-                    .bg(fade),
+                    .child(super::foreground_chrome::decoration(
+                        super::foreground_chrome::Decoration::Fade,
+                    )),
             )
             .child(self.render_resume_tail(cx))
             .child(
@@ -184,7 +171,15 @@ impl ConversationStream {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .bg(colors.bg_base)
+                    .relative()
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(super::foreground_chrome::decoration(
+                                super::foreground_chrome::Decoration::Base,
+                            )),
+                    )
                     .occlude()
                     .child(
                         div().px(px(Layout::CONVERSATION_PADDING)).child(
@@ -192,7 +187,7 @@ impl ConversationStream {
                                 .w_full()
                                 .max_w(px(Layout::CONVERSATION_MAX_WIDTH))
                                 .mx_auto()
-                                .children(self.message_location_status_element(cx))
+                                .children(self.message_location_status_element(window, cx))
                                 .children(self.render_computer_use_notice(cx)),
                         ),
                     )
@@ -209,67 +204,28 @@ impl ConversationStream {
 
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let stream = cx.entity().downgrade();
-        gpui_kit::container_query(move |_, _, cx| {
-            stream
-                .update(cx, |stream, cx| stream.render_resume_tail_content(cx))
-                .unwrap_or_else(|_| div().into_any_element())
+        let ui = self.resume_tail_ui.clone();
+        let authority = self.resume_tail_authority;
+        let epoch = self.reading_navigation_epoch.clone();
+        gpui_kit::container_query(move |_, window, cx| {
+            let current = stream
+                .upgrade()
+                .is_some_and(|owner| owner.read(cx).reading_navigation_epoch.matches(&epoch));
+            if !current {
+                return div().size_full().into_any_element();
+            }
+            let mut ui = ui.borrow_mut();
+            if let Some(authority) = authority {
+                ui.element(stream.clone(), authority, window, cx)
+            } else {
+                ui.hide(cx);
+                div().size_full().into_any_element()
+            }
         })
         .w_full()
         .h(px(Layout::READING_NAVIGATION_HEIGHT))
         .flex_shrink_0()
         .into_any_element()
-    }
-
-    fn render_resume_tail_content(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let placement = self.turn_placement.borrow();
-        let show_arrow = !self.following_tail()
-            && !placement.automatically_placed()
-            && !placement.at_reading_bottom(&self.list);
-        div()
-            .size_full()
-            .py(px(Layout::READING_NAVIGATION_PADDING))
-            .flex()
-            .justify_center()
-            .when(show_arrow, |row| {
-                row.child(
-                    div()
-                        .id("scroll-to-bottom")
-                        .aria_label(vega_i18n::t("ui.back_to_bottom"))
-                        .track_focus(&self.resume_tail_focus)
-                        .tab_stop(true)
-                        .key_context("ResumeTailButton")
-                        .on_action(cx.listener(Self::on_resume_tail))
-                        .flex_shrink_0()
-                        .size(px(Layout::SCROLL_TO_BOTTOM_SIZE))
-                        .tooltip(|_, cx| {
-                            crate::icons::tooltip(vega_i18n::t("ui.back_to_bottom"), cx)
-                        })
-                        .rounded(px(Layout::SCROLL_TO_BOTTOM_SIZE / 2.0))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
-                        .cursor_pointer()
-                        .interaction_surface(
-                            colors.bg_elevated,
-                            colors.bg_hover,
-                            colors.bg_active,
-                            true,
-                        )
-                        .focus_visible(move |style| style.border_color(colors.accent))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::ArrowDown,
-                            colors.text_secondary,
-                        )),
-                )
-            })
-            .into_any_element()
     }
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -281,12 +237,6 @@ impl ConversationStream {
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
-        let resume = self.shows_composer_resume(cx);
-        let can_send = if resume {
-            self.can_resume_composer(cx)
-        } else {
-            self.can_submit_message(cx)
-        };
         div()
             .px(px(Layout::CONVERSATION_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
@@ -319,6 +269,7 @@ impl ConversationStream {
                                         "composer-skill-settings",
                                         colors,
                                     )
+                                    .owner(self, cx)
                                     .label(vega_i18n::t("ui.open_skill_settings"))
                                     .on_click(|_, _, cx| {
                                         cx.set_global(crate::settings::SkillsSettingsRequested(
@@ -331,118 +282,7 @@ impl ConversationStream {
                             })
                     }),
             )
-            .children(
-                self.reasoning_default_failures
-                    .iter()
-                    .enumerate()
-                    .map(|(index, failure)| {
-                        let model = failure.request.defaults.model.clone();
-                        let key_model = model.clone();
-                        let click_model = model.clone();
-                        div()
-                            .w_full()
-                            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                            .mx_auto()
-                            .mt_1()
-                            .mb_2()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(render_rows::plain_error_notice(
-                                        vega_i18n::t_args(
-                                            "ui.reasoning_default_not_saved",
-                                            &[("model", &model)],
-                                        ),
-                                        colors.danger,
-                                    )),
-                            )
-                            .when(failure.retry_pending, |row| {
-                                row.child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_color(colors.text_secondary)
-                                        .child(vega_i18n::t("ui.saving")),
-                                )
-                            })
-                            .children(self.reasoning_default_retry_focuses.get(&model).map(
-                                |focus| {
-                                    div()
-                                        .id(format!("reasoning-default-retry-{model}"))
-                                        .role(Role::Button)
-                                        .aria_label(vega_i18n::t_args(
-                                            "ui.reasoning_default_retry",
-                                            &[("model", &model)],
-                                        ))
-                                        .focusable()
-                                        .track_focus(focus)
-                                        .tab_stop(true)
-                                        .focus_visible(|style| {
-                                            style
-                                                .bg(colors.bg_active)
-                                                .text_color(colors.text_primary)
-                                        })
-                                        .flex_shrink_0()
-                                        .px_2()
-                                        .h(px(Layout::TITLEBAR_CONTROL_SIZE))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(Layout::DISCLOSURE_RADIUS))
-                                        .text_color(colors.text_primary)
-                                        .bg(colors.bg_hover)
-                                        .cursor_pointer()
-                                        .on_key_down(cx.listener(
-                                            move |this,
-                                                  event: &gpui_kit::KeyDownEvent,
-                                                  window,
-                                                  cx| {
-                                                if matches!(
-                                                    event.keystroke.key.as_str(),
-                                                    "enter" | "space" | " "
-                                                ) {
-                                                    this.request_reasoning_default_retry(
-                                                        &key_model, cx,
-                                                    );
-                                                    window.focus(
-                                                        &this.input.read(cx).focus_handle(cx),
-                                                        cx,
-                                                    );
-                                                    cx.stop_propagation();
-                                                }
-                                            },
-                                        ))
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                                this.request_reasoning_default_retry(
-                                                    &click_model,
-                                                    cx,
-                                                );
-                                            }),
-                                        )
-                                        .on_action(cx.listener(
-                                            move |this, _: &NextComposerControl, window, cx| {
-                                                this.focus_reasoning_retry_neighbor(
-                                                    index, false, window, cx,
-                                                );
-                                            },
-                                        ))
-                                        .on_action(cx.listener(
-                                            move |this, _: &PreviousComposerControl, window, cx| {
-                                                this.focus_reasoning_retry_neighbor(
-                                                    index, true, window, cx,
-                                                );
-                                            },
-                                        ))
-                                        .child(vega_i18n::t("ui.retry"))
-                                },
-                            ))
-                    }),
-            )
+            .child(self.render_reasoning_feedback(cx))
             .when(self.thread.backend == TaskBackend::Native, |column| {
                 column.child(self.render_pending_status(cx))
             })
@@ -490,11 +330,17 @@ impl ConversationStream {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .bg(colors.bg_elevated)
+                    .relative()
                     .border_1()
-                    .border_color(colors.border_subtle)
+                    .border_color(gpui_kit::transparent_black())
                     .rounded(px(Layout::COMPOSER_RADIUS))
                     .p_3()
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(self.render_composer_shell(window, cx)),
+                    )
                     .when(
                         !self.attachments.is_empty()
                             || self.attachment_import_pending
@@ -514,7 +360,7 @@ impl ConversationStream {
                             .child(self.render_composer_actions(cx))
                             .child(self.render_file_dropdown(cx))
                             .min_h(px(40.))
-                            .child(self.input.clone()),
+                            .child(self.render_nsh_composer_input(window, cx)),
                     )
                     .child(
                         div()
@@ -525,33 +371,13 @@ impl ConversationStream {
                             .gap_2()
                             .when(self.compact_workspace, |row| row.gap_1())
                             .when(self.context_menu_available(), |row| {
-                                let trigger_bounds = self.actions.trigger_bounds.clone();
-                                row.child(
-                                    crate::icons::localized_icon_button(
-                                        crate::icons::Icon::Plus,
-                                        "ui.add_context",
-                                        colors,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.open_composer_actions(window, cx)
-                                        }),
-                                    )
-                                    .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                                    .track_focus(&self.action_focus[0])
-                                    .child(
-                                        gpui_kit::canvas(
-                                            move |bounds, _, _| trigger_bounds.set(Some(bounds)),
-                                            |_, _, _, _| {},
-                                        )
-                                        .absolute()
-                                        .size_full(),
-                                    ),
-                                )
+                                row.child(self.render_composer_trigger(cx))
                             })
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_permission_status(cx))
                             })
                             .when(self.thread.backend == TaskBackend::Codex, |row| {
-                                row.child(self.render_backend_status(cx))
+                                row.child(self.render_backend_status(window, cx))
                             })
                             .child(div().min_w_0().flex_1())
                             .when(self.thread.backend == TaskBackend::Native, |row| {
@@ -559,7 +385,7 @@ impl ConversationStream {
                             })
                             .when(
                                 !self.composer_resume_pending && self.shows_running_send(cx),
-                                |row| row.child(self.render_running_send(can_send, cx)),
+                                |row| row.child(self.render_composer_running_send(cx)),
                             )
                             .when(
                                 (self.actions.running
@@ -576,37 +402,7 @@ impl ConversationStream {
                                     && !self.composer_submit_pending
                                     && !self.ordinary_pending_before_run()
                                     && !self.has_cancellable_queue_wait(),
-                                |row| {
-                                    row.child(
-                                        div()
-                                            .id("composer-resume-pending")
-                                            .role(Role::Button)
-                                            .aria_label(vega_i18n::t("ui.composer_resume"))
-                                            .track_focus(&self.action_focus[1])
-                                            .tab_stop(true)
-                                            .focus_visible(move |style| {
-                                                style
-                                                    .border_2()
-                                                    .border_color(colors.brand_primary_strong)
-                                            })
-                                            .size(px(Layout::COMPOSER_SEND_SIZE))
-                                            .flex_shrink_0()
-                                            .rounded_full()
-                                            .bg(colors.bg_hover)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(
-                                                gpui_kit::component::spinner::Spinner::new()
-                                                    .ease(gpui_kit::linear)
-                                                    .with_size(px(Layout::ICON_SIZE))
-                                                    .icon(
-                                                        gpui_kit::component::IconName::LoaderCircle,
-                                                    )
-                                                    .color(colors.text_secondary.into()),
-                                            ),
-                                    )
-                                },
+                                |row| row.child(self.render_composer_resume_pending(cx)),
                             )
                             .when(
                                 !self.actions.running
@@ -614,87 +410,7 @@ impl ConversationStream {
                                     && !self.composer_resume_pending
                                     && !self.ordinary_pending_before_run()
                                     && !self.has_cancellable_queue_wait(),
-                                |row| {
-                                    row.child(
-                                        div()
-                                            .id("composer-send")
-                                            .role(Role::Button)
-                                            .aria_label(vega_i18n::t(if resume {
-                                                "ui.composer_resume"
-                                            } else {
-                                                "ui.send"
-                                            }))
-                                            .when(resume, |button| {
-                                                button.tooltip(|_, cx| {
-                                                    crate::icons::tooltip(
-                                                        vega_i18n::t("ui.composer_resume"),
-                                                        cx,
-                                                    )
-                                                })
-                                            })
-                                            .track_focus(&self.action_focus[1])
-                                            .tab_stop(true)
-                                            .focus_visible(move |style| {
-                                                style
-                                                    .border_2()
-                                                    .border_color(colors.brand_primary_strong)
-                                            })
-                                            .on_key_down(cx.listener(
-                                                |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                                    if matches!(
-                                                        event.keystroke.key.as_str(),
-                                                        "enter" | "space" | " "
-                                                    ) {
-                                                        this.activate_composer_primary(cx);
-                                                        cx.stop_propagation();
-                                                    }
-                                                },
-                                            ))
-                                            .flex_shrink_0()
-                                            .size(px(Layout::COMPOSER_SEND_SIZE))
-                                            .rounded_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .when(can_send, |button| {
-                                                button
-                                                    .bg(colors.accent)
-                                                    .text_color(colors.brand_on_accent)
-                                                    .cursor_pointer()
-                                                    .on_mouse_up(
-                                                        MouseButton::Left,
-                                                        cx.listener(Self::on_send_clicked),
-                                                    )
-                                            })
-                                            .when(!can_send, |button| {
-                                                button
-                                                    .bg(colors.bg_hover)
-                                                    .text_color(colors.text_tertiary)
-                                            })
-                                            .interaction_surface(
-                                                if can_send {
-                                                    colors.accent
-                                                } else {
-                                                    colors.bg_hover
-                                                },
-                                                colors.brand_primary_strong,
-                                                colors.accent,
-                                                can_send,
-                                            )
-                                            .child(crate::icons::icon(
-                                                if resume {
-                                                    crate::icons::Icon::Play
-                                                } else {
-                                                    crate::icons::Icon::ArrowUp
-                                                },
-                                                if can_send {
-                                                    colors.brand_on_accent
-                                                } else {
-                                                    colors.text_tertiary
-                                                },
-                                            )),
-                                    )
-                                },
+                                |row| row.child(self.render_composer_primary(cx)),
                             ),
                     ),
             )
@@ -702,303 +418,16 @@ impl ConversationStream {
     }
 
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let mode = self.thread.permission_mode;
-        let progress_label = self.permission_editor.progress_label();
-        let saving = progress_label.is_some();
-        let label = permission_label(mode);
-        let enabled = !self.permission_change_pending();
-
-        let glyph = permission_icon(mode);
-
-        let ink = if permission_is_warning(mode) {
-            colors.warning
-        } else {
-            colors.text_secondary
-        };
-        div()
-            .relative()
-            .flex()
-            .flex_shrink_0()
-            .child(
-                div()
-                    .id("composer-permission-status")
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(progress_label.unwrap_or(vega_i18n::t("ui.change_permission_mode")))
-                    .track_focus(&self.permission_editor.trigger)
-                    .tab_stop(enabled)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
-                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
-                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
-                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded_full()
-                    .text_size(px(Typography::BODY))
-                    .text_color(ink)
-                    .cursor_pointer()
-                    .interactive(colors, enabled, self.permission_picker_open)
-                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                    .tooltip(move |_, cx| {
-                        crate::icons::tooltip(vega_i18n::t("ui.change_permission_mode"), cx)
-                    })
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(Self::toggle_permission_picker),
-                    )
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !this.permission_change_pending()
-                            {
-                                this.open_permission_picker(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .when(saving, |slot| {
-                                slot.child(
-                                    gpui_kit::component::spinner::Spinner::new()
-                                        .ease(gpui_kit::linear)
-                                        .with_size(px(Layout::ICON_SIZE))
-                                        .icon(gpui_kit::component::IconName::LoaderCircle),
-                                )
-                            })
-                            .when(!saving, |slot| slot.child(crate::icons::icon(glyph, ink))),
-                    )
-                    .child(label),
-            )
-            .when(self.permission_picker_open, |chip| {
-                chip.child(self.render_permission_picker(cx))
-            })
-            .into_any_element()
+        self.render_nsh_permission_selector(cx)
     }
 
-    fn render_backend_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
+    fn render_backend_status(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let label = if self.codex_mode_confirmed {
             "Codex ACP · workspace-write · on-request"
         } else {
             "Codex ACP"
         };
-        div()
-            .id("composer-backend-status")
-            .aria_label(label)
-            .min_w_0()
-            .flex_shrink_1()
-            .h(px(Layout::TITLEBAR_CONTROL_SIZE))
-            .flex()
-            .items_center()
-            .text_size(px(Typography::BODY))
-            .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-            .text_color(colors.text_secondary)
-            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-            .child(div().min_w_0().truncate().child(label))
-            .into_any_element()
-    }
-
-    fn render_permission_picker(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let current = self.thread.permission_mode;
-        let active_mode = self
-            .permission_editor
-            .active_mode
-            .filter(|mode| *mode != current);
-        let rows = PERMISSION_ORDER
-            .into_iter()
-            .enumerate()
-            .map(|(index, mode)| {
-                let selected = mode == current;
-                let warning = permission_is_warning(mode);
-                let ink = if warning {
-                    colors.warning
-                } else {
-                    colors.text_primary
-                };
-                let icon_ink = if warning {
-                    colors.warning
-                } else {
-                    colors.text_secondary
-                };
-                div()
-                    .id(("composer-permission-option", index))
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(permission_label(mode))
-                    .track_focus(&self.permission_editor.options[index])
-                    .tab_stop(true)
-                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                    .min_h(px(44.))
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded_md()
-                    .when(selected, |row| {
-                        row.bg(crate::menu_list::selected_row_bg(colors))
-                    })
-                    .cursor_pointer()
-                    .hover(move |row| row.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                            this.select_permission_mode(mode, window, cx);
-                        }),
-                    )
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.select_permission_mode(mode, window, cx);
-                                cx.stop_propagation();
-                            }
-                        },
-                    ))
-                    .child(crate::icons::icon(permission_icon(mode), icon_ink))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(Typography::SIDEBAR))
-                                    .text_color(ink)
-                                    .child(permission_label(mode)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_tertiary)
-                                    .child(permission_description(mode)),
-                            ),
-                    )
-                    // Fixed marker column: the selected row carries the check, and
-                    // an unselected row reserves the same width so labels stay on
-                    // one x axis.
-                    .child(
-                        div()
-                            .w(px(Typography::SIDEBAR))
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_end()
-                            .when(selected, |marker| {
-                                marker.child(crate::icons::icon(
-                                    crate::icons::Icon::Check,
-                                    colors.brand_primary,
-                                ))
-                            }),
-                    )
-            });
-
-        gpui_kit::deferred(
-            div()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-                .left_0()
-                .w(px(Layout::MENU_MAX_WIDTH))
-                .occlude()
-                .flex()
-                .flex_col()
-                .rounded(px(Layout::MENU_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_primary)
-                .shadow_sm()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .px_2()
-                        .pt_2()
-                        .pb_1()
-                        .flex()
-                        .items_start()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .child(vega_i18n::t(if self.actions.running {
-                                    "ui.permission_picker_next_run"
-                                } else {
-                                    PERMISSION_PICKER_TITLE
-                                })),
-                        )
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_tertiary)
-                                .child(vega_i18n::t(PERMISSION_PICKER_LEARN_MORE)),
-                        ),
-                )
-                .when_some(active_mode, |menu, mode| {
-                    menu.child(
-                        div()
-                            .px_2()
-                            .pb_1()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child(vega_i18n::t_args(
-                                "ui.permission_current_run",
-                                &[("mode", permission_label(mode))],
-                            )),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .mx_2()
-                        .h(px(1.))
-                        .bg(colors.border_subtle),
-                )
-                .child(div().flex_shrink_0().p_1().flex().flex_col().children(rows)),
-        )
-        .with_priority(2)
-        .into_any_element()
-    }
-
-    pub(crate) fn toggle_permission_picker(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.permission_change_pending() {
-            return;
-        }
-        let open = !self.permission_picker_open;
-        self.close_composer_popovers(cx);
-        if open {
-            self.open_permission_picker(window, cx);
-        } else {
-            window.focus(&self.permission_editor.trigger, cx);
-        }
-        cx.notify();
-    }
-
-    fn open_permission_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_composer_popovers(cx);
-        self.permission_picker_open = true;
-        let index = PERMISSION_ORDER
-            .iter()
-            .position(|mode| *mode == self.thread.permission_mode)
-            .unwrap_or(1);
-        window.focus(&self.permission_editor.options[index], cx);
-        cx.notify();
+        super::conversation_status::backend(label.to_owned(), window, cx)
     }
 
     fn on_permission_picker_key_down(
@@ -1050,150 +479,10 @@ impl ConversationStream {
     }
 
     fn render_file_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        if !self.file_selector.is_open() && !self.file_selector_wanted && !self.file_index_loading {
-            return div().into_any_element();
-        }
-        let highlighted = self.file_selector.highlighted();
-        let content = if self.file_index_loading {
-            div()
-                .px_2()
-                .py_2()
-                .text_size(px(Typography::SIDEBAR))
-                .text_color(colors.text_secondary)
-                .child(vega_i18n::t("ui.indexing_files"))
-                .into_any_element()
-        } else if let Some(code) = self.file_index_failure {
-            div()
-                .flex()
-                .flex_row()
-                .items_start()
-                .justify_between()
-                .gap_2()
-                .p(px(Layout::STATUS_PADDING))
-                .rounded(px(Layout::STATUS_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .text_size(px(Typography::BODY))
-                .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                .child(
-                    div()
-                        .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
-                            - Layout::ICON_SIZE)
-                            / 2.0))
-                        .size(px(Layout::ICON_SIZE))
-                        .flex_shrink_0()
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::Warning,
-                            colors.danger,
-                        )),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(colors.danger)
-                        .child(code.message()),
-                )
-                .child(
-                    div()
-                        .id("file-index-retry")
-                        .flex_shrink_0()
-                        .px_2()
-                        .h(px(Layout::TITLEBAR_CONTROL_SIZE))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(Layout::DISCLOSURE_RADIUS))
-                        .text_color(colors.text_primary)
-                        .bg(colors.bg_hover)
-                        .aria_label(vega_i18n::t("ui.retry_file_indexing"))
-                        .focusable()
-                        .track_focus(&self.file_retry_focus)
-                        .tab_stop(true)
-                        .focus_visible(|style| {
-                            style.bg(colors.bg_active).text_color(colors.text_primary)
-                        })
-                        .cursor_pointer()
-                        .key_context("FileSelectRetryButton")
-                        .on_action(cx.listener(Self::on_selector_retry_action))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selector_retry))
-                        .child(vega_i18n::t("ui.retry")),
-                )
-                .into_any_element()
-        } else if !self.file_selector.is_open() {
-            div()
-                .px_2()
-                .py_2()
-                .text_size(px(Typography::SIDEBAR))
-                .text_color(colors.text_secondary)
-                .child(vega_i18n::t("ui.no_matching_files"))
-                .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .children(
-                    self.file_selector
-                        .candidates()
-                        .iter()
-                        .take(FILE_SUGGESTION_LIMIT)
-                        .enumerate()
-                        .map(|(index, entry)| {
-                            let selected = index == highlighted;
-                            let entry = entry.clone();
-                            div()
-                                .px_2()
-                                .py_1()
-                                .text_size(px(Typography::SIDEBAR))
-                                .truncate()
-                                .cursor_pointer()
-                                .when(selected, |row| row.bg(colors.bg_active))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                        this.on_selector_click(index, cx)
-                                    }),
-                                )
-                                .text_color(if selected {
-                                    colors.brand_primary
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .child(entry)
-                        }),
-                )
-                .into_any_element()
-        };
-        // The containing block is the whole input row. Anchor the popup's
-        // bottom to its top, rather than covering the draft at bottom: 0.
-        // Defer paint/hit-testing so the transcript cannot cover candidates.
-        gpui_kit::deferred(
-            div()
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb_2()
-                .left_0()
-                .w(px(Layout::MENU_MAX_WIDTH))
-                .max_w_full()
-                .occlude()
-                .flex()
-                .flex_col()
-                .rounded(px(Layout::MENU_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_primary)
-                .shadow_sm()
-                .child(content),
-        )
-        .with_priority(2)
-        .into_any_element()
+        self.render_nsh_file_dropdown(cx)
     }
 
     fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let display = self.context_usage_display();
-        let colors = theme(cx).colors;
         div()
             .min_w_0()
             .flex_shrink_1()
@@ -1202,425 +491,21 @@ impl ConversationStream {
             .gap_1()
             .children(
                 self.context_usage_visible()
-                    .then(|| self.render_context_usage_indicator(&display, colors, window, cx)),
+                    .then(|| super::foreground_chrome::indicator(cx.weak_entity())),
             )
             .child(self.render_model_selector(window, cx))
             .into_any_element()
     }
 
-    fn render_context_usage_indicator(
+    fn render_model_selector(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
+        self.render_nsh_model_selector(cx)
+    }
+
+    fn message_location_status_element(
         &self,
-        display: &ContextUsageDisplay,
-        colors: ThemeColors,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id("composer-context-usage-hover-target")
-            .relative()
-            .flex_shrink_0()
-            .size(px(Layout::CONTEXT_USAGE_SIZE))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                this.context_usage_trigger_hovered = *hovered;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .id("composer-context-usage")
-                    .aria_label(display.accessibility_label())
-                    .focusable()
-                    .track_focus(&self.context_usage_focus)
-                    .tab_stop(true)
-                    .size_full()
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(move |style| style.bg(colors.bg_hover))
-                    .focus_visible(move |style| style.bg(colors.bg_hover))
-                    .child(
-                        div()
-                            .size(px(Layout::ICON_SIZE))
-                            .flex_shrink_0()
-                            .child(Self::context_usage_ring(display, colors)),
-                    ),
-            )
-            .children(self.context_usage_trigger_hovered.then(|| {
-                let lines = [
-                    vega_i18n::t("ui.context_window").to_string(),
-                    display.tooltip_status(),
-                    display.tooltip_usage(),
-                ];
-                let text_width = lines
-                    .iter()
-                    .map(|line| {
-                        window
-                            .text_system()
-                            .shape_line(
-                                line.clone().into(),
-                                px(Typography::BODY),
-                                &[window.text_style().to_run(line.len())],
-                                None,
-                            )
-                            .width()
-                    })
-                    .max()
-                    .unwrap_or_default();
-                let width = (text_width
-                    + px(2.0 * (Layout::CONTEXT_USAGE_PADDING + Layout::CONTEXT_USAGE_BORDER)))
-                .ceil()
-                .max(px(Layout::CONTEXT_USAGE_MIN_WIDTH));
-                div().absolute().top_0().left_0().size(px(0.0)).child(
-                    div().relative().child(
-                        anchored()
-                            .anchor(Anchor::BottomLeft)
-                            .position_mode(AnchoredPositionMode::Local)
-                            .position(point(
-                                (px(Layout::CONTEXT_USAGE_SIZE) - width) / 2.0,
-                                px(-Layout::CONTEXT_USAGE_GAP),
-                            ))
-                            .snap_to_window()
-                            .child(
-                                gpui_kit::deferred(Self::context_usage_tooltip_element(
-                                    &lines, width, colors,
-                                ))
-                                .with_priority(2),
-                            ),
-                    ),
-                )
-            }))
-            .into_any_element()
-    }
-
-    fn context_usage_ring(display: &ContextUsageDisplay, colors: ThemeColors) -> AnyElement {
-        let fill_fraction = display.fill_fraction;
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let center = bounds.center();
-                let mut track = PathBuilder::stroke(px(2.0));
-                for step in 0..=64 {
-                    let angle =
-                        -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * step as f32 / 64.0;
-                    let position = center + point(px(angle.cos() * 6.0), px(angle.sin() * 6.0));
-                    if step == 0 {
-                        track.move_to(position);
-                    } else {
-                        track.line_to(position);
-                    }
-                }
-                if let Ok(path) = track.build() {
-                    window.paint_path(path, colors.border_subtle);
-                }
-                if fill_fraction <= 0.0 {
-                    return;
-                }
-                let mut progress = PathBuilder::stroke(px(2.0));
-                for step in 0..=64 {
-                    let angle = -std::f32::consts::FRAC_PI_2
-                        + std::f32::consts::TAU * fill_fraction * step as f32 / 64.0;
-                    let position = center + point(px(angle.cos() * 6.0), px(angle.sin() * 6.0));
-                    if step == 0 {
-                        progress.move_to(position);
-                    } else {
-                        progress.line_to(position);
-                    }
-                }
-                if let Ok(path) = progress.build() {
-                    window.paint_path(path, colors.accent);
-                }
-            },
-        )
-        .size(px(16.0))
-        .into_any_element()
-    }
-
-    fn context_usage_tooltip_element(
-        lines: &[String; 3],
-        width: gpui_kit::Pixels,
-        colors: ThemeColors,
-    ) -> impl IntoElement {
-        div()
-            .id("context-usage-tooltip")
-            .w(width)
-            .flex_shrink_0()
-            .whitespace_nowrap()
-            .px(px(Layout::CONTEXT_USAGE_PADDING))
-            .py(px(Layout::CONTEXT_USAGE_VERTICAL_PADDING))
-            .flex()
-            .flex_col()
-            .items_center()
-            .text_center()
-            .rounded(px(Layout::CONTEXT_USAGE_RADIUS))
-            .border(px(Layout::CONTEXT_USAGE_BORDER))
-            .border_color(colors.context_tooltip_border)
-            .bg(colors.context_tooltip_bg)
-            .shadow_md()
-            .text_size(px(Typography::BODY))
-            .line_height(px(Layout::CONTEXT_USAGE_LINE_HEIGHT))
-            .text_color(colors.context_tooltip_secondary)
-            .child(div().child(lines[0].clone()))
-            .children(lines[1..].iter().map(|line| {
-                div()
-                    .text_color(colors.context_tooltip_primary)
-                    .child(line.clone())
-            }))
-    }
-
-    fn render_model_selector(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let enabled = !self.trusted_action_busy
-            && !self.model_selection_save_busy()
-            && self.model_selection_pending.is_none();
-
-        let model = self.selector_model();
-        let current = model_trigger_label(
-            model,
-            self.model_picker_level,
-            self.model_selection_pending.is_some(),
-        );
-        let label_width = [
-            current,
-            model_trigger_label(model, ModelPickerLevel::Closed, false),
-        ]
-        .into_iter()
-        .chain(
-            self.thinking_slider
-                .read(cx)
-                .has_tiers()
-                .then(|| model_trigger_label(model, ModelPickerLevel::Slider, false)),
-        )
-        .flat_map(str::lines)
-        .map(|label| {
-            window
-                .text_system()
-                .shape_line(
-                    label.to_owned().into(),
-                    px(Typography::SIDEBAR),
-                    &[window.text_style().to_run(label.len())],
-                    None,
-                )
-                .width()
-        })
-        .max()
-        .unwrap_or_default()
-        .ceil();
-        div()
-            .relative()
-            .flex()
-            .min_w_0()
-            .flex_shrink_1()
-            .child(
-                div()
-                    .id("composer-model")
-                    .aria_label(current.to_owned())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .track_focus(&self.model_focus)
-                    .key_context("ModelSelector")
-                    .on_action(cx.listener(Self::on_activate_model))
-                    .on_action(cx.listener(Self::on_model_previous))
-                    .on_action(cx.listener(Self::on_model_next))
-                    .on_action(cx.listener(Self::on_model_close))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .min_w(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
-                    .flex_shrink_1()
-                    .truncate()
-                    .px(px(Layout::COMPOSER_TEXT_TRIGGER_PADDING_X))
-                    .h(px(Layout::COMPOSER_TEXT_TRIGGER_HEIGHT))
-                    .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                    .rounded_full()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if enabled {
-                        colors.text_secondary
-                    } else {
-                        colors.text_tertiary
-                    })
-                    .when(enabled, |trigger| trigger.cursor_pointer())
-                    .interactive(colors, enabled, self.model_picker_level.is_open())
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                            this.on_activate_model(&ActivateModel, window, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_shrink_1()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .w(label_width)
-                                    .min_w_0()
-                                    .flex_shrink_1()
-                                    .truncate()
-                                    .text_center()
-                                    .child(current.to_owned()),
-                            )
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::ChevronDown,
-                                colors.text_tertiary,
-                            )),
-                    ),
-            )
-            .child(self.render_model_picker_layers(cx))
-            .into_any_element()
-    }
-
-    fn render_model_picker_layers(&self, cx: &mut Context<Self>) -> AnyElement {
-        match self.model_picker_level {
-            ModelPickerLevel::Closed => div().into_any_element(),
-            ModelPickerLevel::Slider => self.render_picker_slider_layer(cx),
-            ModelPickerLevel::List => self.render_picker_list_layer(cx),
-        }
-    }
-
-    fn picker_max_height(&self) -> Pixels {
-        px(Layout::COMPOSER_PICKER_MAX_HEIGHT)
-    }
-
-    fn render_picker_slider_layer(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.thinking_slider.read(cx).has_tiers() {
-            return div().into_any_element();
-        }
-
-        gpui_kit::deferred(
-            div()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-                .right_0()
-                .max_h(self.picker_max_height())
-                .occlude()
-                .flex()
-                .flex_col()
-                .child(self.thinking_slider.clone()),
-        )
-        .with_priority(2)
-        .into_any_element()
-    }
-
-    fn render_picker_list_layer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-
-        gpui_kit::deferred(
-            div()
-                .id("composer-model-menu")
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-                .right_0()
-                .w(px(Layout::MENU_MAX_WIDTH))
-                .max_h(self.picker_max_height())
-                .occlude()
-                .flex()
-                .flex_col()
-                .rounded(px(Layout::MENU_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_primary)
-                .shadow_sm()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .px_2()
-                        .pt_2()
-                        .pb_1()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .child(vega_i18n::t(PICKER_LIST_HEADING)),
-                )
-                // Only the rows scroll: the heading stays visible so the layer never
-                // becomes an unbounded column of model names.
-                .child(
-                    div()
-                        .id("composer-model-rows")
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.model_menu_scroll)
-                        .children(self.model_picker_rows(colors, cx))
-                        .tracked_scroll_edge_fade(
-                            self.model_menu_scroll.clone(),
-                            colors.bg_elevated,
-                            ScrollFade::compact(),
-                        ),
-                ),
-        )
-        .with_priority(2)
-        .into_any_element()
-    }
-
-    fn model_picker_rows(&self, colors: ThemeColors, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut rows = Vec::new();
-        for (index, option) in self.model_options.iter().enumerate() {
-            if model_picker_starts_group(&self.model_options, index) {
-                let first_group = index == 0;
-                rows.push(
-                    div()
-                        .h(px(Layout::COMPOSER_PICKER_GROUP_HEIGHT))
-                        .flex_shrink_0()
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .when(!first_group, |group| {
-                            group.mt(px(Layout::COMPOSER_PICKER_GROUP_GAP))
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(option.provider.clone()),
-                        )
-                        .into_any_element(),
-                );
-            }
-            let selected = index == self.model_selector_highlight;
-            let current_model = option.model == self.selector_model();
-            let model = option.model.clone();
-            let label = option.model.clone();
-            rows.push(
-                div()
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex_shrink_0()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(Typography::SIDEBAR))
-                    .when(selected, |row| row.bg(colors.bg_active))
-                    .text_color(if current_model {
-                        colors.brand_primary
-                    } else if selected {
-                        colors.text_primary
-                    } else {
-                        colors.text_secondary
-                    })
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _: &mut Window, cx| {
-                            this.select_model_option(&model, cx);
-                        }),
-                    )
-                    .child(div().flex_1().min_w_0().truncate().child(label))
-                    .child(crate::menu_list::selection_marker(current_model, colors))
-                    .into_any_element(),
-            );
-        }
-        rows
-    }
-
-    fn message_location_status_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    ) -> Option<AnyElement> {
         let status = self.message_location_status?;
         let colors = theme(cx).colors;
         let (label, color) = match status {
@@ -1641,28 +526,26 @@ impl ConversationStream {
             ),
             MessageLocationStatus::Located => return None,
         };
-        Some(
-            div()
-                .id("message-anchor-status")
-                .aria_label(label)
-                .w_full()
-                .px_2()
-                .py_1()
-                .text_size(px(Typography::METADATA))
-                .text_color(color)
-                .child(label)
-                .into_any_element(),
-        )
+        Some(super::conversation_status::location(
+            label.into(),
+            color,
+            window,
+            cx,
+        ))
     }
 }
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ui_presentations_suspended = false;
         if self.reading_preview {
-            self.suspend_ui_presentations(cx);
+            self.suspend_business_presentations(cx);
         } else if self.thread.is_standalone() {
             self.commit_panel
                 .update(cx, |panel, cx| panel.suspend_presentation(cx));
+        }
+        if !self.reading_preview && self.entries.is_empty() {
+            self.suspend_reading_navigation(cx);
         }
         if !self.reading_preview {
             self.prepare_nsh_composer(window, cx);
@@ -1776,26 +659,10 @@ impl Render for ConversationStream {
         } else if self.entries.is_empty() {
             div()
                 .w_full()
-                .h(px(72.))
-                .mb(px(24.))
                 .flex()
                 .flex_col()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(Typography::EMPTY_STATE_TITLE))
-                        .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
-                        .text_color(colors.text_primary)
-                        .child(vega_i18n::t("ui.what_would_you_like_to_do_today")),
-                )
-                .child(
-                    div()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t("ui.enter_a_task_to_start_or_use_to")),
-                )
-                .children(self.message_location_status_element(cx))
+                .child(super::conversation_status::empty(window, cx))
+                .children(self.message_location_status_element(window, cx))
                 .into_any_element()
         } else {
             let top_fade_guards = ScrollFadeTopGuards::default();
@@ -1829,7 +696,9 @@ impl Render for ConversationStream {
                                 .h_full()
                                 .overflow_hidden()
                                 .child(
-                                    turn_placement::TurnList::new(
+                                    selection_menu::mounted::ReadingList::new(
+                                        cx.entity().downgrade(),
+                                        turn_placement::TurnList::new(
                                         self.list.clone(),
                                         self.turn_placement.clone(),
                                         self.foreground_height,
@@ -1846,7 +715,7 @@ impl Render for ConversationStream {
                                                     let card = card.read(cx);
                                                     let (tool, target) = card.identity();
                                                     let status = if card.is_resolved() { vega_i18n::t("ui.confirmation_handled") } else { vega_i18n::t("ui.awaiting_confirmation") };
-                                                    div().text_size(px(Typography::BODY)).text_color(theme(cx).colors.text_secondary).child(format!("{status} · {tool} · {target}")).into_any_element()
+                                                    super::conversation_status::read_only_permission(index as u64, format!("{status} · {tool} · {target}"), window, cx)
                                                 } else if this.reading_preview && let Some(StreamEntry::Plan { card }) = entry {
                                                     PlanCard::render_read_only(card.clone(), window, cx)
                                                 } else if this.process_entry_hidden(index, cx) || this.compaction_failure_is_represented(index) {
@@ -1857,6 +726,7 @@ impl Render for ConversationStream {
                                                             group,
                                                         }) => {
                                                             this.rebind_thinking_presentation(group, cx);
+                                                            this.rebind_run_activity_presentation(group, cx);
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(None);
                                                             div()
                                                                 .w_full()
@@ -1868,6 +738,7 @@ impl Render for ConversationStream {
                                                         },
                                                         Some(StreamEntry::RunActivitySegment { group, segment }) => {
                                                             this.rebind_thinking_presentation(group, cx);
+                                                            this.rebind_run_activity_presentation(group, cx);
                                                             pinned = group.read(cx).scroll_fade_pinned_indicator(Some(*segment));
                                                             RunActivityGroup::render_segment_with_top(group.clone(), *segment, stage_top_insets.get(&index).copied().unwrap_or(Layout::CONVERSATION_STAGE_TOP), window, cx)
                                                         },
@@ -1900,7 +771,9 @@ impl Render for ConversationStream {
                                                                 StreamEntry::User { copy, .. } => Some(copy),
                                                                 _ => this.action_copy_source_for_entry(index),
                                                             };
-                                                            render_rows::message_with_copy(body, source, render_rows::MessageActions {
+                                                            message_footer::message_with_copy(body, source, message_footer::MessageActions {
+                                                                owner: cx.entity().downgrade(),
+                                                                identity: this.entry_identities.get(index).cloned(),
                                                                 id: this.entry_identities.get(index).map(|id| id.key.clone()).unwrap_or_else(|| format!("message-{index}")).into(),
                                                                 user, user_bubble, colors: theme(cx).colors, enabled: this.message_actions_enabled(),
                                                                 timestamp: this.entry_timestamp(index), focus: this.timestamp_focus(index),
@@ -1963,6 +836,7 @@ impl Render for ConversationStream {
                                     .w_full()
                                     .tracked_scroll_edge_fade(self.list.clone(), colors.bg_base, ScrollFade::reading().top_only().vertical_list())
                                     .preserve_pinned_headers(top_fade_guards),
+                                    ),
                                 ),
                         ),
                 )
@@ -1970,6 +844,9 @@ impl Render for ConversationStream {
         };
 
         let project_bound = !self.thread.is_standalone();
+        let navigation_stream = cx.entity().downgrade();
+        let navigation_epoch = self.reading_navigation_epoch.clone();
+        let navigation_authority = self.resume_tail_authority;
         let element = div()
             .flex_1()
             .min_w_0()
@@ -1977,8 +854,15 @@ impl Render for ConversationStream {
             .flex()
             .flex_col()
             .relative()
-            .bg(colors.bg_base)
             .text_color(colors.text_primary)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(super::foreground_chrome::decoration(
+                        super::foreground_chrome::Decoration::ConversationBase,
+                    )),
+            )
             .key_context("ConversationStream")
             .track_focus(&self.selection_focus)
             .capture_action(
@@ -2033,6 +917,22 @@ impl Render for ConversationStream {
             )
             .on_action(cx.listener(Self::open_diff_action))
             .on_action(cx.listener(Self::copy_selected_text))
+            .on_action(move |_: &ResumeTail, window, cx| {
+                let current = navigation_stream.upgrade().is_some_and(|stream| {
+                    stream
+                        .read(cx)
+                        .reading_navigation_epoch
+                        .matches(&navigation_epoch)
+                });
+                if current
+                    && window.is_window_active()
+                    && navigation_authority
+                        .is_some_and(|authority| authority(&navigation_stream, window, cx))
+                {
+                    let _ = navigation_stream.update(cx, |stream, cx| stream.resume_tail(cx));
+                }
+                cx.stop_propagation();
+            })
             .when(!self.reading_preview, |root| {
                 root.children(self.render_parent_navigation(window, cx))
             })
@@ -2083,6 +983,7 @@ impl Render for ConversationStream {
             })
             .when(!self.reading_preview, |root| {
                 root.children(self.render_pending_menu(cx))
+                    .child(self.render_shell_recovery_overlay(window, cx))
             })
             .into_any_element();
         counters.record_render(render_t0);

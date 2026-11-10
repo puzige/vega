@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
 mod pixels;
+pub(super) mod shell;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,10 @@ mod tests;
 pub(super) enum Kind {
     Menu,
     Stop,
+    Primary,
+    ResumePending,
+    RunningSend,
+    Trigger,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -42,6 +47,10 @@ struct Source {
     pending_mode_revision: u64,
     state: Vec<bool>,
     attachments: u64,
+    interrupted: Option<vega_conversation::types::InterruptedAssistant>,
+    resume: bool,
+    pending_behavior: PendingMessageBehavior,
+    appearance: vega_theme::Appearance,
 }
 
 impl Source {
@@ -90,6 +99,10 @@ impl Source {
                 stream.context_operation_busy(),
             ],
             attachments: stream.attachment_generation,
+            interrupted: stream.interrupted_tail.clone(),
+            resume: stream.shows_composer_resume(cx),
+            pending_behavior: stream.running_message_behavior(cx),
+            appearance: theme(cx).appearance,
         }
     }
 }
@@ -128,6 +141,58 @@ struct Snapshot {
 impl Snapshot {
     fn capture(stream: &ConversationStream, kind: Kind, cx: &App) -> Self {
         let rows = match kind {
+            Kind::Trigger => vec![Row {
+                action: None,
+                label: vega_i18n::t("ui.add_context").to_owned(),
+                accessible: vega_i18n::t("ui.add_context").to_owned(),
+                description: None,
+                source: None,
+                token: None,
+                reason: None,
+                checked: None,
+                enabled: stream.context_menu_available(),
+            }],
+            Kind::RunningSend => {
+                let label = vega_i18n::t(match stream.running_message_behavior(cx) {
+                    PendingMessageBehavior::Queue => "ui.queue_message",
+                    PendingMessageBehavior::Steer => "ui.steer",
+                });
+                vec![Row {
+                    action: None,
+                    label: label.to_owned(),
+                    accessible: label.to_owned(),
+                    description: None,
+                    source: None,
+                    token: None,
+                    reason: None,
+                    checked: None,
+                    enabled: stream.can_submit_message(cx) && !stream.input.read(cx).is_composing(),
+                }]
+            }
+            Kind::Primary | Kind::ResumePending => {
+                let resume = kind == Kind::ResumePending || stream.shows_composer_resume(cx);
+                let label = vega_i18n::t(if resume {
+                    "ui.composer_resume"
+                } else {
+                    "ui.send"
+                });
+                vec![Row {
+                    action: None,
+                    label: label.to_owned(),
+                    accessible: label.to_owned(),
+                    description: None,
+                    source: None,
+                    token: None,
+                    reason: None,
+                    checked: None,
+                    enabled: kind == Kind::Primary
+                        && if resume {
+                            stream.can_resume_composer(cx)
+                        } else {
+                            stream.can_submit_message(cx)
+                        },
+                }]
+            }
             Kind::Stop => vec![Row {
                 action: None,
                 label: vega_i18n::t(if stream.actions.stopping {
@@ -290,10 +355,33 @@ impl Snapshot {
             && self.status == other.status
     }
 
+    fn same_presentation(&self, other: &Self) -> bool {
+        self.colors.bg_elevated == other.colors.bg_elevated
+            && self.colors.bg_hover == other.colors.bg_hover
+            && self.colors.bg_active == other.colors.bg_active
+            && self.colors.accent == other.colors.accent
+            && self.colors.border_subtle == other.colors.border_subtle
+            && self.colors.text_primary == other.colors.text_primary
+            && self.colors.text_secondary == other.colors.text_secondary
+            && self.colors.text_tertiary == other.colors.text_tertiary
+            && self.colors.brand_primary == other.colors.brand_primary
+            && self.colors.brand_primary_strong == other.colors.brand_primary_strong
+            && self.colors.brand_on_accent == other.colors.brand_on_accent
+            && self.id.matches(&other.id)
+            && self.same_source(other)
+            && self.selected == other.selected
+            && self.selection.matches(&other.selection)
+            && self.geometry == other.geometry
+            && self.activation == other.activation
+    }
+
     fn current(&self, stream: &ConversationStream, cx: &App) -> bool {
+        !stream.input.read(cx).is_composing() && self.presentation_current(stream, cx)
+    }
+
+    fn presentation_current(&self, stream: &ConversationStream, cx: &App) -> bool {
         self.epoch.matches(&stream.run_notice_epoch)
             && !stream.reading_preview
-            && !stream.input.read(cx).is_composing()
             && cx
                 .try_global::<crate::settings::SettingsOpen>()
                 .is_some_and(|settings| !settings.0)
@@ -303,7 +391,28 @@ impl Snapshot {
                     Some(thread) => thread.id == stream.thread.id,
                     None => stream.draft_route,
                 })
-            && (self.kind != Kind::Menu || stream.actions.visible())
+            && match self.kind {
+                Kind::Menu => stream.actions.visible(),
+                Kind::Stop => true,
+                Kind::Trigger => stream.context_menu_available(),
+                Kind::RunningSend => {
+                    !stream.composer_resume_pending && stream.shows_running_send(cx)
+                }
+                Kind::Primary => {
+                    !stream.actions.running
+                        && !stream.composer_submit_pending
+                        && !stream.composer_resume_pending
+                        && !stream.ordinary_pending_before_run()
+                        && !stream.has_cancellable_queue_wait()
+                }
+                Kind::ResumePending => {
+                    stream.composer_resume_pending
+                        && !stream.actions.running
+                        && !stream.composer_submit_pending
+                        && !stream.ordinary_pending_before_run()
+                        && !stream.has_cancellable_queue_wait()
+                }
+            }
             && self.same_source(&Self::capture(stream, self.kind, cx))
     }
 
@@ -339,6 +448,7 @@ impl Snapshot {
         self.id.matches(&observed.id)
             && self.same_source(observed)
             && self.selection.matches(&observed.selection)
+            && self.kind != Kind::ResumePending
             && self.rows.get(index).is_some_and(|row| row.enabled)
             && match origin {
                 Origin::Pointer => true,
@@ -420,6 +530,7 @@ struct Host {
     owner: WeakEntity<ConversationStream>,
     snapshot: Snapshot,
     surface: Option<Surface<Snapshot, Request>>,
+    published: Option<Snapshot>,
     focus: FocusHandle,
     lease: Weak<Mount>,
     height: Option<f32>,
@@ -432,6 +543,7 @@ struct Host {
 impl Host {
     fn stop(&mut self, cx: &App) {
         self.surface_subscriptions.clear();
+        self.published = None;
         if let Some(surface) = self.surface.take() {
             surface.entity().read(cx).stop();
         }
@@ -512,6 +624,14 @@ impl Host {
                     }
                 }
                 Kind::Stop => stream.stop_composer_action(&StopComposer, window, cx),
+                Kind::Primary => stream.activate_composer_primary(cx),
+                Kind::Trigger => stream.open_composer_actions(window, cx),
+                Kind::RunningSend => {
+                    if stream.shows_running_send(cx) && !stream.input.read(cx).is_composing() {
+                        stream.submit_message(cx);
+                    }
+                }
+                Kind::ResumePending => (),
             }
         });
         self.snapshot.activation = None;
@@ -664,6 +784,7 @@ impl Host {
                     }
                 }));
         }
+        self.published = Some(self.snapshot.clone());
         self.surface = Some(surface);
     }
 }
@@ -686,15 +807,24 @@ impl RenderOnce for NativeChrome {
         let key = format!(
             "nsh-composer-chrome-{}-{}",
             owner.entity_id(),
-            self.kind == Kind::Stop
+            match self.kind {
+                Kind::Menu => "menu",
+                Kind::Stop => "stop",
+                Kind::Primary => "primary",
+                Kind::ResumePending => "resume-pending",
+                Kind::RunningSend => "running-send",
+                Kind::Trigger => "trigger",
+            }
         );
         let state = window.use_keyed_state(key, cx, |window, cx| {
-            let focus = if self.kind == Kind::Stop {
+            let focus = if self.kind == Kind::Trigger {
+                owner.read(cx).action_focus[0].clone()
+            } else if self.kind != Kind::Menu {
                 owner.read(cx).action_focus[1].clone()
             } else {
                 cx.focus_handle()
             }
-            .tab_stop(!snapshot.enabled().is_empty());
+            .tab_stop(self.kind == Kind::ResumePending || !snapshot.enabled().is_empty());
             let subscriptions = vec![
                 cx.on_release(|this: &mut Host, cx| this.stop(cx)),
                 cx.on_focus_in(&focus, window, |this: &mut Host, window, cx| {
@@ -723,6 +853,7 @@ impl RenderOnce for NativeChrome {
                 owner: self.owner.clone(),
                 snapshot: snapshot.clone(),
                 surface: None,
+                published: None,
                 focus,
                 lease: Weak::new(),
                 height: None,
@@ -779,7 +910,7 @@ impl Render for Host {
             self.stop(cx);
             return div().into_any_element();
         };
-        if !self.snapshot.current(owner.read(cx), cx) {
+        if !self.snapshot.presentation_current(owner.read(cx), cx) {
             self.stop(cx);
             return div().into_any_element();
         }
@@ -797,17 +928,23 @@ impl Render for Host {
             self.displayed.fill(false);
         }
         self.displayed.resize(self.snapshot.rows.len(), false);
-        self.focus = self
-            .focus
-            .clone()
-            .tab_stop(!self.snapshot.enabled().is_empty());
+        self.focus = self.focus.clone().tab_stop(
+            self.snapshot.kind == Kind::ResumePending || !self.snapshot.enabled().is_empty(),
+        );
         self.mount(window, cx);
         let Some(surface) = &mut self.surface else {
             return div().into_any_element();
         };
         surface.sync_environment(cx);
-        surface.publish(self.snapshot.clone());
-        let stop = self.snapshot.kind == Kind::Stop;
+        if self
+            .published
+            .as_ref()
+            .is_none_or(|previous| !previous.same_presentation(&self.snapshot))
+        {
+            surface.publish(self.snapshot.clone());
+            self.published = Some(self.snapshot.clone());
+        }
+        let stop = self.snapshot.kind != Kind::Menu;
         let mut host = div()
             .id("nsh-composer-chrome-host")
             .role(Role::Group)
@@ -815,10 +952,33 @@ impl Render for Host {
             .min_w_0()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
+            .when(self.snapshot.kind == Kind::RunningSend, |host| {
+                host.key_context("PendingMessageControl")
+                    .on_action(cx.listener(
+                        |this, _: &ActivatePendingMessageControl, window, cx| {
+                            if this.focus.contains_focused(window, cx)
+                                && this.valid(&this.snapshot, window, cx)
+                                && this.snapshot.rows.first().is_some_and(|row| row.enabled)
+                                && this.displayed.first() == Some(&true)
+                            {
+                                this.activation_focus = window.focused(cx);
+                                this.snapshot.request_activation(0, Origin::Keyboard);
+                                this.displayed.fill(false);
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
+            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(surface.entity());
         host = if stop {
-            host.size(px(Layout::COMPOSER_SEND_SIZE)).flex_shrink_0()
+            host.size(px(if self.snapshot.kind == Kind::Trigger {
+                Layout::TITLEBAR_CONTROL_SIZE
+            } else {
+                Layout::COMPOSER_SEND_SIZE
+            }))
+            .flex_shrink_0()
         } else {
             let estimate =
                 (self.snapshot.rows.len().max(1) as f32 * Typography::SIDEBAR_LINE_HEIGHT * 2.
@@ -864,7 +1024,7 @@ impl Render for Host {
                         })
                     })
                     .when(!row.enabled, |node| {
-                        node.aria_description(vega_i18n::t(row.reason.unwrap_or("ui.stopping")))
+                        node.aria_description(row.reason.map(vega_i18n::t).unwrap_or(&row.label))
                     })
                     .when(self.snapshot.selected == Some(index), |node| {
                         node.aria_active_descendant()
@@ -951,6 +1111,13 @@ impl Element for Mounted {
             window.with_element_state::<Rc<Mount>, _>(id, |_, _| ((), self.lease.clone()));
             if let Some(owner) = self.owner.upgrade() {
                 let stream = owner.read(cx);
+                if self
+                    .host
+                    .upgrade()
+                    .is_some_and(|host| host.read(cx).snapshot.kind == Kind::Trigger)
+                {
+                    stream.actions.trigger_bounds.set(Some(bounds));
+                }
                 let visible = bounds.intersect(&window.content_mask().bounds);
                 if !visible.is_empty() {
                     self.lease.geometry.set(Some(Geometry {

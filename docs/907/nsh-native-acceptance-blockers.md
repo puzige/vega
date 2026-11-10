@@ -1,0 +1,106 @@
+# #907 — Native acceptance evidence inventory and blockers
+
+## Scope, snapshot and conclusion
+
+Inventory observed at `2026-11-10T00:11:38Z`; read-only HEAD inspection confirms `0b5ea426abfd8d4358489e916273d89474fb190f` in the supplied `vega-907-nsh-full` worktree. The implementation is dirty (tracked modifications and untracked sources/evidence), so HEAD alone does not identify its bytes. The user supplies the stopped, reviewed-P2-fixes state. This document does not independently refreeze or re-review the implementation, certify its final content identity, or assert that an old binary matches every current dirty file.
+
+**Native acceptance remains NOT RUN / NOT ESTABLISHED for macOS, Windows and Linux in the inspected evidence.** This is a missing-evidence/environment conclusion, not a demonstrated platform product failure. Completing this inventory completes neither #907 nor any native/final delivery gate.
+
+Only this new document is written. Independent evidence reads were batched; no delegation/execution route was invented. No application launch, desktop control, clipboard inspection, installation, network, Cargo/rustc invocation, test execution, Git mutation, CI query, merge or release was performed. Fetch/update was deliberately not attempted because this task explicitly forbids network and Git mutations. Existing source, reports, historical failures and test assertions are unchanged.
+
+## Binding acceptance sources
+
+- [Full migration spec](nsh-full.md), lines 7–18 and **验收先行**, lines 40–52: macOS/Windows/Linux scope and the nine acceptance rows reproduced below. The evidence column requires static contracts, Actions and user manual acceptance; development results are not a substitute for all three.
+- [Full migration delivery rules](nsh-full.md#验证与交付), lines 82–86: exact stopped-version independent review, final-head required CI, development-test archival/removal, cloud publication and user acceptance remain separate obligations. Missing Windows/Linux evidence must stay pending.
+- [Keyboard acceptance](nsh-keyboard.md#acceptance-before-implementation), lines 7–15: real focus chain, Tab/Shift-Tab, visible focus, pointer routing and native assistive-technology checks are not established by policy/proxy construction alone.
+- [Mounted palette evidence boundary](nsh-palette-mounted-ime.md#evidence-boundary), lines 73–80: `integration_edit_key(InputKey)` uses the backend route, not the GPUI Window event closure or OS input-method/candidate UI.
+- [Editing backend contract](nsh-editing-backend-contract.md), lines 5–11, 25–27: mounted native hooks, menu actions, recovery and AX replacement are in-process operations, not OS acceptance; no new AX Paste or OS HTML work is authorized.
+- [Reading backend contract](nsh-reading-backend-contract.md), lines 19–25: geometry, scrolling, native pointer and three-platform AX acceptance retain a manual-validation boundary.
+- Repository `AGENTS.md` and [execution guide §6–7](../vega-exec-guide.md#6-遇阻上报协议所有-agent-必须遵守): report actual blockers, do not replace user system-integration acceptance with agent screenshots or simulated evidence, and do not waive final gates.
+
+The following is an inventory of existing criteria, not new product requirements, a new E2E automation gate, or a request to expand the implementation scope. Historical spec/status paragraphs and earlier failed runs are version-specific; later recorded results do not erase their history.
+
+## Existing evidence and what it does not prove
+
+| Evidence inspected | Recorded result / class | Native-acceptance boundary |
+| --- | --- | --- |
+| `target/nsh-review-fixes-execution.json` and `target/nsh-review-fixes-vega_ui.stdout` | Retained execution receipt: exit 0, no watchdog timeout; footer **362 passed, 0 failed, 0 ignored**. | Previously executed in-process UI tests, not rerun here; no OS desktop/IME/AT acceptance. |
+| Same receipt and `target/nsh-review-fixes-nsh_reading_integration.stdout` | Exit 0; **15 passed, 0 failed, 0 not executed, 0 ignored**, including mounted rename persistence and recovery/history/AX/submit. | Actual mounted production/controller paths can be exercised without a real OS candidate window, desktop clipboard gesture or assistive-technology client. “Native” in a target/helper name does not change that boundary. |
+| Same receipt and `target/nsh-review-fixes-nsh_settings_integration.stdout` | Exit 0; **4 passed, 0 failed, 0 ignored**, including queued General-settings command revocation on close. | Retained SettingsView/Surface/queue regression, not a full native settings session or full-app sidebar-persistence acceptance. |
+| [Integrated validation record](nsh-reading-editing-integrated-validation.md), lines 1390–1561 | Earlier stopped-implementation receipts include native-host **36**, geometry **24**, reading **15**, scroll **16**, mounted palette **3**, and other application/workspace checks. | Historical development evidence at its own recorded identities; not fresh post-P2 execution of every target or final-head CI. Its final section explicitly leaves OS AX/IME, three-platform manual acceptance and delivery gates uncompleted. |
+| [Conversation independent review](review-conversation-production.md) | No actionable P0–P3 in its bounded reviewed delta. | Static implementation review, not exhaustive coverage or native acceptance. |
+| [App/settings/workspace independent review](review-app-settings-workspace.md), lines 85–132 | Incremental static review closes the queued-General-settings P2 at its exact listed hashes; runtime responsibility is separate. | Does not establish OS pointer/focus/AT behavior, final CI or user acceptance. |
+| [Native/security review](review-native-security.md) and [paste-fix implementation record](nsh-review-single-line-paste-fix.md) | The inspected review file retains the original P2 finding; the implementation record supplies repair hashes and scope. The supplied task context says reviewed P2 fixes are stopped. | This inventory neither contradicts that supplied state nor manufactures a missing independent closure receipt in the original review file. It does not reopen the finding or repeat the source audit. Neither record establishes OS clipboard/IME acceptance. |
+
+The post-P2 counts above were read from retained footers and receipts, not inferred from authored tests or empty stderr. No current toolchain was queried, no test executable was launched and no complete current-source-to-binary provenance was newly established. Older “unrun” author handoffs remain historical; the retained parent results provide later development execution evidence, not native passes.
+
+No current-version OS-native acceptance record or user pass was established by these reads. No screenshot was captured, inspected as current acceptance, or promoted from an older snapshot. Product screenshot/attachment features and mounted pixel/geometry observations are not screenshots of a current accepted desktop session. A historical screenshot, if supplied later, requires its own version and scenario attribution and cannot by itself close an interaction row.
+
+## Platform environments and authorization blockers
+
+| Code / platform | Observed availability and actual blocker | Concrete required environment / next step |
+| --- | --- | --- |
+| **M — macOS** | `uname -srm` reports **Darwin 24.6.0 arm64**. A macOS host is observed, but this task forbids app launch, desktop control, installation and network. No usable interactive session, OS IME/AT permission or current installed app identity was tested. | User-authorized interactive macOS desktop with the exact accepted source/build identity, native Chinese IME, clipboard/menu access and native accessibility client as needed for the existing rows. The user performs native acceptance through the established delivery/manual-test process; obtain explicit authorization before any otherwise prohibited preparation or agent operation. Host OS alone is not an executed test. |
+| **W — Windows** | **No authorized available Windows GUI execution route in the current tools/context.** Workflow absence does not prove that no Windows machine exists. Hardware, VM, remote session, toolchain and app availability are unknown, not probed failures. | An explicitly provided/authorized interactive Windows desktop (physical, VM or remote route), compatible exact-version app/build, native Chinese IME, system clipboard/context menus and Windows accessibility client. Authorized owner supplies the build/session and user records the existing matrix outcomes. Do not assume provisioning, installing or adding a workflow is authorized. |
+| **L — Linux** | **No authorized available Linux GUI execution route in the current tools/context.** The Ubuntu aggregation job is not such a route. Machine/display-server/desktop/input-method/build availability is unknown; this is not a failed Linux build or a proven lack of hardware. | An explicitly provided/authorized interactive Linux desktop with compatible exact-version app/build, working graphical display session, Chinese input method, clipboard and accessibility stack. Record the actual display-server/session and platform semantics used; this does not add a requirement to test every display server or distribution. User executes the existing rows there. |
+
+For every row below, use the exact source/build intended for acceptance and record the actual platform/session, scenario, observed result, executor and bounded evidence. Existing repository policy puts real UI/system integration with user manual acceptance, normally after final gates and merge on master. This report does not authorize pre-gate installation or change that order. Where a scenario depends on existing service/provider/PTY state, have the authorized user prepare that state without disclosing secrets; a test fixture does not stand in for the real result.
+
+## Exact unmet platform acceptance rows
+
+**Status legend:** `NOT RUN (M/W/L)` means current OS-native/user acceptance evidence is missing and the corresponding environment/authorization blocker above applies. It does not mean the product is known to fail. The nine source rows are unchanged; every platform cell remains open.
+
+| Existing spec row | macOS | Windows | Linux | Exact outstanding native scenario / observable result and next step |
+| --- | --- | --- | --- | --- |
+| **主窗口/导航 — Main window/navigation** (`nsh-full.md:44`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | In the authorized desktop, create/switch/delete/rename/pin tasks, switch projects and open/close settings. Verify unchanged routing, drafts, persistence/confirmation and recoverable empty/error states. Use disposable user-approved task/project data. Include native rename paste then Return from the affected P2 path; a mounted persistence pass alone is insufficient. |
+| **会话 — Conversation** (`:45`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | With appropriate history and a streaming conversation, load history, expand tools/thinking/subagents, locate anchors, select and copy. Verify correct message/source/history/position and retained actions. Exercise actual pointer/keyboard/context-copy, shaped selection/caret, scrolling and link/focus/AX behavior covered by the existing reading contract; helper snapshots and geometry are not OS event or AT observations. |
+| **Composer** (`:46`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | Use the platform Chinese IME and real candidate UI; send/stop/recover, queue, attach existing supported clipboard/file payloads, complete files/skills and switch model/thinking/permission. Verify no accidental send and original trusted-controller behavior with truthful results. Check candidate/focus handling in the migrated palette/editor paths, native clipboard/menu Undo/Redo and recovery. Retained marked-key/AX replacement tests do not establish OS delivery. No HTML capability expansion is added. |
+| **权限/提问 — Permissions/questions** (`:47`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | With user-controlled pending tool approval, dangerous confirmation, question and CUA-guidance states, verify all original options are reachable by real input, original permission checks remain and no execution result is fabricated. Real protected operations stay subject to their own authorization; the acceptance session is not blanket approval. |
+| **设置 — Settings** (`:48`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | Walk General, providers/models, MCP, Agents, Skills, usage, updates and other existing entries. Verify original field validation/save/failure/retry behavior and credential non-disclosure. Exercise real close/reopen/focus behavior around the repaired General-settings path; the four-case retained-owner fixture is not this user session. Use authorized configuration/service state without logging secrets. |
+| **工作区 — Workspace** (`:49`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | With user-approved files/repository/artifacts, exercise file/image/Diff/commit/branch/artifact/automation/subagent panels. Verify existing actions, dirty/conflict state and safety fences. Actual opening/editing/destructive or external actions require their normal authorization; source contract inspection is not a completed native action. |
+| **终端 — Terminal** (`:50`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | In an authorized harmless PTY session, verify real output/input/IME, resize, task switching and hidden panel behavior; retain PTY identity and background execution. A painted text projection or in-process controller test cannot prove an interactive OS terminal session. |
+| **跨切面 — Cross-cutting** (`:51`) | NOT RUN (M) | NOT RUN (W) | NOT RUN (L) | Use light/dark themes, Chinese/English, keyboard/shortcuts, Tab/Shift-Tab, narrow windows, close/reopen. Verify original tokens/i18n, actual reachable/visible focus, modal/input ownership and surviving background work. Use native AT to check the existing accessibility/focus contract; in-process AX actions/proxies do not prove OS accessibility exposure or client interaction. No performance A/B gate is introduced. |
+| **发布 — Release/platform evidence** (`:52`) | NOT ESTABLISHED (M) | NOT ESTABLISHED (W) | NOT ESTABLISHED (L) | Bind the complete final source to its required CI and authorized cloud build/publication evidence, and collect platform-specific user manual outcomes. Current macOS-only release workflow is not evidence of Windows/Linux delivery. Parent must obtain an authorized platform build/distribution route for those sessions, not silently modify CI or publish/install here. No final release, three-platform acceptance or merge is claimed. |
+
+## What current workflows can and cannot supply
+
+Inspected all three files in `.github/workflows`:
+
+- `pr-check.yml:14–80`: Clippy/fmt and Nextest run on `macos-latest`; Python script checks also run there. `:84–99` runs the aggregate **check (fmt, clippy, test)** on `ubuntu-latest` and only checks the two job result values. It does not check out/build/run the app on Linux. There is no Windows job or interactive native-acceptance job in this file.
+- `release.yml:22–34`: one **build & publish (macos-latest, arm64)** job, fixed source checkout. Its packaging/signing/notarization/upload steps publish `Vega-macos-arm64` (`:89,139–184`). It does not supply Windows/Linux packages or native acceptance.
+- `cicd.yml`: master pushes call that reusable release workflow with `target_sha: github.sha`; this adds no platform matrix.
+
+These are static workflow facts, **not current Actions status**. No network query or final-head run receipt was obtained. A green macOS check or an Ubuntu result aggregator would still not close any Windows/Linux GUI row. No available Windows/Linux GUI route is authorized in the present tools/context, but no claim is made that such machines or routes cannot exist elsewhere. Adding CI jobs, provisioning machines, changing dependencies or creating new acceptance automation is not authorized by this inventory.
+
+## Preserved baseline limitation, not a new acceptance requirement
+
+[Native HTML acquisition boundary](nsh-native-html-acquisition-boundary.md), lines 11–17, classifies missing OS HTML acquisition as **pre-existing**, not a migration regression: the original GPUI path and the pinned current clipboard carrier do not acquire HTML. Opaque metadata is not HTML. This report does not claim native HTML works, turn its absence into a new #907 regression, add rich-document editing requirements, waive preservation of originally supported text/images/paths, or begin an acquisition patch. Any separately requested expansion needs explicit scope/semantics/platform authorization first.
+
+## Remaining gates and actionable handoff
+
+1. **Native/user acceptance — blocked, not completed.** `[BLOCKED] #907 | Current macOS/Windows/Linux native acceptance evidence is absent; macOS execution is prohibited in this inventory and no authorized available Windows/Linux GUI execution route exists in current tools/context | Mounted/native-host tests and macOS CI are not OS acceptance; Ubuntu only aggregates results; workflow absence does not prove machine absence | Provide authorized platform sessions/builds and have the user execute the existing nine rows, retaining exact-version per-platform results.`
+2. **Review — separate bounded evidence.** Reuse exact-version independent-review conclusions only within their recorded scope. Supplied reviewed-P2 status is not a new whole-tree/native approval by this document. The inspected native review file retains its original finding; any separate closure evidence belongs with the parent record, not an invented append here. Do not restart optional audits or implement unrelated findings.
+3. **Final-head CI — not obtained.** Parent must bind the final content/commit to required CI under the normal workflow. This dirty HEAD and historical local receipts are not a final-head CI pass. Network/Git prohibitions prevent advancing that gate here.
+4. **Development-test archival/removal and final zero-test delivery check — not performed.** Existing development tests/support are visible in the retained evidence; this task authorizes no cleanup or Cargo execution. Parent follows the existing lifecycle, preserves recoverable evidence, removes development-only Rust test/support wiring before master, and verifies the final head without weakening production or Python coverage. Do not equate an old nonzero passing suite with the final zero-discovery/zero-execution gate.
+5. **Merge, cloud packaging/publication, installation and user sign-off — not performed or claimed.** Follow existing gate order; no Issue/Project state was changed and #907 is not declared Done. Provisioning/build/distribution or approval decisions require the appropriate owner/authorization; they are not hidden implementation work for this report.
+
+## Read-time evidence identities and verification limits
+
+SHA-256 values below bind the cited bytes read during this inventory, not all dirty production source or future runtime evidence:
+
+| Path | SHA-256 |
+| --- | --- |
+| `docs/907/nsh-full.md` | `dba7ae4653eb7a274b45b8f75863420689bb991c1ac79bdaab0303c338ecfed3` |
+| `docs/907/nsh-native-html-acquisition-boundary.md` | `f88517ff55f3170c02ac6ad9fcd405f4eacc1ec800c4fa721e6e1f9e2831d156` |
+| `docs/907/review-native-security.md` | `cfd52a85052b1e1663b0cc707ef49e02bee8adfc80b7eecbfaff722b0bcc06a3` |
+| `docs/907/review-app-settings-workspace.md` | `fc1af91c7c991f3804200dcf3228df26b5d93f679daabf287ff3d1c34cbe0218` |
+| `docs/907/review-conversation-production.md` | `f7df5bee29688a3cc8cae076280c0c3185eebd91f8814471b3a338266146cbf0` |
+| `target/nsh-review-fixes-execution.json` | `719cca996a844cc8c5135b6f024921582737606e9e73397aad1396bbf4a63c27` |
+| `target/nsh-review-fixes-vega_ui.stdout` | `1a1cb4b3d7ce1cc69267570525fcea0371ef4ad0bc057d983f9beb72d0db0115` |
+| `target/nsh-review-fixes-nsh_reading_integration.stdout` | `900151850e4c5049cd2ba0de4c94fb8d0b46fe0f032059566bbb6484ef727e32` |
+| `target/nsh-review-fixes-nsh_settings_integration.stdout` | `c17c9e6c3b3b025de28b2b1b411a47a0f8c0446ecfad45504a331d76b644ca38` |
+| `.github/workflows/pr-check.yml` | `536ee05031209834437b7c03be7e076392ec9ab7f81b77b25f2ed21ef977150a` |
+| `.github/workflows/release.yml` | `4d36813ea110fe472ab1a65b19dbd7b4dce319238e2d06edd4b3588bda23a1cc` |
+| `.github/workflows/cicd.yml` | `a11cc5e9c781127c31515fba9bb6572a3d700996ae88c39051178b8d0a29c496` |
+
+Performed focused file/spec/workflow reads, retained-result inspection, read-only `git rev-parse`/status/diff metadata, host identification and SHA-256 calculations. Final document readback and documentation-only checks cover local links, matrix/platform status cells and whitespace; they are not product validation. This document's final hash is reported separately after readback to avoid a self-reference. No tools will be used to run the app, alter Git or obtain network evidence as part of this inventory. Stop after report verification/hash with the native and final-gate limitations intact.

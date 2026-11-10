@@ -13,6 +13,16 @@ pub(super) struct Presentation {
     height: f32,
 }
 
+impl Presentation {
+    pub(super) fn revoke(&mut self) {
+        self.id = ProjectionId::new();
+    }
+}
+
+#[cfg(feature = "nsh-reading-integration")]
+#[path = "nsh_close_regressions.rs"]
+mod close_regressions;
+
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
@@ -83,7 +93,10 @@ impl SettingsView {
                         .update_in(cx, |this, _, cx| {
                             match request {
                                 Request::Decide(command) => {
-                                    let accepted = this.section == 1
+                                    let accepted = cx
+                                        .try_global::<super::SettingsOpen>()
+                                        .is_some_and(|open| open.0)
+                                        && this.section == 1
                                         && this
                                             .input_preferences_presentation
                                             .as_ref()
@@ -256,6 +269,8 @@ fn running_button(
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    #[cfg(feature = "nsh-reading-integration")]
+    close_regressions::observe(state, commands.clone());
     let actions = Actions {
         state,
         pending: signal(false),

@@ -589,6 +589,17 @@ impl VegaWindow {
         self.subagent_panel.selection = self.subagent_panel.selection.wrapping_add(1);
     }
 
+    pub(super) fn suspend_subagent_reading_navigation(&self, cx: &mut Context<Self>) {
+        if let Some(stream) = self
+            .subagent_panel
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.stream.as_ref())
+        {
+            stream.update(cx, ConversationStream::suspend_reading_navigation);
+        }
+    }
+
     pub(super) fn set_subagent_preview_visible(
         &mut self,
         visible: bool,
@@ -772,6 +783,7 @@ impl VegaWindow {
             .detach();
             stream
         };
+        self.bind_reading_navigation(&stream, cx);
         let model = stream.read(cx).displayed_model().to_string();
         if let Some(detail) = self.subagent_panel.detail.as_mut() {
             detail.loading = false;
@@ -1080,6 +1092,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.bind_reading_navigation(stream, cx);
         if !self.agent_controller.delegated_unbound.remove(child) {
             return;
         }

@@ -62,7 +62,7 @@ impl ConversationStream {
     }
 
     pub(super) fn shell_select(&mut self, action: Action, reveal: bool) {
-        if let Some(page) = &mut self.shell_recovery.presentation {
+        if let Some(page) = self.shell_page_mut() {
             page.displayed = None;
             page.selected = Some(action);
             page.selection = ProjectionId::new();
@@ -89,7 +89,7 @@ impl ConversationStream {
         {
             return false;
         }
-        let Some(page) = &self.shell_recovery.presentation else {
+        let Some(page) = self.shell_page() else {
             return false;
         };
         let mut current = self.shell_snapshot(page.id.clone(), page.recovery, cx);
@@ -128,12 +128,7 @@ impl ConversationStream {
             return None;
         }
         let action = current.selected.as_ref()?;
-        let displayed = self
-            .shell_recovery
-            .presentation
-            .as_ref()?
-            .displayed
-            .as_ref()?;
+        let displayed = self.shell_page()?.displayed.as_ref()?;
         if !current.accepts_selection(displayed, action) || !self.accepts_shell(current, action, cx)
         {
             return None;
@@ -155,16 +150,12 @@ impl ConversationStream {
                 .aria_active_descendant()
                 .on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, window, cx| {
                     let _ = weak.update(cx, |this, cx| {
-                        let selected =
-                            this.shell_recovery
-                                .presentation
-                                .as_ref()
-                                .is_some_and(|page| {
-                                    page.displayed.as_ref().is_some_and(|displayed| {
-                                        observed.accepts_selection(displayed, &action)
-                                    }) && page.selection.matches(&observed.selection)
-                                        && page.selected.as_ref() == Some(&action)
-                                });
+                        let selected = this.shell_page().is_some_and(|page| {
+                            page.displayed.as_ref().is_some_and(|displayed| {
+                                observed.accepts_selection(displayed, &action)
+                            }) && page.selection.matches(&observed.selection)
+                                && page.selected.as_ref() == Some(&action)
+                        });
                         if selected && this.shell_focus().is_focused(window) {
                             this.shell_action(&observed, action.clone(), window, cx);
                         }

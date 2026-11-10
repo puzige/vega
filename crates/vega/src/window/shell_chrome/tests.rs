@@ -20,6 +20,7 @@ fn snapshot() -> Snapshot {
             settings: false,
             blocked: false,
             mutation: Default::default(),
+            permission_reset: None,
             title: "Task".into(),
             controls: vec![Control {
                 action: Action::Update,
@@ -155,6 +156,60 @@ fn displayed_authority_does_not_follow_route_version_or_visibility_changes() {
     current = displayed.clone();
     current.observation.blocked = true;
     assert!(!current.allows(Action::Update));
+}
+
+#[test]
+fn permission_notice_actions_expire_on_operation_state_and_session_change() {
+    use vega_conversation::types::{PermissionResetError, PermissionResetProjection};
+    let mut displayed = snapshot();
+    displayed.observation.kind = Kind::PermissionReset;
+    displayed.observation.permission_reset = Some((
+        PermissionResetProjection::Blocked {
+            error: PermissionResetError::OutcomeUnknown,
+            can_cancel: false,
+            thread_id: Some("task".into()),
+        },
+        7,
+        true,
+    ));
+    displayed.observation.controls = vec![Control {
+        action: Action::PermissionSettings,
+        label: "Open settings".into(),
+        enabled: true,
+        selected: false,
+    }];
+    assert!(displayed.allows(Action::PermissionSettings));
+    let mut current = displayed.clone();
+    current
+        .observation
+        .permission_reset
+        .as_mut()
+        .expect("reset")
+        .1 += 1;
+    assert!(!current.matches(&displayed));
+    current = displayed.clone();
+    current
+        .observation
+        .permission_reset
+        .as_mut()
+        .expect("reset")
+        .0 = PermissionResetProjection::Refreshing;
+    assert!(!current.matches(&displayed));
+    current = displayed.clone();
+    current
+        .observation
+        .permission_reset
+        .as_mut()
+        .expect("reset")
+        .2 = false;
+    assert!(!current.matches(&displayed));
+    current = displayed.clone();
+    current.observation.settings = true;
+    assert!(!current.allows(Action::PermissionSettings));
+    current = displayed.clone();
+    current.observation.blocked = true;
+    assert!(!current.allows(Action::PermissionSettings));
+    assert!(!displayed.allows(Action::Update));
 }
 
 #[test]

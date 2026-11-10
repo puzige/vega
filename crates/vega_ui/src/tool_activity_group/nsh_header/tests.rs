@@ -71,6 +71,28 @@ fn recycled_mount_and_restored_content_cannot_replay_old_disclosure() {
     assert!(focused.accepts(&observed));
 }
 
+#[test]
+fn static_header_presentation_converges_but_focus_theme_and_recycle_still_repaint() {
+    let initial = snapshot();
+    for _ in 0..64 {
+        assert!(initial.same_presentation(&initial.clone()));
+    }
+    let mut current = initial.clone();
+    current.keyboard_focus = true;
+    assert!(!current.same_presentation(&initial));
+    assert!(current.accepts(&initial));
+    current = initial.clone();
+    current.colors.bg_hover = current.colors.accent;
+    assert!(!current.same_presentation(&initial));
+    current = initial.clone();
+    current.id = ProjectionId::new();
+    assert!(!current.same_presentation(&initial));
+    assert!(!current.accepts(&initial));
+    current = initial.clone();
+    current.children.reverse();
+    assert!(!current.same_presentation(&initial));
+}
+
 #[ns::component]
 fn HeaderFixture() -> impl ns::IntoElement {
     let (commands, _) = mpsc::channel(crate::nsh::COMMAND_CAPACITY);

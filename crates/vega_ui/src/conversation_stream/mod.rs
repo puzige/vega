@@ -1,13 +1,21 @@
 mod automation_permission;
 mod privacy;
 mod shell_recovery;
+#[cfg(feature = "nsh-reading-integration")]
+pub use shell_recovery::command_control_regressions;
+#[cfg(feature = "nsh-reading-integration")]
+pub use shell_recovery::mounted_regressions as shell_recovery_mounted_regressions;
 pub use shell_recovery::{ShellRecoveryAction, ShellRecoveryOutcome, ShellRecoveryRequested};
 mod thread_permissions;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 pub use vega_conversation::types::ThreadPermissionReloadRequested;
 mod attachments;
+mod message_footer;
 mod ordinary_submissions;
+#[cfg(feature = "nsh-reading-integration")]
+pub use ordinary_submissions::mounted_regressions as ordinary_controls_mounted_regressions;
 mod pending_messages;
+mod reasoning_feedback;
 pub use ordinary_submissions::{OrdinaryAction, OrdinaryActionRequested};
 mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
@@ -50,8 +58,8 @@ use crate::artifact_card::{ArtifactCard, ArtifactGroup};
 use crate::branch_selector::{BranchListRequested, BranchSelector};
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
-    AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, FocusPreviousRetry,
-    FocusRetry, NextFile, PreviousFile, RetryFile,
+    AcceptFile, CancelFile, FileSelectorModel, FocusPreviousRetry, FocusRetry, NextFile,
+    PreviousFile, RetryFile,
 };
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
@@ -313,6 +321,7 @@ mod code_drag;
 mod code_viewport;
 mod content;
 mod context_control;
+mod conversation_status;
 mod copy_receipt;
 mod history_preparation;
 pub use context_control::ContextUsageProjection;
@@ -321,15 +330,22 @@ pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,
     MessageLocationStatus,
 };
+mod composer_selectors;
 mod core;
 mod file_reference;
+mod foreground_chrome;
 mod message_anchors;
+#[cfg(feature = "nsh-reading-integration")]
+pub use message_anchors::mounted_regressions as message_anchor_mounted_regressions;
 mod model;
 mod nsh_parent;
 mod phase;
 mod render;
 mod render_rows;
+mod resume_tail;
 mod run_activity;
+#[cfg(feature = "nsh-reading-integration")]
+pub use run_activity::repeated_production_header_render_retains_unowned_mount_and_projection;
 mod run_notice;
 mod shimmer;
 mod sticky_disclosure;
@@ -343,8 +359,37 @@ use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;
 pub(crate) mod links;
-mod selection;
+#[cfg(feature = "nsh-reading-integration")]
+pub mod scroll_composition_integration;
 mod selection_menu;
+#[cfg(feature = "nsh-reading-integration")]
+pub use selection_menu::body::scroll_integration::install as install_scroll_body_access;
+#[cfg(feature = "nsh-reading-integration")]
+pub(crate) use selection_menu::mounted::ReadingList;
+#[cfg(feature = "nsh-reading-integration")]
+pub fn scroll_body_factory(
+    kind: scroll_composition_integration::BodyKind,
+    slot: usize,
+    list: gpui_kit::ListState,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) -> scroll_composition_integration::BodyMount {
+    selection_menu::body::scroll_integration::factory(kind, slot, list, window, cx)
+}
+#[cfg(feature = "nsh-reading-integration")]
+pub use selection_menu::body::integration_tests::{
+    revoked_thinking_root_rejects_open_retry_and_delayed_completion,
+    source_caret_follow_uses_actual_extent_after_append,
+    source_caret_manual_scroll_rejects_pending_and_delayed_follow,
+    source_caret_new_projection_rejects_delayed_session_report,
+    source_caret_owner_and_mount_aba_reject_old_geometry,
+    source_caret_reflow_preserves_position_affinity_and_signed_inset,
+    source_caret_removed_trim_clamps_forward_with_zero_inset,
+    source_caret_replacement_does_not_restore_equal_offsets,
+    source_caret_selection_revokes_pending_reflow,
+    source_caret_trim_preserves_absolute_position_inside_paragraph,
+    stationary_thinking_hover_survives_fade_open_and_retry,
+};
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;

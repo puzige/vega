@@ -5,7 +5,7 @@ use vega_ui::nsh::{OrderedCommands, color};
 
 use super::{
     error_key, logo,
-    model::{Action, Request, Snapshot, localized},
+    model::{Action, Request, Snapshot},
 };
 
 fn control(
@@ -99,11 +99,7 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
             }
             if snapshot.authority.recovery {
                 column = column.child(
-                    text(localized(
-                        "The startup view could not be displayed. Reload the view to try again.",
-                        "无法显示启动界面，请重新加载界面。",
-                    ))
-                    .text_color(color(colors.danger)),
+                    text(vega_i18n::t("app.startup.view_failed")).text_color(color(colors.danger)),
                 );
             }
             let mut actions = view()

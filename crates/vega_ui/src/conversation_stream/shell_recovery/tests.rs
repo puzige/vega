@@ -9,6 +9,8 @@ fn snapshot() -> Snapshot {
         thread: "thread-a".into(),
         project: "project-a".into(),
         backend: TaskBackend::Native,
+        draft: false,
+        summary: false,
         sequence: 4,
         pending: None,
         error: None,
@@ -38,6 +40,253 @@ fn snapshot() -> Snapshot {
         keyboard_active: false,
         reveal: false,
     }
+}
+
+#[test]
+fn draft_presentation_is_hidden_unless_blocked_or_unavailable() {
+    use super::super::{RecoveryPresentation, recovery_presentation};
+    assert_eq!(
+        recovery_presentation(true, false, false),
+        RecoveryPresentation::Hidden
+    );
+    assert_eq!(
+        recovery_presentation(true, true, false),
+        RecoveryPresentation::Summary("ui.shell_recovery.paused")
+    );
+    for blocked in [false, true] {
+        assert_eq!(
+            recovery_presentation(true, blocked, true),
+            RecoveryPresentation::Summary("ui.shell_recovery.status_unavailable")
+        );
+        for unavailable in [false, true] {
+            assert_eq!(
+                recovery_presentation(false, blocked, unavailable),
+                RecoveryPresentation::Details
+            );
+        }
+    }
+    let mut state = snapshot();
+    state.draft = true;
+    state.summary = true;
+    state.opened = false;
+    state.rows.clear();
+    state.active.push(Active {
+        operation: "running".into(),
+        state: "running".into(),
+    });
+    assert!(!state.visible());
+    assert!(!state.accepts(&state, &Action::Review));
+    assert!(!state.accepts(&state, &Action::Cancel("running".into())));
+}
+
+#[test]
+fn draft_summary_only_offers_review_even_while_read_is_pending() {
+    let mut state = snapshot();
+    state.draft = true;
+    state.summary = true;
+    state.opened = false;
+    state.pending = Some("ui.shell_recovery.checking");
+    state.has_confirmation = true;
+    assert!(state.visible());
+    assert_eq!(state.controls().len(), 1);
+    assert!(state.accepts(&state, &Action::Review));
+    assert_eq!(state.initial_selection(), Some(Action::Review));
+    for action in [
+        Action::Check,
+        Action::Retry,
+        Action::Prepare,
+        Action::Accept,
+        Action::NotNow,
+    ] {
+        assert!(!state.accepts(&state, &action));
+    }
+    state.rows.clear();
+    state.error = Some(ShellRecoveryError::Unavailable);
+    assert!(state.visible());
+    assert!(state.accepts(&state, &Action::Review));
+    state.opened = true;
+    assert!(!state.accepts(&state, &Action::Review));
+}
+
+#[test]
+fn draft_details_keep_close_available_during_prepare_and_submitted_resume() {
+    let mut state = snapshot();
+    state.draft = true;
+    for submitted in [false, true] {
+        state.pending = Some("ui.shell_recovery.checking");
+        state.submitted = submitted;
+        state.has_confirmation = submitted;
+        assert!(state.accepts(&state, &Action::NotNow));
+        assert_eq!(state.initial_selection(), Some(Action::NotNow));
+        assert!(!state.accepts(&state, &Action::Prepare));
+        assert!(!state.accepts(&state, &Action::Accept));
+    }
+    state.recovery = true;
+    assert!(state.accepts(&state, &Action::NotNow));
+    assert!(state.accepts(&state, &Action::Reload));
+    state.rows.clear();
+    state.pending = None;
+    state.submitted = false;
+    state.has_confirmation = false;
+    state.error = Some(ShellRecoveryError::Unavailable);
+    state.recovery = false;
+    assert!(state.accepts(&state, &Action::Read));
+    assert!(state.accepts(&state, &Action::NotNow));
+}
+
+#[test]
+fn draft_summary_overlay_and_persisted_route_cannot_replay_each_others_actions() {
+    let mut state = snapshot();
+    state.draft = true;
+    state.has_confirmation = true;
+    let details = state.clone();
+    assert!(state.accepts(&details, &Action::Accept));
+    state.summary = true;
+    state.opened = false;
+    assert!(!state.accepts(&details, &Action::Accept));
+    let summary = state.clone();
+    assert!(state.accepts(&summary, &Action::Review));
+    state.summary = false;
+    state.opened = true;
+    assert!(!state.accepts(&summary, &Action::Review));
+    state.draft = false;
+    assert!(!state.accepts(&details, &Action::Accept));
+}
+
+fn recovery_thread() -> vega_conversation::types::Thread {
+    use vega_conversation::types::{PermissionMode, Thread, ThreadMode, ThreadStatus};
+    Thread {
+        last_response_failed: false,
+        reasoning_preferences: None,
+        parent_thread_id: None,
+        forked_from_thread_id: None,
+        forked_from_message_id: None,
+        id: "draft-a".into(),
+        backend: TaskBackend::Native,
+        project_id: "project-a".into(),
+        title: String::new(),
+        mode: ThreadMode::Execute,
+        permission_mode: PermissionMode::Confirm,
+        permission_revision: 1,
+        draft_authority_epoch: Some("authority-a".into()),
+        full_access_grant: None,
+        default_permission: None,
+        model: "model".into(),
+        status: ThreadStatus::Active,
+        pinned: false,
+        unread: false,
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[test]
+fn recovery_completion_requires_exact_route_and_every_upstream_authority_field() {
+    use super::super::{ShellRecoveryRequested, same_recovery_authority};
+    use vega_conversation::types::{DefaultPermissionSnapshot, PermissionMode, Thread, ThreadMode};
+    let source = recovery_thread();
+    let request = ShellRecoveryRequested {
+        source: source.clone(),
+        sequence: 7,
+        draft: true,
+        action: ShellRecoveryAction::Read,
+    };
+    assert!(request.matches_route(&source, true, 7));
+    assert!(!request.matches_route(&source, false, 7));
+    assert!(!request.matches_route(&source, true, 8));
+    let mutations: [fn(&mut Thread); 7] = [
+        |thread| thread.backend = TaskBackend::Codex,
+        |thread| thread.mode = ThreadMode::Ask,
+        |thread| thread.permission_mode = PermissionMode::ReadOnly,
+        |thread| thread.permission_revision += 1,
+        |thread| thread.draft_authority_epoch = Some("authority-b".into()),
+        |thread| {
+            thread.default_permission = Some(DefaultPermissionSnapshot {
+                config_path: None,
+                configuration_id: Some("config".into()),
+                permission_mode: "confirm".into(),
+                permission_revision: 2,
+                full_access_grant: None,
+            })
+        },
+        |thread| {
+            thread.full_access_grant = Some(serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "contract_version": 1, "grant_id": "test-grant",
+            "authority_epoch": "test-epoch", "scope": {"kind": "thread", "thread_id": "draft-a"},
+            "origin": {"kind": "user_confirmation"}, "issued_at": 0
+        })).unwrap())
+        },
+    ];
+    for mutate in mutations {
+        let mut current = source.clone();
+        mutate(&mut current);
+        assert!(!same_recovery_authority(&source, &current));
+        assert!(!request.matches_route(&current, true, 7));
+    }
+    for mutate in [
+        (|thread: &mut Thread| thread.id = "draft-b".into()) as fn(&mut Thread),
+        |thread: &mut Thread| thread.project_id = "project-b".into(),
+    ] {
+        let mut current = source.clone();
+        mutate(&mut current);
+        assert!(!request.matches_route(&current, true, 7));
+    }
+    let mut cosmetic = source.clone();
+    cosmetic.title = "new title".into();
+    cosmetic.model = "other model".into();
+    cosmetic.updated_at += 1;
+    assert!(request.matches_route(&cosmetic, true, 7));
+}
+
+#[test]
+fn closing_unsubmitted_prepare_invalidates_pending_and_late_confirmation() {
+    use super::super::{RecoveryDecision, ShellRecoveryRequested};
+    let source = recovery_thread();
+    let request = ShellRecoveryRequested {
+        source: source.clone(),
+        sequence: 7,
+        draft: true,
+        action: ShellRecoveryAction::Read,
+    };
+    let mut decision = RecoveryDecision {
+        confirmation: Some(Box::new("host-only")),
+        submitted: false,
+    };
+    let mut sequence = 7;
+    let mut pending = Some("ui.shell_recovery.checking");
+    decision.dismiss(&mut sequence, &mut pending);
+    assert!(decision.confirmation.is_none());
+    assert!(pending.is_none());
+    assert_eq!(sequence, 8);
+    assert!(!request.matches_route(&source, true, sequence));
+    pending = Some("ui.shell_recovery.checking");
+    decision.dismiss(&mut sequence, &mut pending);
+    assert_eq!(sequence, 9);
+    assert!(pending.is_none());
+}
+
+#[test]
+fn closing_submitted_resume_preserves_pending_decision_and_matching_completion() {
+    use super::super::{RecoveryDecision, ShellRecoveryRequested};
+    let source = recovery_thread();
+    let request = ShellRecoveryRequested {
+        source: source.clone(),
+        sequence: 7,
+        draft: true,
+        action: ShellRecoveryAction::Read,
+    };
+    let mut decision = RecoveryDecision {
+        confirmation: Some(Box::new("host-only")),
+        submitted: true,
+    };
+    let mut sequence = 7;
+    let mut pending = Some("ui.shell_recovery.resuming");
+    decision.dismiss(&mut sequence, &mut pending);
+    assert_eq!(decision.confirmation.as_deref(), Some(&"host-only"));
+    assert!(decision.submitted);
+    assert_eq!(pending, Some("ui.shell_recovery.resuming"));
+    assert_eq!(sequence, 7);
+    assert!(request.matches_route(&source, true, sequence));
 }
 
 #[test]

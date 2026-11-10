@@ -2,9 +2,9 @@
 
 ## Version and scope
 
-Development baseline is `4148291cc5b377362d0ac64aa88b285cc9e06532`. This record covers the stopped, uncommitted ShellChrome, stage/shimmer, Thinking header, attachment presentation and Composer action delta, including the first corrective review round. It is not a full-migration completion record. The parent fetched origin again and confirmed current `origin/master` `34555cec9c0c4c4c1f7a528d739752f414e53edf` is already an ancestor of the development branch. No rebase or dependency update was needed. `git diff --exit-code HEAD -- Cargo.toml Cargo.lock crates/vega_ui/Cargo.toml` passed after the withdrawn test-support experiment.
+Development baseline is `4148291cc5b377362d0ac64aa88b285cc9e06532`. This record covers the stopped ShellChrome, stage/shimmer, Thinking header, attachment presentation and Composer action delta, including the first corrective review round, published as `0b5ea426abfd8d4358489e916273d89474fb190f`. It is not a full-migration completion record. The parent fetched origin again and confirmed current `origin/master` `34555cec9c0c4c4c1f7a528d739752f414e53edf` is already an ancestor of the development branch. No rebase or dependency update was needed. `git diff --exit-code HEAD -- Cargo.toml Cargo.lock crates/vega_ui/Cargo.toml` passed after the withdrawn test-support experiment.
 
-The baseline's cloud run [42401257979](https://github.com/puzige/vega/actions/runs/42401257979) succeeded. It does not validate this uncommitted batch. A new exact-head CI result is required after publishing the batch; the PR remains Draft, the Issue remains open/In progress, and no merge, installation, packaging or native acceptance is claimed.
+The baseline's cloud run [42401257979](https://github.com/puzige/vega/actions/runs/42401257979) succeeded. The newly published exact head `0b5ea426abfd8d4358489e916273d89474fb190f` then passed [run 42408616787](https://github.com/puzige/vega/actions/runs/42408616787): Nextest, Clippy and required `check (fmt, clippy, test)` all completed successfully. This does not cover subsequent uncommitted work. The PR remains Draft, the Issue remains open/In progress, and no merge, installation, packaging or native acceptance is claimed.
 
 ## Actual local verification
 

@@ -14,7 +14,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         let snapshot = state.get();
         let presentation_owner = nsh_core::element::Owner::current();
         let colors = snapshot.colors;
-        let stop = snapshot.kind == Kind::Stop;
+        let stop = snapshot.kind != Kind::Menu;
         let viewport = ns::element_ref();
         let revision = ns::signal(0u64);
         let offset = ns::signal(ns::Point {
@@ -159,21 +159,98 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     });
                 });
             if stop {
+                let trigger = snapshot.kind == Kind::Trigger;
+                let size = if trigger {
+                    Layout::TITLEBAR_CONTROL_SIZE
+                } else {
+                    Layout::COMPOSER_SEND_SIZE
+                };
                 control = control
-                    .w(ns::px(Layout::COMPOSER_SEND_SIZE))
-                    .h(ns::px(Layout::COMPOSER_SEND_SIZE))
-                    .rounded(ns::px(Layout::COMPOSER_SEND_SIZE / 2.))
+                    .w(ns::px(size))
+                    .h(ns::px(size))
+                    .rounded(ns::px(if trigger {
+                        Layout::MENU_RADIUS
+                    } else {
+                        size / 2.
+                    }))
                     .items_center()
                     .justify_center()
                     .bg(move || {
-                        crate::nsh::color(if enabled && hover.get() {
-                            colors.brand_primary_strong
-                        } else {
+                        crate::nsh::color(if trigger {
+                            if pressed.get() {
+                                colors.bg_active
+                            } else if hover.get() {
+                                colors.bg_hover
+                            } else {
+                                colors.bg_elevated.opacity(0.)
+                            }
+                        } else if enabled && pressed.get() {
                             colors.accent
+                        } else if enabled && hover.get() {
+                            colors.brand_primary_strong
+                        } else if enabled || snapshot.kind == Kind::Stop {
+                            colors.accent
+                        } else {
+                            colors.bg_hover
                         })
-                    })
-                    .text_color(crate::nsh::color(colors.brand_on_accent))
-                    .child(icon(Icon::Close, colors.brand_on_accent));
+                    });
+                let foreground = if trigger {
+                    colors.text_secondary
+                } else if enabled || snapshot.kind == Kind::Stop {
+                    colors.brand_on_accent
+                } else {
+                    colors.text_tertiary
+                };
+                control = control.text_color(crate::nsh::color(foreground));
+                if snapshot.kind == Kind::ResumePending {
+                    let phase = ns::signal(0f32);
+                    control = control
+                        .child(ns::when(
+                            move || {
+                                ns::lifecycle() == nsh_core::platform::Lifecycle::Active
+                                    && !ns::reduce_motion()
+                            },
+                            move || {
+                                let epoch = std::time::Instant::now();
+                                phase.set(0.);
+                                ns::spawn(async move {
+                                    loop {
+                                        ns::next_frame().await;
+                                        phase.set(epoch.elapsed().as_secs_f32() * 360.);
+                                    }
+                                });
+                                ns::view()
+                            },
+                        ))
+                        .child(
+                            ns::svg(nsh_core::element::ImageSrc::svg_markup(
+                                &nsh_source(Icon::Refresh).unwrap_or_default(),
+                            ))
+                            .size(ns::px(Layout::ICON_SIZE))
+                            .rotate(move || {
+                                ns::deg(
+                                    if ns::lifecycle() == nsh_core::platform::Lifecycle::Active
+                                        && !ns::reduce_motion()
+                                    {
+                                        phase.get()
+                                    } else {
+                                        0.
+                                    },
+                                )
+                            })
+                            .text_color(crate::nsh::color(colors.text_secondary)),
+                        );
+                } else {
+                    control = control.child(icon(
+                        match snapshot.kind {
+                            Kind::Stop => Icon::Close,
+                            Kind::Trigger => Icon::Plus,
+                            Kind::Primary if snapshot.source.resume => Icon::Play,
+                            _ => Icon::ArrowUp,
+                        },
+                        foreground,
+                    ));
+                }
             } else {
                 let background = if snapshot.highlight == index {
                     colors.bg_active

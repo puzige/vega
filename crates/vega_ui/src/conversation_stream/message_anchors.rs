@@ -1,5 +1,9 @@
 use super::*;
 
+mod pixels;
+#[cfg(feature = "nsh-reading-integration")]
+pub use pixels::mounted_regressions;
+
 pub(crate) const MESSAGE_ANCHOR_PREVIEW_LIMIT: usize = 96;
 const MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT: usize = 256;
 pub(crate) const MESSAGE_ANCHOR_MEASURED_CACHE_LIMIT: usize = 512;
@@ -609,20 +613,7 @@ impl ConversationStream {
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child(
-                                div()
-                                    .w(px(if selected {
-                                        Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
-                                    } else {
-                                        Layout::CONVERSATION_MARKER_WIDTH
-                                    }))
-                                    .h(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH))
-                                    .bg(if selected {
-                                        colors.text_secondary
-                                    } else {
-                                        colors.conversation_marker
-                                    }),
-                            )
+                            .child(pixels::mark(selected, colors))
                     }),
             )
             .child(observer)
@@ -646,19 +637,7 @@ fn render_message_anchor_preview(
         .id("message-anchor-preview")
         .aria_label(label.clone())
         .w(px(width))
-        .max_h(px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT))
-        .py_2()
-        .flex()
-        .items_center()
-        .px_2()
-        .rounded_md()
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_elevated)
-        .shadow_sm()
-        .text_size(px(Typography::METADATA))
-        .text_color(colors.text_primary)
-        .child(div().min_w_0().line_clamp(3).child(label))
+        .child(pixels::preview(label, colors))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
                 if this.message_anchor_preview_hovered.as_deref() != Some(message_id.as_str()) {

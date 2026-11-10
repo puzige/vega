@@ -605,6 +605,69 @@ impl<'a> WriteTransaction<'a> {
         })
     }
 
+    pub fn new_with_budget<F>(
+        conn: &'a Connection,
+        category: WriteCategory,
+        should_cancel: F,
+        budget: Duration,
+    ) -> rusqlite::Result<Self>
+    where
+        F: Fn() -> bool,
+    {
+        if conn.pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0))? != 0 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let deadline = Instant::now()
+            .checked_add(budget)
+            .ok_or(rusqlite::Error::InvalidQuery)?;
+        let mut delay = Duration::from_millis(2);
+        loop {
+            let permit = acquire_with_deadline(
+                conn,
+                category,
+                &should_cancel,
+                deadline.saturating_duration_since(Instant::now()),
+            )?;
+            let started = Instant::now();
+            let result = Transaction::new_unchecked(conn, TransactionBehavior::Immediate);
+            log_transaction(&permit, StorageOperation::Begin, started, &result);
+            match result {
+                Ok(transaction) => {
+                    if should_cancel() {
+                        transaction.rollback()?;
+                        return Err(sqlite_error(rusqlite::ffi::SQLITE_INTERRUPT));
+                    }
+                    return Ok(Self {
+                        transaction,
+                        permit,
+                    });
+                }
+                Err(error) => {
+                    drop(permit);
+                    if !matches!(&error, rusqlite::Error::SqliteFailure(code, _) if code.extended_code == rusqlite::ffi::SQLITE_BUSY)
+                    {
+                        return Err(error);
+                    }
+                    let wake = (Instant::now() + delay).min(deadline);
+                    loop {
+                        if should_cancel() {
+                            return Err(sqlite_error(rusqlite::ffi::SQLITE_INTERRUPT));
+                        }
+                        let now = Instant::now();
+                        if now >= deadline {
+                            return Err(error);
+                        }
+                        if now >= wake {
+                            break;
+                        }
+                        std::thread::sleep((wake - now).min(CANCEL_INTERVAL));
+                    }
+                    delay = (delay * 2).min(Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
     pub fn commit(self) -> rusqlite::Result<()> {
         let Self {
             transaction,

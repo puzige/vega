@@ -12,6 +12,16 @@ pub(super) struct Presentation {
     height: f32,
 }
 
+impl Presentation {
+    pub(super) fn revoke(&mut self) {
+        self.id = ProjectionId::new();
+    }
+}
+
+#[cfg(feature = "nsh-reading-integration")]
+#[path = "nsh_appearance_close_support.rs"]
+pub(super) mod close_support;
+
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
@@ -75,7 +85,10 @@ impl SettingsView {
                         .update_in(cx, |this, window, cx| {
                             match request {
                                 Request::Decide(command) => {
-                                    let accepted = this.section == 1
+                                    let accepted = cx
+                                        .try_global::<super::SettingsOpen>()
+                                        .is_some_and(|open| open.0)
+                                        && this.section == 1
                                         && this.appearance_presentation.as_ref().is_some_and(
                                             |page| {
                                                 if !page.id.matches(&command.snapshot.id) {
@@ -250,6 +263,8 @@ fn control(
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    #[cfg(feature = "nsh-reading-integration")]
+    close_support::observe(state, commands.clone());
     let actions = Actions {
         state,
         pending: signal(false),

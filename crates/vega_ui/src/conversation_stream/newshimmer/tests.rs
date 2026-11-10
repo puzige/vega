@@ -27,6 +27,28 @@ fn layout(text: &str, width: f32, indices: &[usize]) -> Arc<LineLayout> {
 }
 
 #[test]
+fn layout_acknowledgements_keep_phase_until_one_pending_animation_frame_is_delivered() {
+    let epoch = std::time::Instant::now();
+    let mut clock = super::FrameClock::default();
+    assert_eq!(clock.phase(Some(epoch)), 0.);
+    assert!(clock.request());
+    for _ in 0..128 {
+        assert!(!clock.request());
+        assert_eq!(clock.phase(Some(epoch)), 0.);
+    }
+    let delivered = epoch + std::time::Duration::from_millis(500);
+    assert!(clock.delivered(delivered));
+    let phase = 500. / vega_theme::Motion::THINKING_SHIMMER_MS as f32;
+    assert!((clock.phase(Some(epoch)) - phase).abs() < 0.00001);
+    assert!(!clock.delivered(delivered + std::time::Duration::from_secs(1)));
+    assert!((clock.phase(Some(epoch)) - phase).abs() < 0.00001);
+    assert_eq!(clock.phase(None), 0.);
+    assert!(clock.request());
+    assert!(clock.delivered(delivered + std::time::Duration::from_millis(250)));
+    assert!(clock.phase(Some(epoch)) > phase);
+}
+
+#[test]
 fn truncation_keeps_shaped_clusters_and_measures_ellipsis() {
     let source = "e\u{301}中👩\u{200d}💻tail";
     let boundaries = [0, 3, 6, 17, 18, 19, 20];

@@ -421,13 +421,6 @@
       "reason": "Canonical managed-computer-use diagnostic returned to the model by protocol_diagnostic()/feedback(). The separate user_message()/Display path translates guidance without changing protocol codes or diagnostic output."
     },
     {
-      "path": "crates/vega_store/src/config.rs",
-      "literal": "# Vega configuration file.\n#\n# [[providers]]: one block per OpenAI-compatible provider.\n#   name     - provider identifier, also used as the local credential store reference\n#   base_url - OpenAI-compatible endpoint base URL\n#   models   - model IDs offered by this provider\n#   key_ref  - reference name under which the provider's credential is\n#              stored in the local credential file (vega_store::keystore);\n#              the credential value itself is never written to this file\n#\n# [defaults]\n#   model           - default model ID for new conversations\n#   permission_mode - \"readonly\" | \"confirm\" | \"auto\" (default: \"confirm\")\n#\n# [ui]\n#   theme              - UI theme (default: \"dark\")\n#   sidebar_collapsed  - whether the sidebar starts collapsed (default: false)\n#   sidebar_width      - Sidebar width in logical pixels (240..365; default: 304)\n#   projects_collapsed - whether the sidebar 「项目」 block starts collapsed\n#                        (default: false)\n#   sessions_collapsed - whether the sidebar 「会话」 block starts collapsed\n#                        (default: false)\n#\n# [agent]\n#   turn_limit - maximum number of agentic turns (provider round-trips) in one\n#                run before it stops; 0 means unlimited (default: 0). This caps\n#                turns, not tool calls, mirroring Claude Code's --max-turns.\n",
-      "count": 1,
-      "category": "config_template",
-      "reason": "Embedded config.toml template comments, not UI copy. Foundation owns this file; no string replacement or template edit by the domain writer."
-    },
-    {
       "path": "crates/vega_store/src/credential_privacy.rs",
       "literal": "[已遮盖]",
       "count": 2,
@@ -793,13 +786,6 @@
     },
     {
       "path": "crates/vega/src/updater/install.rs",
-      "literal": "启动确认超时；保留运行应用和原版备份，需手动恢复",
-      "count": 1,
-      "category": "internal",
-      "reason": "Installer helper/load/layout/replace/rollback/startup-ack diagnostic caught and logged by run_helper_if_requested or acknowledge_startup. Parent-visible installer-not-ready and preparation errors use app.update keys. App writer READY lines 40-44."
-    },
-    {
-      "path": "crates/vega/src/updater/install.rs",
       "literal": "启动确认身份不匹配",
       "count": 1,
       "category": "internal",
@@ -871,13 +857,6 @@
     {
       "path": "crates/vega/src/updater/install.rs",
       "literal": "应用仍未退出，取消安装",
-      "count": 1,
-      "category": "internal",
-      "reason": "Installer helper/load/layout/replace/rollback/startup-ack diagnostic caught and logged by run_helper_if_requested or acknowledge_startup. Parent-visible installer-not-ready and preparation errors use app.update keys. App writer READY lines 40-44."
-    },
-    {
-      "path": "crates/vega/src/updater/install.rs",
-      "literal": "新版本未正常启动，已恢复原应用",
       "count": 1,
       "category": "internal",
       "reason": "Installer helper/load/layout/replace/rollback/startup-ack diagnostic caught and logged by run_helper_if_requested or acknowledge_startup. Parent-visible installer-not-ready and preparation errors use app.update keys. App writer READY lines 40-44."
@@ -1140,6 +1119,524 @@
       "count": 1,
       "category": "protocol",
       "reason": "Exact canonical screenshot-budget diagnostic used to validate persisted CUA receipts during history forks; matches stable model/tool feedback, not UI text, and must not depend on UI language."
+    },
+    {
+      "path": "crates/vega/src/updater/install.rs",
+      "literal": "工作区启动尚未确认；保留新版、原版备份与恢复记录，禁止自动降级",
+      "count": 1,
+      "category": "internal",
+      "reason": "finish_startup/verify_retained_backup/retained_backup installer diagnostics terminate at run_helper_if_requested logging or receipt acknowledgment logging; startup_controller::start maps receipt errors to StartupError::WorkerUnavailable, not raw UI copy. Recovery files contain separate English instructions."
+    },
+    {
+      "path": "crates/vega/src/updater/install.rs",
+      "literal": "恢复备份缺失或冲突，保留记录",
+      "count": 1,
+      "category": "internal",
+      "reason": "finish_startup/verify_retained_backup/retained_backup installer diagnostics terminate at run_helper_if_requested logging or receipt acknowledgment logging; startup_controller::start maps receipt errors to StartupError::WorkerUnavailable, not raw UI copy. Recovery files contain separate English instructions."
+    },
+    {
+      "path": "crates/vega/src/updater/install.rs",
+      "literal": "恢复备份身份已变化，保留记录",
+      "count": 1,
+      "category": "internal",
+      "reason": "finish_startup/verify_retained_backup/retained_backup installer diagnostics terminate at run_helper_if_requested logging or receipt acknowledgment logging; startup_controller::start maps receipt errors to StartupError::WorkerUnavailable, not raw UI copy. Recovery files contain separate English instructions."
+    },
+    {
+      "path": "crates/vega/src/updater/install.rs",
+      "literal": "新应用身份已变化，保留恢复记录",
+      "count": 1,
+      "category": "internal",
+      "reason": "finish_startup/verify_retained_backup/retained_backup installer diagnostics terminate at run_helper_if_requested logging or receipt acknowledgment logging; startup_controller::start maps receipt errors to StartupError::WorkerUnavailable, not raw UI copy. Recovery files contain separate English instructions."
+    },
+    {
+      "path": "crates/vega_conversation/src/types/automation.rs",
+      "literal": "权限已重置；请检查任务后手动恢复",
+      "count": 1,
+      "category": "protocol",
+      "reason": "AutomationReason::PermissionReset in protocol_reason() is retained by set_system_reason/set_pause_reason in durable task data; reason_message() calls message(), which uses the existing bilingual domain.automation.reason.permission_reset key. Do not rewrite protocol bytes or arbitrary task reasons."
+    },
+    {
+      "path": "crates/vega_ui/src/automation_editor/nsh_editor/tests.rs",
+      "literal": "  failed draft\n界  ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development tests save_claim_uses_utf8_bytes_and_preserves_untrimmed_instruction and failed_save_release_retains_exact_draft_and_allows_explicit_retry supply Unicode/whitespace draft inputs and exact expected values; not editor defaults or product labels."
+    },
+    {
+      "path": "crates/vega_ui/src/automation_editor/nsh_editor/tests.rs",
+      "literal": "  keep\n\n界  ",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development tests save_claim_uses_utf8_bytes_and_preserves_untrimmed_instruction and failed_save_release_retains_exact_draft_and_allows_explicit_retry supply Unicode/whitespace draft inputs and exact expected values; not editor defaults or product labels."
+    },
+    {
+      "path": "crates/vega_ui/src/automation_editor/nsh_editor/tests.rs",
+      "literal": "界",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development tests save_claim_uses_utf8_bytes_and_preserves_untrimmed_instruction and failed_save_release_retains_exact_draft_and_allows_explicit_retry supply Unicode/whitespace draft inputs and exact expected values; not editor defaults or product labels."
+    },
+    {
+      "path": "crates/vega_ui/src/command_palette/presentation/tests.rs",
+      "literal": "日本語",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Development tests committed_query_waits_for_composition_end_and_rejects_old_activation and full_paste_is_bounded_by_unicode_scalars_not_bytes use synthetic IME query and scalar-limit inputs/expectations, not palette labels."
+    },
+    {
+      "path": "crates/vega_ui/src/command_palette/presentation/tests.rs",
+      "literal": "界",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development tests committed_query_waits_for_composition_end_and_rejects_old_activation and full_paste_is_bounded_by_unicode_scalars_not_bytes use synthetic IME query and scalar-limit inputs/expectations, not palette labels."
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/tests.rs",
+      "literal": "generated B\n\n中文 body\n",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development commit-panel tests supply synthetic changed/generated multiline commit messages and exact preservation expectations, including production_multiline_preserves_full_text_and_rejects_edits_after_freeze; not generated product copy."
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/tests.rs",
+      "literal": "new subject\n\n中文 body\ntrailing newline\n",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development commit-panel tests supply synthetic changed/generated multiline commit messages and exact preservation expectations, including production_multiline_preserves_full_text_and_rejects_edits_after_freeze; not generated product copy."
+    },
+    {
+      "path": "crates/vega_ui/src/commit_panel/tests.rs",
+      "literal": "subject\n\n中文 body\ntrailing newline\n",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development commit-panel tests supply synthetic changed/generated multiline commit messages and exact preservation expectations, including production_multiline_preserves_full_text_and_rejects_edits_after_freeze; not generated product copy."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "分叉",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "压缩",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "周期",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "定时",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "执行",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "目标",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "计划",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "询问",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/composer_actions.rs",
+      "literal": "问答",
+      "count": 1,
+      "category": "internal",
+      "reason": "COMMANDS search-only aliases consumed by ComposerCommand::matches(); ComposerActionRow::label() displays vega_i18n::t(id.command().label_key), never these aliases. Preserve Chinese command search in either UI language."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "Compacting context 正在压缩上下文 ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "副标题 complete label",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "完整定位状态 é 👩‍💻 long status with several words ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "新状态 👩‍💻 wrapping message ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "标题 with several words",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "较早的思考内容已省略 Earlier thinking omitted ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/conversation_status/tests.rs",
+      "literal": "错误 原文 👩‍💻 é retry after checking connection ",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development status-renderer tests inject synthetic snapshot labels for location replacement, empty-state spacing, omitted thinking, error wrapping and compaction icon/height measurements. These literals are local test inputs, not production notice text."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/newshimmer/tests.rs",
+      "literal": "é中…",
+      "count": 5,
+      "category": "fixture",
+      "reason": "Development truncation/ProductionText harness supplies shaped-cluster samples, synthetic snapshot accessibility labels and exact mounted-text expectations. Used only to verify ellipsis, source replacement and passive text semantics; not production labels."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/newshimmer/tests.rs",
+      "literal": "é中👩‍💻tail",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development truncation/ProductionText harness supplies shaped-cluster samples, synthetic snapshot accessibility labels and exact mounted-text expectations. Used only to verify ellipsis, source replacement and passive text semantics; not production labels."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/newshimmer/tests.rs",
+      "literal": "中文",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development truncation/ProductionText harness supplies shaped-cluster samples, synthetic snapshot accessibility labels and exact mounted-text expectations. Used only to verify ellipsis, source replacement and passive text semantics; not production labels."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/newshimmer/tests.rs",
+      "literal": "完整标题 é 👩‍💻",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development truncation/ProductionText harness supplies shaped-cluster samples, synthetic snapshot accessibility labels and exact mounted-text expectations. Used only to verify ellipsis, source replacement and passive text semantics; not production labels."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/newshimmer/tests.rs",
+      "literal": "新标题 👩‍💻",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development truncation/ProductionText harness supplies shaped-cluster samples, synthetic snapshot accessibility labels and exact mounted-text expectations. Used only to verify ellipsis, source replacement and passive text semantics; not production labels."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/user_disclosure/tests.rs",
+      "literal": "first\n😀中 **styled**",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Test-only disclosure_toggle_preserves_text_and_revokes_selection_and_old_intent supplies synthetic multiline Markdown with emoji and a Han character as MessageCopy content, then asserts original text/content generation preservation, selection invalidation and rejection of stale disclosure intents. Not a production UI label."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/resume_tail/tests.rs",
+      "literal": "回到底部",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development snapshot(dark, language) supplies an explicit zh-CN label paired with Back to bottom to test locale/theme projection and command identity; not the production resume control label source."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/body_opacity_tests.rs",
+      "literal": "A **😀中** [é](https://example.com) &amp; `code`\n\n",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development styled_display_parts_preserve_scalar_ranges_without_markdown_offsets test supplies synthetic Markdown, expected rendered text and UTF-8/UTF-16 range probes; no production UI labels are suppressed."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/body_opacity_tests.rs",
+      "literal": "A 😀中 é & code",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development styled_display_parts_preserve_scalar_ranges_without_markdown_offsets test supplies synthetic Markdown, expected rendered text and UTF-8/UTF-16 range probes; no production UI labels are suppressed."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/body_opacity_tests.rs",
+      "literal": "😀中",
+      "count": 7,
+      "category": "fixture",
+      "reason": "Development styled_display_parts_preserve_scalar_ranges_without_markdown_offsets test supplies synthetic Markdown, expected rendered text and UTF-8/UTF-16 range probes; no production UI labels are suppressed."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/body_tests.rs",
+      "literal": "A😀中é",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development utf16_offsets_reject_surrogate_interior_and_overrun test input checks surrogate boundaries and overrun; not a production text default."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/source_anchor_tests.rs",
+      "literal": "A😀中é",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development split_surrogate_interior_and_nonfinite_inset_cannot_create_anchor test supplies synthetic source and UTF-16 offset expectations; not conversation content synthesized in production."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/source_anchor_tests.rs",
+      "literal": "A😀中é\n\n",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development split_surrogate_interior_and_nonfinite_inset_cannot_create_anchor test supplies synthetic source and UTF-16 offset expectations; not conversation content synthesized in production."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/selection_menu/tests.rs",
+      "literal": "复制原文",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Development production_menu_updates_labels_and_rejects_old_projection_identity test explicitly replaces a harness snapshot label and asserts mounted locale updates; not the production menu label source."
+    },
+    {
+      "path": "crates/vega_ui/src/conversation_stream/stream_fade/tests.rs",
+      "literal": "A😀中",
+      "count": 8,
+      "category": "fixture",
+      "reason": "Development native_ranges_require_exact_part_text_and_preserve_multibyte_append_boundaries test data exercises exact source-part identity and UTF-8 range/opacity boundaries; not a display label."
+    },
+    {
+      "path": "crates/vega_ui/src/settings/agents/nsh_agents.rs",
+      "literal": "新名称",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] agent_profile_claim_preserves_arguments_and_blocks_composition_stale_or_double_save supplies a synthetic renamed profile and exact expected saved value; production name fields remain user content."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "unsent\n中文😀",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "中",
+      "count": 5,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "中x末",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "中文😀",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "中😀文",
+      "count": 5,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "候选",
+      "count": 6,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/editing_core_tests.rs",
+      "literal": "文😀",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Development editing-core tests use synthetic NativeEdit values and exact expectations for receipt ordering, unknown-outcome preservation, UTF-16 selection validation, composition settlement and invalid mutations; not editor placeholder/UI strings."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": "\n中文",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": "\r\n中文",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": " 中文",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": "draft\n中文",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": "draft 中文",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/native_adapter.rs",
+      "literal": "unsent 中文",
+      "count": 4,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] adapter tests inject native edits/paste payloads and assert conflict/overflow draft preservation and CRLF paste transaction settlement; these are test input/expected strings, not production UI copy."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "unsent 中文",
+      "count": 7,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "unsent 中文 draft",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "unsent 中文!",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "中x\ny文",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "中😀 @left @foo @keep",
+      "count": 2,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "中😀 @left {inserted} @keep",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "中😀文",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "候",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "候 @keep",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "候选",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh.rs",
+      "literal": "候选 @keep",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Inline #[cfg(test)] recovery_tests inject Unicode mention replacements/composition, failed local drafts and paste sources with exact undo/redo/restore/selection expectations; all classified occurrences are within this test module, not production editor labels."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh/native_integration.rs",
+      "literal": "@keep tail!unsent 中文",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Feature-gated nsh-reading-integration development harness mounted_native_recovery_history_ax_and_submit_close_production_loop(TestAppContext) uses Fixture to inject AX/IME edits and verify failed-draft restore/history/continued typing. Not ordinary application labels; feature-gated harness, not #[cfg(test)]."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh/native_integration.rs",
+      "literal": "@keep tail!unsent 中文!",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Feature-gated nsh-reading-integration development harness mounted_native_recovery_history_ax_and_submit_close_production_loop(TestAppContext) uses Fixture to inject AX/IME edits and verify failed-draft restore/history/continued typing. Not ordinary application labels; feature-gated harness, not #[cfg(test)]."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh/native_integration.rs",
+      "literal": "AX 😀中",
+      "count": 3,
+      "category": "fixture",
+      "reason": "Feature-gated nsh-reading-integration development harness mounted_native_recovery_history_ax_and_submit_close_production_loop(TestAppContext) uses Fixture to inject AX/IME edits and verify failed-draft restore/history/continued typing. Not ordinary application labels; feature-gated harness, not #[cfg(test)]."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh/native_integration.rs",
+      "literal": "unsent 中文",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Feature-gated nsh-reading-integration development harness mounted_native_recovery_history_ax_and_submit_close_production_loop(TestAppContext) uses Fixture to inject AX/IME edits and verify failed-draft restore/history/continued typing. Not ordinary application labels; feature-gated harness, not #[cfg(test)]."
+    },
+    {
+      "path": "crates/vega_ui/src/text_input/nsh/native_integration.rs",
+      "literal": "候😀",
+      "count": 1,
+      "category": "fixture",
+      "reason": "Feature-gated nsh-reading-integration development harness mounted_native_recovery_history_ax_and_submit_close_production_loop(TestAppContext) uses Fixture to inject AX/IME edits and verify failed-draft restore/history/continued typing. Not ordinary application labels; feature-gated harness, not #[cfg(test)]."
     }
   ]
 }

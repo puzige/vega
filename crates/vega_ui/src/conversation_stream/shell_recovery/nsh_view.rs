@@ -1,5 +1,8 @@
 #[path = "keyboard.rs"]
 mod keyboard;
+#[cfg(feature = "nsh-reading-integration")]
+#[path = "mounted_regressions.rs"]
+pub mod mounted_regressions;
 #[path = "reveal.rs"]
 mod reveal;
 #[cfg(test)]
@@ -15,6 +18,7 @@ use vega_theme::{Layout, ThemeColors, Typography};
 
 pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
+    authority: super::ShellRecoveryRequested,
     id: ProjectionId,
     recovery: bool,
     fault: bool,
@@ -68,6 +72,8 @@ struct Snapshot {
     thread: String,
     project: String,
     backend: TaskBackend,
+    draft: bool,
+    summary: bool,
     sequence: u64,
     pending: Option<&'static str>,
     error: Option<ShellRecoveryError>,
@@ -106,7 +112,22 @@ enum Request {
 impl Snapshot {
     fn visible(&self) -> bool {
         self.presentation_eligible
-            && (!self.rows.is_empty() || !self.active.is_empty() || self.error.is_some())
+            && if self.draft {
+                if self.summary {
+                    !matches!(
+                        super::recovery_presentation(
+                            true,
+                            !self.rows.is_empty(),
+                            self.error.is_some()
+                        ),
+                        super::RecoveryPresentation::Hidden
+                    )
+                } else {
+                    self.opened
+                }
+            } else {
+                !self.rows.is_empty() || !self.active.is_empty() || self.error.is_some()
+            }
     }
 
     fn same_authority(&self, other: &Self) -> bool {
@@ -117,6 +138,8 @@ impl Snapshot {
             && self.thread == other.thread
             && self.project == other.project
             && self.backend == other.backend
+            && self.draft == other.draft
+            && self.summary == other.summary
             && self.sequence == other.sequence
             && self.pending == other.pending
             && self.error == other.error
@@ -141,6 +164,16 @@ impl Snapshot {
                 enabled,
             })
         };
+        if self.summary {
+            if self.recovery {
+                add(Action::Reload, "ui.retry", true);
+            }
+            add(Action::Review, "ui.shell_recovery.review", !self.opened);
+            return controls;
+        }
+        if self.draft && self.opened {
+            add(Action::NotNow, "ui.shell_recovery.not_now", true);
+        }
         for command in &self.active {
             add(
                 Action::Cancel(command.operation.clone()),
@@ -184,7 +217,9 @@ impl Snapshot {
                     !busy && self.rows.iter().all(|row| row.can_resume),
                 );
             }
-            add(Action::NotNow, "ui.shell_recovery.not_now", !busy);
+            if !self.draft {
+                add(Action::NotNow, "ui.shell_recovery.not_now", !busy);
+            }
         }
         controls
     }
@@ -215,10 +250,26 @@ impl Snapshot {
 }
 
 impl ConversationStream {
+    fn shell_page(&self) -> Option<&Presentation> {
+        if self.draft_route && !self.shell_recovery.opened {
+            self.shell_recovery.summary.as_ref()
+        } else {
+            self.shell_recovery.presentation.as_ref()
+        }
+    }
+
+    fn shell_page_mut(&mut self) -> Option<&mut Presentation> {
+        if self.draft_route && !self.shell_recovery.opened {
+            self.shell_recovery.summary.as_mut()
+        } else {
+            self.shell_recovery.presentation.as_mut()
+        }
+    }
+
     fn shell_snapshot(&self, id: ProjectionId, recovery: bool, cx: &App) -> Snapshot {
         let state = &self.shell_recovery;
         let projection = state.projection.as_ref();
-        let page = state.presentation.as_ref();
+        let page = self.shell_page();
         Snapshot {
             id,
             observation: state.observation.clone(),
@@ -227,6 +278,8 @@ impl ConversationStream {
             thread: self.thread.id.clone(),
             project: self.thread.project_id.clone(),
             backend: self.thread.backend,
+            draft: self.draft_route,
+            summary: self.draft_route && !state.opened,
             sequence: state.sequence,
             pending: state.pending,
             error: state.error,
@@ -235,7 +288,15 @@ impl ConversationStream {
             has_confirmation: state.decision.confirmation.is_some(),
             submitted: state.decision.submitted,
             recovery,
-            presentation_eligible: !self.reading_preview && !self.automation_permission.busy(),
+            presentation_eligible: !self.reading_preview
+                && !self.automation_permission.busy()
+                && page.is_none_or(|page| {
+                    page.authority.matches_route(
+                        &self.thread,
+                        self.draft_route,
+                        page.authority.sequence,
+                    )
+                }),
             workspace: projection
                 .map(|projection| projection.workspace.clone())
                 .unwrap_or_default(),
@@ -280,18 +341,15 @@ impl ConversationStream {
     }
 
     fn accepts_shell(&self, observed: &Snapshot, action: &Action, cx: &App) -> bool {
-        self.shell_recovery
-            .presentation
-            .as_ref()
-            .is_some_and(|page| {
-                !self.reading_preview
-                    && !self.automation_permission.busy()
-                    && !page.fault
-                    && page.id.matches(&observed.id)
-                    && self
-                        .shell_snapshot(page.id.clone(), page.recovery, cx)
-                        .accepts(observed, action)
-            })
+        self.shell_page().is_some_and(|page| {
+            !self.reading_preview
+                && !self.automation_permission.busy()
+                && !page.fault
+                && page.id.matches(&observed.id)
+                && self
+                    .shell_snapshot(page.id.clone(), page.recovery, cx)
+                    .accepts(observed, action)
+        })
     }
 
     fn shell_action(
@@ -336,13 +394,20 @@ impl ConversationStream {
                 }
             }
             Action::KeepPaused | Action::NotNow => self.dismiss_shell_recovery(window, cx),
-            Action::Reload => self.hide_shell_recovery_surface(),
+            Action::Reload => {
+                if self.draft_route && !self.shell_recovery.opened {
+                    self.shell_recovery.summary = None;
+                } else {
+                    self.shell_recovery.presentation = None;
+                }
+            }
         }
         cx.notify();
     }
 
     pub(in crate::conversation_stream) fn hide_shell_recovery_surface(&mut self) {
         self.shell_recovery.presentation = None;
+        self.shell_recovery.summary = None;
     }
 
     fn create_shell_surface(
@@ -361,7 +426,7 @@ impl ConversationStream {
             while errors.changed().await.is_ok() {
                 if errors.borrow_and_update().is_some() {
                     let _ = this.update(cx, |this, cx| {
-                        if let Some(page) = &mut this.shell_recovery.presentation
+                        if let Some(page) = this.shell_page_mut()
                             && page.id.matches(&error_id)
                         {
                             page.fault = true;
@@ -381,8 +446,14 @@ impl ConversationStream {
             focus_subscriptions.push(cx.on_focus_in(focus, window, |_, _, cx| cx.notify()));
             focus_subscriptions.push(cx.on_focus_out(focus, window, |_, _, _, cx| cx.notify()));
         }
-        self.shell_recovery.presentation = Some(Presentation {
+        let page = Presentation {
             surface,
+            authority: super::ShellRecoveryRequested {
+                source: self.thread.clone(),
+                sequence: self.shell_recovery.sequence,
+                draft: self.draft_route,
+                action: ShellRecoveryAction::Read,
+            },
             id,
             recovery,
             fault: false,
@@ -393,7 +464,12 @@ impl ConversationStream {
             shown: initial,
             displayed: None,
             _focus_subscriptions: focus_subscriptions,
-        });
+        };
+        if self.draft_route && !self.shell_recovery.opened {
+            self.shell_recovery.summary = Some(page);
+        } else {
+            self.shell_recovery.presentation = Some(page);
+        }
         cx.spawn_in(window, async move |this, cx| {
             while let Some(request) = requests.recv().await {
                 if this
@@ -404,7 +480,7 @@ impl ConversationStream {
                         Request::Layout(id, height) => {
                             if height.is_finite()
                                 && height > 0.
-                                && let Some(page) = &mut this.shell_recovery.presentation
+                                && let Some(page) = this.shell_page_mut()
                                 && page.id.matches(&id)
                                 && (page.height - height).abs() > 0.5
                             {
@@ -413,13 +489,13 @@ impl ConversationStream {
                             }
                         }
                         Request::Displayed(observed, action) => {
-                            if let Some(page) = &this.shell_recovery.presentation {
+                            if let Some(page) = this.shell_page() {
                                 let mut current =
                                     this.shell_snapshot(page.id.clone(), page.recovery, cx);
                                 current.keyboard_active = this.shell_focus().is_focused(window);
                                 if !page.fault
                                     && current.accepts_selection(&observed, &action)
-                                    && let Some(page) = &mut this.shell_recovery.presentation
+                                    && let Some(page) = this.shell_page_mut()
                                 {
                                     page.displayed = Some(*observed);
                                     cx.notify();
@@ -427,7 +503,7 @@ impl ConversationStream {
                             }
                         }
                         Request::Fault(id) => {
-                            if let Some(page) = &mut this.shell_recovery.presentation
+                            if let Some(page) = this.shell_page_mut()
                                 && page.id.matches(&id)
                             {
                                 page.fault = true;
@@ -435,17 +511,12 @@ impl ConversationStream {
                             }
                         }
                         Request::Reveal(observed, action, reply) => {
-                            let accepted =
-                                this.shell_recovery
-                                    .presentation
-                                    .as_ref()
-                                    .is_some_and(|page| {
-                                        let mut current =
-                                            this.shell_snapshot(page.id.clone(), page.recovery, cx);
-                                        current.keyboard_active =
-                                            this.shell_focus().is_focused(window);
-                                        !page.fault && current.accepts_reveal(&observed, &action)
-                                    });
+                            let accepted = this.shell_page().is_some_and(|page| {
+                                let mut current =
+                                    this.shell_snapshot(page.id.clone(), page.recovery, cx);
+                                current.keyboard_active = this.shell_focus().is_focused(window);
+                                !page.fault && current.accepts_reveal(&observed, &action)
+                            });
                             let _ = reply.send(accepted);
                         }
                     })
@@ -459,6 +530,74 @@ impl ConversationStream {
     }
 
     pub(in crate::conversation_stream) fn render_shell_recovery(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::prelude::*;
+        if self.draft_route && self.shell_recovery.opened {
+            let Some(page) = self.shell_recovery.summary.as_ref() else {
+                return gpui_kit::div().into_any_element();
+            };
+            let mut current = self.shell_snapshot(page.id.clone(), page.recovery, cx);
+            current.summary = true;
+            current.keyboard_active = false;
+            if !current.visible() {
+                return gpui_kit::div().into_any_element();
+            }
+            let Some(page) = self.shell_recovery.summary.as_mut() else {
+                return gpui_kit::div().into_any_element();
+            };
+            page.surface.sync_environment(cx);
+            page.surface.publish(current);
+            return gpui_kit::div()
+                .debug_selector(|| "shell-recovery-summary-native-host".to_owned())
+                .w_full()
+                .max_w(gpui_kit::px(Layout::COMPOSER_MAX_WIDTH))
+                .mx_auto()
+                .h(gpui_kit::px(page.height))
+                .child(page.surface.entity())
+                .into_any_element();
+        }
+        self.render_shell_recovery_leaf(window, cx)
+    }
+
+    pub(in crate::conversation_stream) fn render_shell_recovery_overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::prelude::*;
+        if !self.draft_route || !self.shell_recovery.opened {
+            return gpui_kit::div().into_any_element();
+        }
+        if self.thread.backend != TaskBackend::Native
+            || !self
+                .shell_snapshot(ProjectionId::new(), false, cx)
+                .visible()
+        {
+            self.hide_shell_recovery_surface();
+            return gpui_kit::div().into_any_element();
+        }
+        let details = self.render_shell_recovery_leaf(window, cx);
+        gpui_kit::deferred(
+            gpui_kit::div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .occlude()
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
+                .child(details),
+        )
+        .with_priority(3)
+        .into_any_element()
+    }
+
+    fn render_shell_recovery_leaf(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -481,15 +620,11 @@ impl ConversationStream {
         if previous_focus.is_focused(window) {
             self.shell_focus().focus(window, cx);
         }
-        let failed = self
-            .shell_recovery
-            .presentation
-            .as_ref()
-            .is_some_and(|page| page.fault);
-        if self.shell_recovery.presentation.is_none() || failed {
+        let failed = self.shell_page().is_some_and(|page| page.fault);
+        if self.shell_page().is_none() || failed {
             self.create_shell_surface(failed, window, cx);
         }
-        let Some(page) = self.shell_recovery.presentation.as_ref() else {
+        let Some(page) = self.shell_page() else {
             return gpui_kit::div().into_any_element();
         };
         let mut current = self.shell_snapshot(page.id.clone(), page.recovery, cx);
@@ -500,13 +635,13 @@ impl ConversationStream {
                 .is_some_and(|action| !current.accepts(&current, action));
         if selection_stale {
             let selected = current.initial_selection();
-            if let Some(page) = &mut self.shell_recovery.presentation {
+            if let Some(page) = self.shell_page_mut() {
                 page.selected = selected;
                 page.selection = ProjectionId::new();
                 page.reveal = true;
             }
         }
-        if let Some(page) = &self.shell_recovery.presentation {
+        if let Some(page) = self.shell_page() {
             current.selected = page.selected.clone();
             current.selection = page.selection.clone();
             current.reveal = page.reveal;
@@ -514,16 +649,22 @@ impl ConversationStream {
         current.keyboard_active = self.shell_focus().is_focused(window);
         let accessibility = self.shell_accessibility(&current, window, cx);
         let focus = self.shell_focus().clone();
-        let Some(page) = &mut self.shell_recovery.presentation else {
+        let Some(page) = self.shell_page_mut() else {
             return gpui_kit::div().into_any_element();
         };
         let surface = page.surface.entity();
         let height = page.height;
         page.surface.sync_environment(cx);
         page.surface.publish(current.clone());
-        page.shown = current;
+        page.shown = current.clone();
+        let host = if current.summary {
+            "shell-recovery-summary-native-host"
+        } else {
+            "shell-recovery-native-host"
+        };
         gpui_kit::div()
-            .id("shell-recovery-native-host")
+            .id(host)
+            .debug_selector(move || host.to_owned())
             .relative()
             .w_full()
             .max_w(gpui_kit::px(Layout::COMPOSER_MAX_WIDTH))
@@ -592,6 +733,48 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
         .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
         .child(dynamic(move || {
             let snapshot = content.get();
+            if snapshot.summary {
+                let label = match super::recovery_presentation(
+                    true,
+                    !snapshot.rows.is_empty(),
+                    snapshot.error.is_some(),
+                ) {
+                    super::RecoveryPresentation::Summary(label) => label,
+                    _ => return view().into_element(),
+                };
+                let mut summary = view()
+                    .w_full()
+                    .px(px(Layout::CONVERSATION_PADDING))
+                    .py_2()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_2()
+                    .text_size(px(Typography::BODY))
+                    .text_color(crate::nsh::color(snapshot.colors.text_secondary))
+                    .child(text(vega_i18n::t(label)));
+                for control in snapshot.controls() {
+                    summary = summary.child(control_view(
+                        state,
+                        snapshot.clone(),
+                        control,
+                        viewport,
+                        attempted,
+                        commands.clone(),
+                        failed,
+                    ));
+                }
+                return summary
+                    .on_layout({
+                        let commands = layout_commands.clone();
+                        let id = layout_id.clone();
+                        move |bounds: &Bounds<Points>| {
+                            #[cfg(feature = "nsh-reading-integration")]
+                            mounted_regressions::record_panel(&snapshot, *bounds);
+                            report_height(bounds.size.height.0, measured, &commands, &id, failed);
+                        }
+                    })
+                    .into_element();
+            }
             let mut panel = view()
                 .w_full()
                 .px(px(Layout::CONVERSATION_PADDING))
@@ -600,6 +783,28 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
                 .gap_2()
                 .text_size(px(Typography::BODY))
                 .text_color(crate::nsh::color(snapshot.colors.text_secondary));
+            if snapshot.draft {
+                panel = panel
+                    .rounded(px(Layout::MENU_RADIUS))
+                    .border(px(1.))
+                    .border_color(crate::nsh::color(snapshot.colors.border_subtle))
+                    .bg(crate::nsh::color(snapshot.colors.bg_elevated));
+                if let Some(close) = snapshot
+                    .controls()
+                    .into_iter()
+                    .find(|control| control.action == Action::NotNow)
+                {
+                    panel = panel.child(control_view(
+                        state,
+                        snapshot.clone(),
+                        close,
+                        viewport,
+                        attempted,
+                        commands.clone(),
+                        failed,
+                    ));
+                }
+            }
             if snapshot.recovery {
                 panel = panel.child(text(vega_i18n::t("ui.command_failed")));
             }
@@ -691,11 +896,10 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
                 }
             }
             let mut controls = view().flex_row().flex_wrap().gap_2();
-            for control in snapshot
-                .controls()
-                .into_iter()
-                .filter(|control| !matches!(control.action, Action::Cancel(_)))
-            {
+            for control in snapshot.controls().into_iter().filter(|control| {
+                !matches!(control.action, Action::Cancel(_))
+                    && !(snapshot.draft && control.action == Action::NotNow)
+            }) {
                 controls = controls.child(control_view(
                     state,
                     snapshot.clone(),
@@ -712,25 +916,33 @@ fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyEle
                     let commands = layout_commands.clone();
                     let id = layout_id.clone();
                     move |bounds: &Bounds<Points>| {
-                        let height = bounds.size.height.0;
-                        if height.is_finite()
-                            && height > 0.
-                            && (measured.get_untracked() - height).abs() > 0.5
-                        {
-                            measured.set(height);
-                            let commands = commands.clone();
-                            let id = id.clone();
-                            spawn(async move {
-                                if commands.send(Request::Layout(id, height)).await.is_err() {
-                                    failed.set(true);
-                                }
-                            });
-                        }
+                        #[cfg(feature = "nsh-reading-integration")]
+                        mounted_regressions::record_panel(&snapshot, *bounds);
+                        report_height(bounds.size.height.0, measured, &commands, &id, failed);
                     }
                 })
                 .into_element()
         }))
         .into_element()
+}
+
+fn report_height(
+    height: f32,
+    measured: Signal<f32>,
+    commands: &mpsc::Sender<Request>,
+    id: &ProjectionId,
+    failed: Signal<bool>,
+) {
+    if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5 {
+        measured.set(height);
+        let commands = commands.clone();
+        let id = id.clone();
+        spawn(async move {
+            if commands.send(Request::Layout(id, height)).await.is_err() {
+                failed.set(true);
+            }
+        });
+    }
 }
 
 fn control_view(
@@ -749,12 +961,18 @@ fn control_view(
     let ring_action = action.clone();
     let state_action = action.clone();
     let enabled = control.enabled;
+    #[cfg(feature = "nsh-reading-integration")]
+    let layout_observed = observed.clone();
+    #[cfg(feature = "nsh-reading-integration")]
+    let layout_action = action.clone();
     view()
         .element_ref(&target)
         .on_layout(move |bounds: &Bounds<Points>| {
             if layout.get_untracked() != Some(*bounds) {
                 layout.set(Some(*bounds));
                 viewport.invalidate();
+                #[cfg(feature = "nsh-reading-integration")]
+                mounted_regressions::record_control(&layout_observed, &layout_action, *bounds);
             }
         })
         .role(AccessibilityRole::Button)

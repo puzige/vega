@@ -1,3 +1,4 @@
+use nsh_platform_gpui::editing::InputPastePayload;
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
@@ -12,6 +13,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use vega_conversation::attachments::{MAX_IMAGE_BYTES, MAX_IMAGES, MAX_TURN_IMAGE_BYTES};
 use vega_theme::Typography;
 
+use super::editing_core::{
+    ComposerNativeBridge, EditLedger, EditTicket, EditorOwner, NativeCommandToken, NativeEdit,
+    NativeEditorCommand, NativeEditorPolicy, NativeEditorRoute, NativeRestoreToken,
+    ReceiptDecision, valid_selection,
+};
+use super::native_adapter::{NativeAdapter, NativeDelivery};
 use super::{AcceptPrediction, DismissPrediction, Redo, TextInput, Undo};
 
 #[derive(Clone)]
@@ -56,7 +63,7 @@ impl EditorGate {
         Self(watch::channel(None).0)
     }
 
-    fn close(&self) {
+    pub(super) fn close(&self) {
         self.0.send_if_modified(|stamp| stamp.take().is_some());
     }
 
@@ -85,6 +92,11 @@ pub(crate) enum EditorOperation {
         before: Arc<str>,
         after: String,
     },
+    Restore {
+        token: NativeRestoreToken,
+        after: String,
+    },
+    ReloadNative,
     Select {
         text: Arc<str>,
         range: (u32, u32),
@@ -99,13 +111,10 @@ pub(crate) enum EditorOperation {
         selection: (u32, u32),
         payload: Arc<nsh_core::PasteEvent>,
     },
-    Undo,
-    Redo,
-    AcceptPrediction,
-    DismissPrediction,
 }
 
 pub(crate) struct EditorRequest {
+    ticket: EditTicket,
     pub revision: u64,
     pub operation: EditorOperation,
     pub selection_revision: u64,
@@ -113,6 +122,7 @@ pub(crate) struct EditorRequest {
 }
 
 pub(crate) struct EditorOutcome {
+    ticket: EditTicket,
     pub accepted: bool,
     pub snapshot: Option<EditorSnapshot>,
     pub selection_revision: u64,
@@ -120,6 +130,7 @@ pub(crate) struct EditorOutcome {
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ComposerRoute {
+    pub policy: super::editing_core::NativeEditorPolicy,
     pub files: bool,
     pub file_retry: bool,
     pub actions: bool,
@@ -129,6 +140,15 @@ pub(crate) struct ComposerRoute {
     pub action_highlight: usize,
     pub has_history: bool,
     pub recalling_history: bool,
+}
+
+impl ComposerRoute {
+    pub(crate) fn single_line(session: gpui_kit::EntityId) -> Self {
+        Self {
+            policy: super::editing_core::NativeEditorPolicy::SingleLine(session),
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,6 +167,7 @@ pub(crate) struct ComposerShortcut {
     stamp: EditorStamp,
     route: ComposerRoute,
     pub key: ComposerKey,
+    native: Option<NativeCommandToken>,
 }
 
 impl gpui_kit::EventEmitter<ComposerShortcut> for TextInput {}
@@ -154,6 +175,12 @@ impl gpui_kit::EventEmitter<ComposerShortcut> for TextInput {}
 impl ComposerShortcut {
     pub(crate) fn matches(&self, input: &TextInput, route: ComposerRoute) -> bool {
         self.route == route
+            && self.native.as_ref().is_none_or(|token| {
+                input
+                    .nsh_composer
+                    .as_ref()
+                    .is_some_and(|editor| editor.native.validates(token))
+            })
             && input.composer_editor_ready()
             && input
                 .nsh_snapshot()
@@ -161,22 +188,8 @@ impl ComposerShortcut {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-struct ShortcutIntent {
-    text: String,
-    selection: (u32, u32),
-    generation: u64,
-    route: ComposerRoute,
-    key: ComposerKey,
-}
-
-struct ShortcutRequest {
-    event: ComposerShortcut,
-    reply: oneshot::Sender<()>,
-}
-
 #[derive(Clone)]
-struct DraftRecovery(Arc<Mutex<RecoveryState>>);
+pub(super) struct DraftRecovery(Arc<Mutex<RecoveryState>>);
 
 struct RecoveryState {
     local: String,
@@ -184,21 +197,21 @@ struct RecoveryState {
 }
 
 impl DraftRecovery {
-    fn new(text: String) -> Self {
+    pub(super) fn new(text: String) -> Self {
         Self(Arc::new(Mutex::new(RecoveryState {
             local: text,
             saved: None,
         })))
     }
 
-    fn local(&self, text: &str) {
+    pub(super) fn local(&self, text: &str) {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .local = text.to_owned();
     }
 
-    fn saved(&self) -> Option<String> {
+    pub(super) fn saved(&self) -> Option<String> {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -213,7 +226,7 @@ impl DraftRecovery {
             .saved = Some(text);
     }
 
-    fn preserve(&self) {
+    pub(super) fn preserve(&self) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         state.saved = Some(state.local.clone());
     }
@@ -291,16 +304,36 @@ fn render_host_recovery(
         .into_element()
 }
 
+#[derive(Clone, Copy)]
+struct SingleLineChrome {
+    colors: vega_theme::ThemeColors,
+    rem: f32,
+}
+
+impl SingleLineChrome {
+    fn new(route: ComposerRoute, bare: bool, window: &Window, cx: &gpui_kit::App) -> Option<Self> {
+        (matches!(
+            route.policy,
+            super::editing_core::NativeEditorPolicy::SingleLine(_)
+        ) && !bare)
+            .then(|| Self {
+                colors: vega_theme::theme(cx).colors,
+                rem: f32::from(window.rem_size()),
+            })
+    }
+}
+
 #[derive(Clone)]
 struct ComposerProjection {
     snapshot: EditorSnapshot,
+    chrome: Option<SingleLineChrome>,
     gate: EditorGate,
     focus_revision: u64,
     height: watch::Sender<f32>,
-    shortcuts: mpsc::Sender<ShortcutRequest>,
-    route: ComposerRoute,
     host_failed: bool,
     draft: DraftRecovery,
+    native: Option<ComposerNativeBridge>,
+    node: watch::Sender<Option<u32>>,
 }
 
 pub(super) struct ComposerEditor {
@@ -310,12 +343,16 @@ pub(super) struct ComposerEditor {
     restarting: bool,
     surface: crate::nsh::Surface<ComposerProjection, EditorRequest>,
     gate: EditorGate,
+    native: ComposerNativeBridge,
     focus_revision: u64,
     _focus_subscription: Subscription,
     height: watch::Receiver<f32>,
     height_sender: watch::Sender<f32>,
-    shortcuts: mpsc::Sender<ShortcutRequest>,
     route: ComposerRoute,
+    adapter: Option<Rc<NativeAdapter>>,
+    node: watch::Receiver<Option<u32>>,
+    node_tx: watch::Sender<Option<u32>>,
+    _activation_subscription: Subscription,
 }
 
 fn render_composer_editor(
@@ -325,23 +362,35 @@ fn render_composer_editor(
     let initial = state.get_untracked();
     let snapshot = signal_with(initial.snapshot.clone(), SignalEquals::Never);
     let focus_revision = signal(initial.focus_revision);
-    let route = signal(initial.route);
     let host_failed = signal(initial.host_failed);
+    let chrome = signal_with(initial.chrome, SignalEquals::Never);
     effect(move || {
         let projection = state.get();
         snapshot.set(projection.snapshot);
         focus_revision.set(projection.focus_revision);
-        route.set(projection.route);
         host_failed.set(projection.host_failed);
+        chrome.set(projection.chrome);
     });
-    let editor = editor(
-        snapshot,
-        commands,
-        focus_revision,
-        route,
-        host_failed,
-        &initial,
-    );
+    let editor = editor(snapshot, commands, focus_revision, host_failed, &initial);
+    let element = view()
+        .w_full()
+        .px(move || px(chrome.get().map_or(0., |chrome| chrome.rem * 0.5)))
+        .py(move || px(chrome.get().map_or(0., |chrome| chrome.rem * 0.25)))
+        .border(move || px(if chrome.get().is_some() { 1. } else { 0. }))
+        .rounded(move || px(chrome.get().map_or(0., |chrome| chrome.rem * 0.5)))
+        .border_color(move || {
+            chrome.get().map_or_else(
+                || rgba(0),
+                |chrome| crate::nsh::color(chrome.colors.border_subtle),
+            )
+        })
+        .bg(move || {
+            chrome.get().map_or_else(
+                || rgba(0),
+                |chrome| crate::nsh::color(chrome.colors.bg_elevated),
+            )
+        })
+        .child(editor.element);
     let height = initial.height;
     let measured = Cell::new(0.0f32);
     let failed = editor.failed;
@@ -360,7 +409,7 @@ fn render_composer_editor(
                 height.send_replace(next);
             }
         })
-        .child(editor.element)
+        .child(element)
         .into_element()
 }
 
@@ -370,7 +419,7 @@ impl TextInput {
         window: &mut Window,
         cx: &mut gpui_kit::App,
     ) -> gpui_kit::AnyElement {
-        Self::render_nsh_composer(input, ComposerRoute::default(), window, cx)
+        Self::render_nsh_editor(input, ComposerRoute::default(), false, window, cx)
     }
 
     pub(crate) fn composer_editor_ready(&self) -> bool {
@@ -378,11 +427,397 @@ impl TextInput {
             !editor.restarting
                 && editor.surface.errors().borrow().is_none()
                 && editor.gate.matches(self)
+                && self
+                    .nsh_snapshot()
+                    .is_some_and(|snapshot| editor.native.ready(&snapshot.text, snapshot.selection))
         })
+    }
+
+    #[cfg(feature = "nsh-reading-integration")]
+    pub(crate) fn nsh_test_host(&self) -> Option<(Entity<nsh_platform_gpui::AppView>, u32)> {
+        let editor = self.nsh_composer.as_ref()?;
+        let node = (*editor.node.borrow())?;
+        Some((editor.surface.entity(), node))
+    }
+
+    #[cfg(feature = "nsh-reading-integration")]
+    pub(crate) fn nsh_test_state(&self, window: &Window, cx: &gpui_kit::App) -> String {
+        let controller = self.text().chars().take(96).collect::<String>();
+        let Some(editor) = &self.nsh_composer else {
+            return format!("controller={controller:?} mounted=false");
+        };
+        let local = editor.native.local_draft();
+        let native = local.text.chars().take(96).collect::<String>();
+        format!(
+            "controller={controller:?} bytes={} native={native:?} native_bytes={} serial={} selection={:?} composing={}/{} policy={:?} ready={} gate={} focus={} registered={} restarting={} failed={} host_error={} node={:?}",
+            self.text().len(),
+            local.text.len(),
+            local.serial,
+            local.selection,
+            self.is_composing(),
+            local.composing,
+            editor.route.policy,
+            self.composer_editor_ready(),
+            editor.gate.matches(self),
+            self.composer_contains_focus(window, cx),
+            self.nsh_test_registered(window, cx),
+            editor.restarting,
+            editor.native.failed(),
+            editor.surface.errors().borrow().is_some(),
+            *editor.node.borrow(),
+        )
+    }
+
+    #[cfg(feature = "nsh-reading-integration")]
+    pub(crate) fn nsh_test_registered(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        let Some((view, node)) = self.nsh_test_host() else {
+            return false;
+        };
+        let Some(identity) = view.read(cx).input_identity(node) else {
+            return false;
+        };
+        self.composer_editor_ready()
+            && self.composer_contains_focus(window, cx)
+            && self
+                .nsh_composer
+                .as_ref()
+                .and_then(|editor| editor.adapter.as_ref())
+                .is_some_and(|adapter| !adapter.needs_registration(&identity, true))
     }
 
     pub(crate) fn composer_contains_focus(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         self.focus_handle.contains_focused(window, cx)
+            || self.nsh_composer.as_ref().is_some_and(|editor| {
+                editor.surface.focus_handle(cx).contains_focused(window, cx)
+                    || editor
+                        .recovery_page
+                        .as_ref()
+                        .is_some_and(|page| page.focus_handle(cx).contains_focused(window, cx))
+            })
+    }
+
+    pub fn composer_native_bridge(&self) -> Option<ComposerNativeBridge> {
+        self.nsh_composer
+            .as_ref()
+            .filter(|editor| !editor.restarting)
+            .map(|editor| editor.native.clone())
+    }
+
+    pub fn project_native_draft(
+        &self,
+        owner: &EditorOwner,
+        expected_serial: u64,
+        apply_native: impl FnOnce(&NativeEdit) -> bool,
+    ) -> bool {
+        let Some(editor) = self
+            .nsh_composer
+            .as_ref()
+            .filter(|editor| !editor.restarting && editor.surface.errors().borrow().is_none())
+        else {
+            return false;
+        };
+        let Some(snapshot) = self.nsh_snapshot().filter(|snapshot| !snapshot.composing) else {
+            return false;
+        };
+        editor.native.project(
+            owner,
+            expected_serial,
+            snapshot.text,
+            snapshot.selection,
+            (snapshot.revision, snapshot.selection_revision),
+            apply_native,
+        )
+    }
+
+    pub fn suspend_nsh_composer(&mut self, cx: &mut Context<Self>) {
+        if let Some(editor) = &mut self.nsh_composer {
+            editor.gate.close();
+            editor.native.retire();
+            if editor.native.attached() {
+                editor.draft.local(&editor.native.local_draft().text);
+            }
+            editor.draft.preserve();
+            editor.restarting = true;
+            editor.surface.entity().read(cx).stop();
+            if let Some(page) = &editor.recovery_page {
+                page.entity().read(cx).stop();
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn apply_native_edit(
+        &mut self,
+        owner: &EditorOwner,
+        edit: &NativeEdit,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.apply_native_transaction(owner, edit, None, cx)
+    }
+
+    pub fn apply_native_paste(
+        &mut self,
+        owner: &EditorOwner,
+        edit: &NativeEdit,
+        payload: std::rc::Rc<InputPastePayload>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.apply_native_transaction(owner, edit, Some(payload), cx)
+    }
+
+    fn apply_native_transaction(
+        &mut self,
+        owner: &EditorOwner,
+        edit: &NativeEdit,
+        payload: Option<std::rc::Rc<InputPastePayload>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editor) = self
+            .nsh_composer
+            .as_ref()
+            .filter(|editor| !editor.restarting && editor.surface.errors().borrow().is_none())
+        else {
+            return false;
+        };
+        let bridge = editor.native.clone();
+        let draft = editor.draft.clone();
+        let accepted = self.commit_native_transaction(&bridge, owner, edit, payload, cx);
+        if !accepted {
+            let local = bridge.local_draft();
+            draft.local(&local.text);
+            draft.preserve();
+        }
+        cx.notify();
+        accepted
+    }
+
+    fn commit_native_transaction(
+        &mut self,
+        bridge: &ComposerNativeBridge,
+        owner: &EditorOwner,
+        edit: &NativeEdit,
+        payload: Option<std::rc::Rc<InputPastePayload>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let policy = if payload.is_some() {
+            let Some(policy) = bridge.paste_policy(edit) else {
+                return false;
+            };
+            policy
+        } else {
+            NativeEditorPolicy::Composer
+        };
+        let mut payload = match payload.map(std::rc::Rc::try_unwrap).transpose() {
+            Ok(payload) => payload,
+            Err(_) => return false,
+        };
+        bridge.commit(owner, edit, |before, revisions| {
+            let snapshot = self.nsh_snapshot()?;
+            if self.masked
+                || (snapshot.revision, snapshot.selection_revision) != revisions
+                || snapshot.text != before.text
+                || snapshot.selection != before.selection
+                || snapshot.composing != before.composing
+            {
+                return None;
+            }
+            if !edit.follows(before) {
+                return None;
+            }
+            let attachments = if let Some(payload) = payload.as_mut() {
+                if !self.image_paste
+                    && (payload.files().next().is_some() || !payload.uris().is_empty())
+                {
+                    return None;
+                }
+                let (text, selection) =
+                    pasted_text(&before.text, before.selection, payload, policy)?;
+                if edit.composing || text != edit.text.as_ref() || selection != edit.selection {
+                    return None;
+                }
+                if payload.uris().is_empty() && !payload.text().is_empty() {
+                    let mutation = edit.mutation.as_ref()?;
+                    if mutation.range_utf16
+                        != (
+                            before.selection.0.min(before.selection.1),
+                            before.selection.0.max(before.selection.1),
+                        )
+                        || mutation.inserted.as_ref() != policy.paste_text(payload.text())
+                    {
+                        return None;
+                    }
+                } else if edit.mutation.is_some() {
+                    return None;
+                }
+                if payload.files().next().is_none() && payload.uris().is_empty() {
+                    None
+                } else {
+                    Some(match payload {
+                        InputPastePayload::Native(_) => payload.take_original()?,
+                        InputPastePayload::Synthetic(paste) => pasted_attachments(paste)?,
+                    })
+                }
+            } else {
+                None
+            };
+            let selection_revision = self.nsh_selection_revision.checked_add(1)?;
+            if let Some(payload) = payload.as_ref() {
+                self.apply_pasted_replacement(before, payload, policy)?;
+            } else if let Some(mutation) = &edit.mutation {
+                let range = mutation.byte_range(&before.text)?;
+                self.content_revision.checked_add(1)?;
+                self.record_edit();
+                self.apply_edit(range, &mutation.inserted);
+            } else if edit.composing && !before.composing {
+                self.record_edit();
+            }
+            self.selected_range = self.range_from_utf16(
+                &(edit.selection.0.min(edit.selection.1) as usize
+                    ..edit.selection.0.max(edit.selection.1) as usize),
+            );
+            self.selection_reversed = edit.selection.0 > edit.selection.1;
+            self.marked_range = edit.composing.then(|| self.selected_range.clone());
+            self.composition_history_active = edit.composing;
+            self.nsh_selection_revision = selection_revision;
+            self.prediction = None;
+            self.vertical_goal = None;
+            self.update_logical_viewport();
+            if let Some(item) = attachments.filter(|item| !item.entries.is_empty()) {
+                cx.emit(super::ImagePaste(Arc::new(item)));
+            }
+            Some((self.content_revision, self.nsh_selection_revision))
+        })
+    }
+
+    fn apply_pasted_replacement(
+        &mut self,
+        before: &NativeEdit,
+        payload: &impl PasteView,
+        policy: NativeEditorPolicy,
+    ) -> Option<()> {
+        if !valid_selection(&before.text, before.selection) || self.text() != before.text.as_ref() {
+            return None;
+        }
+        if payload.uris().is_empty() && !payload.text().is_empty() {
+            self.content_revision.checked_add(1)?;
+            let range = self.range_from_utf16(
+                &(before.selection.0.min(before.selection.1) as usize
+                    ..before.selection.0.max(before.selection.1) as usize),
+            );
+            self.record_edit();
+            self.apply_edit(range, &policy.paste_text(payload.text()));
+        }
+        Some(())
+    }
+
+    fn restore_native_draft(
+        &mut self,
+        bridge: &ComposerNativeBridge,
+        token: &NativeRestoreToken,
+        after: &str,
+    ) -> bool {
+        if self.masked
+            || self.is_composing()
+            || self.content_revision == u64::MAX
+            || self.nsh_selection_revision == u64::MAX
+            || after.len() > 2 * 1024 * 1024
+        {
+            return false;
+        }
+        let Some(snapshot) = self.nsh_snapshot() else {
+            return false;
+        };
+        bridge.restore_authority(
+            token,
+            (snapshot.revision, snapshot.selection_revision),
+            &snapshot.text,
+            snapshot.selection,
+            || {
+                self.record_edit();
+                self.apply_edit(0..self.content.len(), after);
+                self.nsh_selection_revision += 1;
+                true
+            },
+        )
+    }
+
+    pub fn dispatch_native_command(
+        &mut self,
+        token: NativeCommandToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editor) = &self.nsh_composer else {
+            return false;
+        };
+        let bridge = editor.native.clone();
+        if !token.claim()
+            || !bridge.validates(&token)
+            || !self.composer_contains_focus(window, cx)
+            || !self.composer_editor_ready()
+        {
+            bridge.finish_command(&token);
+            return false;
+        }
+        let route = editor.route;
+        let Some(snapshot) = self.nsh_snapshot() else {
+            bridge.finish_command(&token);
+            return false;
+        };
+        let key = match token.command {
+            NativeEditorCommand::Submit => Some(ComposerKey::Send),
+            NativeEditorCommand::Accept => Some(ComposerKey::Accept),
+            NativeEditorCommand::Cancel => Some(ComposerKey::Cancel),
+            NativeEditorCommand::Previous => Some(ComposerKey::Previous),
+            NativeEditorCommand::Next => Some(ComposerKey::Next),
+            NativeEditorCommand::History => Some(ComposerKey::History),
+            NativeEditorCommand::FocusNext => Some(ComposerKey::FocusNext),
+            NativeEditorCommand::FocusPrevious => Some(ComposerKey::FocusPrevious),
+            NativeEditorCommand::Undo => {
+                self.undo(&Undo, window, cx);
+                None
+            }
+            NativeEditorCommand::Redo => {
+                self.redo(&Redo, window, cx);
+                None
+            }
+            NativeEditorCommand::AcceptPrediction => {
+                self.accept_prediction(&AcceptPrediction, window, cx);
+                None
+            }
+            NativeEditorCommand::DismissPrediction => {
+                self.dismiss_prediction(&DismissPrediction, window, cx);
+                None
+            }
+        };
+        if let Some(key) = key {
+            cx.emit(ComposerShortcut {
+                stamp: EditorStamp::from_snapshot(&snapshot),
+                route,
+                key,
+                native: Some(token.clone()),
+            });
+        }
+        bridge.finish_command(&token);
+        cx.notify();
+        true
+    }
+
+    pub fn render_nsh_input(
+        input: Entity<Self>,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+    ) -> gpui_kit::AnyElement {
+        Self::render_nsh_composer(input, ComposerRoute::default(), window, cx)
+    }
+
+    pub(crate) fn render_nsh_single_line(
+        input: Entity<Self>,
+        session: gpui_kit::EntityId,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+    ) -> gpui_kit::AnyElement {
+        Self::render_nsh_composer(input, ComposerRoute::single_line(session), window, cx)
     }
 
     pub(crate) fn render_nsh_composer(
@@ -391,13 +826,112 @@ impl TextInput {
         window: &mut Window,
         cx: &mut gpui_kit::App,
     ) -> gpui_kit::AnyElement {
+        Self::render_nsh_editor(input, route, true, window, cx)
+    }
+
+    fn reload_native_editor(
+        &mut self,
+        id: &crate::nsh::ProjectionId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(selection_revision) = self.nsh_selection_revision.checked_add(1) else {
+            return false;
+        };
+        let Some(editor) = self.nsh_composer.as_mut().filter(|editor| {
+            !self.masked
+                && editor.id.matches(id)
+                && !editor.restarting
+                && (editor.native.failed() || editor.surface.errors().borrow().is_some())
+        }) else {
+            return false;
+        };
+        editor.gate.close();
+        if editor.native.attached() {
+            editor.draft.local(&editor.native.local_draft().text);
+        }
+        editor.draft.preserve();
+        if let Some(adapter) = &editor.adapter {
+            adapter.fail();
+        }
+        editor.native.retire();
+        editor.restarting = true;
+        editor.surface.entity().read(cx).stop();
+        if let Some(page) = &editor.recovery_page {
+            page.entity().read(cx).stop();
+        }
+        self.marked_range = None;
+        self.composition_history_active = false;
+        self.nsh_selection_revision = selection_revision;
+        cx.notify();
+        true
+    }
+
+    fn register_native_hooks(&self, trusted_focus: bool, cx: &gpui_kit::App) {
+        let Some(editor) = self
+            .nsh_composer
+            .as_ref()
+            .filter(|editor| !editor.restarting)
+        else {
+            return;
+        };
+        let Some(adapter) = &editor.adapter else {
+            return;
+        };
+        let Some(node) = *editor.node.borrow() else {
+            return;
+        };
+        let view = editor.surface.entity();
+        let Some(identity) = view.read(cx).input_identity(node) else {
+            return;
+        };
+        if adapter.needs_registration(&identity, trusted_focus) {
+            let hooks = adapter.hooks(identity.clone());
+            if !view.read(cx).set_input_hooks(&identity, Some(hooks)) {
+                adapter.fail();
+            }
+        }
+    }
+
+    fn render_nsh_editor(
+        input: Entity<Self>,
+        route: ComposerRoute,
+        transactional: bool,
+        window: &mut Window,
+        cx: &mut gpui_kit::App,
+    ) -> gpui_kit::AnyElement {
         input.update(cx, |this, cx| {
-            let Some(snapshot) = this
-                .nsh_snapshot()
-                .filter(|_| this.image_paste && this.multiline)
-            else {
+            let Some(snapshot) = this.nsh_snapshot() else {
                 return gpui_kit::div().into_any_element();
             };
+            let restore_focus =
+                window.is_window_active() && this.composer_contains_focus(window, cx);
+            if let Some(editor) = this
+                .nsh_composer
+                .as_mut()
+                .filter(|editor| !editor.restarting)
+            {
+                if editor.adapter.is_some() != transactional {
+                    editor.native.retire();
+                    editor.restarting = true;
+                } else if transactional
+                    && !editor.native.failed()
+                    && !editor.native.authority_matches(
+                        (snapshot.revision, snapshot.selection_revision),
+                        &snapshot.text,
+                        snapshot.selection,
+                    )
+                {
+                    if editor.native.seal_authority(
+                        (snapshot.revision, snapshot.selection_revision),
+                        &snapshot.text,
+                        snapshot.selection,
+                    ) {
+                        editor.restarting = true;
+                    } else if let Some(adapter) = &editor.adapter {
+                        adapter.fail();
+                    }
+                }
+            }
             let restarting = this
                 .nsh_composer
                 .as_ref()
@@ -407,6 +941,7 @@ impl TextInput {
                 .flatten()
                 .map(|editor| {
                     editor.gate.close();
+                    editor.native.retire();
                     editor.surface.entity().read(cx).stop();
                     if let Some(page) = &editor.recovery_page {
                         page.entity().read(cx).stop();
@@ -418,33 +953,69 @@ impl TextInput {
                 let draft =
                     retained.unwrap_or_else(|| DraftRecovery::new(snapshot.text.to_string()));
                 let gate = EditorGate::new();
+                let native = ComposerNativeBridge::new(
+                    NativeEdit {
+                        text: snapshot.text.clone(),
+                        selection: snapshot.selection,
+                        composing: snapshot.composing,
+                        serial: 0,
+                        mutation: None,
+                    },
+                    (snapshot.revision, snapshot.selection_revision),
+                    gate.clone(),
+                );
                 let mut updates = gate.0.subscribe();
                 let (height_tx, height) = watch::channel(
                     Typography::BODY * Typography::BODY_LINE_HEIGHT * snapshot.min_rows as f32,
                 );
                 let mut sizes = height.clone();
-                let (shortcuts, mut shortcut_requests) =
-                    mpsc::channel::<ShortcutRequest>(crate::nsh::COMMAND_CAPACITY);
-                let initial_focus = u64::from(restarting || this.focus_handle.is_focused(window));
+                cx.spawn(async move |this, cx| {
+                    while sizes.changed().await.is_ok() {
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                let initial_focus =
+                    u64::from(restore_focus || this.focus_handle.is_focused(window));
+                let (node_tx, node) = watch::channel(None);
+                let (native_tx, mut native_rx) = mpsc::channel(crate::nsh::COMMAND_CAPACITY);
+                let adapter = transactional
+                    .then(|| {
+                        NativeAdapter::new(
+                            native.clone(),
+                            draft.clone(),
+                            native_tx,
+                            this.image_paste,
+                        )
+                    })
+                    .flatten();
                 let initial = ComposerProjection {
                     snapshot: snapshot.clone(),
+                    chrome: SingleLineChrome::new(route, this.bare_chrome, window, cx),
                     gate: gate.clone(),
                     focus_revision: initial_focus,
                     height: height_tx.clone(),
-                    shortcuts: shortcuts.clone(),
-                    route,
                     host_failed: false,
                     draft: draft.clone(),
+                    native: transactional.then(|| native.clone()),
+                    node: node_tx.clone(),
                 };
                 let (surface, mut requests) =
                     crate::nsh::Surface::new(initial, render_composer_editor, window, cx);
                 let mut errors = surface.errors();
                 let error_gate = gate.clone();
                 let error_draft = draft.clone();
+                let error_native = native.clone();
                 cx.spawn(async move |this, cx| {
                     loop {
                         if errors.borrow_and_update().is_some() {
                             error_gate.close();
+                            error_native.fail();
+                            if error_native.attached() {
+                                error_draft.local(&error_native.local_draft().text);
+                            }
                             error_draft.preserve();
                             if this.update(cx, |_, cx| cx.notify()).is_err() {
                                 break;
@@ -465,13 +1036,19 @@ impl TextInput {
                             editor.focus_revision = editor.focus_revision.wrapping_add(1);
                             editor.surface.publish(ComposerProjection {
                                 snapshot,
+                                chrome: SingleLineChrome::new(
+                                    editor.route,
+                                    this.bare_chrome,
+                                    window,
+                                    cx,
+                                ),
                                 gate: editor.gate.clone(),
                                 focus_revision: editor.focus_revision,
                                 height: editor.height_sender.clone(),
-                                shortcuts: editor.shortcuts.clone(),
-                                route: editor.route,
                                 host_failed: editor.surface.errors().borrow().is_some(),
                                 draft: editor.draft.clone(),
+                                native: editor.adapter.as_ref().map(|_| editor.native.clone()),
+                                node: editor.node_tx.clone(),
                             });
                             if let Some(page) = &editor.recovery_page {
                                 page.focus(window, cx);
@@ -480,38 +1057,96 @@ impl TextInput {
                             }
                         }
                     });
-                this.nsh_composer = Some(ComposerEditor {
-                    id: id.clone(),
-                    draft,
-                    recovery_page: None,
-                    restarting: false,
-                    surface,
-                    gate,
-                    focus_revision: initial_focus,
-                    _focus_subscription: focus_subscription,
-                    height,
-                    height_sender: height_tx,
-                    shortcuts,
-                    route,
-                });
-                let shortcut_id = id.clone();
-                cx.spawn(async move |this, cx| {
-                    while let Some(request) = shortcut_requests.recv().await {
-                        if this
-                            .update(cx, |this, cx| {
-                                let route = this
-                                    .nsh_composer
-                                    .as_ref()
-                                    .map_or(ComposerRoute::default(), |editor| editor.route);
-                                if this
-                                    .nsh_composer
-                                    .as_ref()
-                                    .is_some_and(|editor| editor.id.matches(&shortcut_id))
-                                    && request.event.matches(this, route)
+                let activation_subscription =
+                    cx.observe_window_activation(window, |this, window, cx| {
+                        if window.is_window_active() && this.composer_contains_focus(window, cx) {
+                            cx.on_next_frame(window, |this, window, cx| {
+                                if window.is_window_active()
+                                    && this.composer_contains_focus(window, cx)
                                 {
-                                    cx.emit(request.event);
+                                    this.register_native_hooks(true, cx);
                                 }
-                                let _ = request.reply.send(());
+                            });
+                        }
+                        cx.notify();
+                    });
+                let mut nodes = node.clone();
+                let native_id = id.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    loop {
+                        let delivery = tokio::select! {
+                            delivery = native_rx.recv() => {
+                                let Some(delivery) = delivery else { break; };
+                                Some(delivery)
+                            }
+                            changed = nodes.changed() => {
+                                if changed.is_err() { break; }
+                                None
+                            }
+                        };
+                        if this
+                            .update_in(cx, |this, window, cx| {
+                                let Some(editor) = this.nsh_composer.as_ref().filter(|editor| {
+                                    editor.id.matches(&native_id) && !editor.restarting
+                                }) else {
+                                    return;
+                                };
+                                let Some(adapter) = editor.adapter.clone() else {
+                                    return;
+                                };
+                                match delivery {
+                                    Some(NativeDelivery::Edit(edit)) => {
+                                        if !this.apply_native_edit(adapter.owner(), &edit, cx) {
+                                            adapter.fail();
+                                        }
+                                        if let Some(snapshot) = this.nsh_snapshot()
+                                            && let Some(editor) = &this.nsh_composer
+                                            && editor
+                                                .native
+                                                .ready(&snapshot.text, snapshot.selection)
+                                        {
+                                            editor.gate.open(&snapshot);
+                                        }
+                                    }
+                                    Some(NativeDelivery::Paste {
+                                        edit,
+                                        payload,
+                                        _budget,
+                                    }) => {
+                                        if !this.apply_native_paste(
+                                            adapter.owner(),
+                                            &edit,
+                                            payload,
+                                            cx,
+                                        ) {
+                                            adapter.fail();
+                                        }
+                                        if let Some(snapshot) = this.nsh_snapshot()
+                                            && let Some(editor) = &this.nsh_composer
+                                            && editor
+                                                .native
+                                                .ready(&snapshot.text, snapshot.selection)
+                                        {
+                                            editor.gate.open(&snapshot);
+                                        }
+                                        drop(_budget);
+                                    }
+                                    Some(NativeDelivery::Command(token)) => {
+                                        this.dispatch_native_command(token, window, cx);
+                                    }
+                                    Some(NativeDelivery::Failed) => {}
+                                    None => {
+                                        if adapter.is_failed() {
+                                            adapter.fail();
+                                        }
+                                        this.register_native_hooks(
+                                            window.is_window_active()
+                                                && this.composer_contains_focus(window, cx),
+                                            cx,
+                                        );
+                                    }
+                                }
+                                cx.notify();
                             })
                             .is_err()
                         {
@@ -520,14 +1155,27 @@ impl TextInput {
                     }
                 })
                 .detach();
-                cx.spawn(async move |this, cx| {
-                    while sizes.changed().await.is_ok() {
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
-                            break;
-                        }
-                    }
-                })
-                .detach();
+                if restore_focus {
+                    surface.focus(window, cx);
+                }
+                this.nsh_composer = Some(ComposerEditor {
+                    id: id.clone(),
+                    draft,
+                    recovery_page: None,
+                    restarting: false,
+                    surface,
+                    gate,
+                    native,
+                    focus_revision: initial_focus,
+                    _focus_subscription: focus_subscription,
+                    height,
+                    height_sender: height_tx,
+                    route,
+                    adapter,
+                    node,
+                    node_tx,
+                    _activation_subscription: activation_subscription,
+                });
                 cx.spawn_in(window, async move |this, cx| {
                     while let Some(request) = requests.recv().await {
                         if this
@@ -540,6 +1188,7 @@ impl TextInput {
                                     this.apply_nsh_request(request, window, cx);
                                 } else {
                                     let _ = request.reply.send(EditorOutcome {
+                                        ticket: request.ticket,
                                         accepted: false,
                                         snapshot: this.nsh_snapshot(),
                                         selection_revision: this.nsh_selection_revision,
@@ -563,24 +1212,41 @@ impl TextInput {
                 })
                 .detach();
             }
+            this.register_native_hooks(
+                window.is_window_active() && this.composer_contains_focus(window, cx),
+                cx,
+            );
             let focus = this.focus_handle.clone();
             let Some(editor) = this.nsh_composer.as_mut() else {
                 return gpui_kit::div().into_any_element();
             };
             editor.route = route;
+            editor.native.route(NativeEditorRoute {
+                policy: route.policy,
+                popup: route.files || route.actions,
+                prediction: snapshot.prediction.is_some(),
+                history: route.has_history,
+                recalling_history: route.recalling_history,
+                file_generation: route.file_generation,
+                file_highlight: route.file_highlight,
+                action_generation: route.action_generation,
+                action_highlight: route.action_highlight,
+            });
             editor.surface.sync_environment(cx);
             editor.surface.publish(ComposerProjection {
                 snapshot,
+                chrome: SingleLineChrome::new(route, this.bare_chrome, window, cx),
                 gate: editor.gate.clone(),
                 focus_revision: editor.focus_revision,
                 height: editor.height_sender.clone(),
-                shortcuts: editor.shortcuts.clone(),
-                route: editor.route,
                 host_failed: editor.surface.errors().borrow().is_some(),
                 draft: editor.draft.clone(),
+                native: editor.adapter.as_ref().map(|_| editor.native.clone()),
+                node: editor.node_tx.clone(),
             });
-            if editor.surface.errors().borrow().is_some() {
+            if editor.surface.errors().borrow().is_some() || editor.native.failed() {
                 editor.gate.close();
+                editor.native.fail();
                 if editor.recovery_page.is_none() {
                     editor.draft.preserve();
                     let (page, mut reloads) = crate::nsh::Surface::new(
@@ -592,30 +1258,16 @@ impl TextInput {
                         window,
                         cx,
                     );
-                    page.focus(window, cx);
+                    if restore_focus {
+                        page.focus(window, cx);
+                    }
                     editor.recovery_page = Some(page);
                     cx.spawn(async move |this, cx| {
                         while let Some(request) = reloads.recv().await {
                             if this
                                 .update(cx, |this, cx| {
-                                    let accepted =
-                                        this.nsh_composer.as_mut().is_some_and(|editor| {
-                                            if !editor.id.matches(&request.id) || editor.restarting
-                                            {
-                                                return false;
-                                            }
-                                            editor.gate.close();
-                                            editor.restarting = true;
-                                            true
-                                        });
+                                    let accepted = this.reload_native_editor(&request.id, cx);
                                     let _ = request.reply.send(accepted);
-                                    if accepted {
-                                        this.marked_range = None;
-                                        this.composition_history_active = false;
-                                        this.nsh_selection_revision =
-                                            this.nsh_selection_revision.wrapping_add(1);
-                                        cx.notify();
-                                    }
                                 })
                                 .is_err()
                             {
@@ -673,11 +1325,44 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let accepted = !self.masked
-            && self.content_revision == request.revision
-            && self.nsh_selection_revision == request.selection_revision
-            && self.apply_nsh_operation(request.operation, window, cx);
+        let current = self.content_revision == request.revision
+            && self.nsh_selection_revision == request.selection_revision;
+        let accepted = match request.operation {
+            EditorOperation::Restore { token, after } => {
+                let editor = self.nsh_composer.as_ref().filter(|editor| {
+                    !editor.restarting
+                        && editor.surface.errors().borrow().is_none()
+                        && editor.draft.saved().as_deref() == Some(after.as_str())
+                });
+                let bridge = editor.map(|editor| editor.native.clone());
+                let accepted = current
+                    && bridge
+                        .is_some_and(|bridge| self.restore_native_draft(&bridge, &token, &after));
+                if accepted && let Some(editor) = &mut self.nsh_composer {
+                    editor.restarting = true;
+                    editor.surface.entity().read(cx).stop();
+                }
+                accepted
+            }
+            EditorOperation::ReloadNative => {
+                let id = self.nsh_composer.as_ref().map(|editor| editor.id.clone());
+                current && id.is_some_and(|id| self.reload_native_editor(&id, cx))
+            }
+            operation => {
+                self.nsh_selection_revision < u64::MAX
+                    && self.content_revision < u64::MAX
+                    && !self.masked
+                    && self
+                        .nsh_composer
+                        .as_ref()
+                        .is_none_or(|editor| !editor.native.attached())
+                    && self.content_revision == request.revision
+                    && self.nsh_selection_revision == request.selection_revision
+                    && self.apply_nsh_operation(operation, window, cx)
+            }
+        };
         let _ = request.reply.send(EditorOutcome {
+            ticket: request.ticket,
             accepted,
             snapshot: self.nsh_snapshot(),
             selection_revision: self.nsh_selection_revision,
@@ -687,10 +1372,11 @@ impl TextInput {
     fn apply_nsh_operation(
         &mut self,
         operation: EditorOperation,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         match operation {
+            EditorOperation::Restore { .. } | EditorOperation::ReloadNative => return false,
             EditorOperation::Replace { before, after } => {
                 if before.as_ref() != self.text() {
                     return false;
@@ -707,7 +1393,7 @@ impl TextInput {
                 }
             }
             EditorOperation::Select { text, range } => {
-                if text.as_ref() != self.text() {
+                if text.as_ref() != self.text() || !valid_selection(&text, range) {
                     return false;
                 }
                 let selection = self.range_from_utf16(
@@ -737,7 +1423,10 @@ impl TextInput {
                 selection,
                 payload,
             } => {
-                if before.as_ref() != self.text() || !self.image_paste {
+                if before.as_ref() != self.text()
+                    || !self.image_paste
+                    || !valid_selection(&after, selection)
+                {
                     return false;
                 }
                 let Some(item) = pasted_attachments(&payload) else {
@@ -759,32 +1448,105 @@ impl TextInput {
                 }
                 cx.notify();
             }
-            EditorOperation::Undo => self.undo(&Undo, window, cx),
-            EditorOperation::Redo => self.redo(&Redo, window, cx),
-            EditorOperation::AcceptPrediction => {
-                self.accept_prediction(&AcceptPrediction, window, cx);
-            }
-            EditorOperation::DismissPrediction => {
-                self.dismiss_prediction(&DismissPrediction, window, cx);
-            }
         }
-        self.nsh_selection_revision = self.nsh_selection_revision.wrapping_add(1);
+        self.nsh_selection_revision += 1;
         true
     }
 }
 
+pub(super) trait PasteView {
+    fn text(&self) -> &str;
+    fn html(&self) -> &str;
+    fn uris(&self) -> &[String];
+    fn files(&self) -> impl Iterator<Item = nsh_platform_gpui::editing::InputPasteFile<'_>>;
+}
+
+impl PasteView for InputPastePayload {
+    fn text(&self) -> &str {
+        self.text()
+    }
+    fn html(&self) -> &str {
+        self.html()
+    }
+    fn uris(&self) -> &[String] {
+        self.uris()
+    }
+    fn files(&self) -> impl Iterator<Item = nsh_platform_gpui::editing::InputPasteFile<'_>> {
+        self.files()
+    }
+}
+
+impl PasteView for nsh_core::PasteEvent {
+    fn text(&self) -> &str {
+        &self.text
+    }
+    fn html(&self) -> &str {
+        &self.html
+    }
+    fn uris(&self) -> &[String] {
+        &self.uris
+    }
+    fn files(&self) -> impl Iterator<Item = nsh_platform_gpui::editing::InputPasteFile<'_>> {
+        self.files
+            .iter()
+            .map(nsh_platform_gpui::editing::InputPasteFile::Synthetic)
+    }
+}
+
+pub(super) fn pasted_text(
+    before: &str,
+    selection: (u32, u32),
+    payload: &impl PasteView,
+    policy: NativeEditorPolicy,
+) -> Option<(String, (u32, u32))> {
+    if !valid_selection(before, selection) {
+        return None;
+    }
+    let inserted = if payload.uris().is_empty() {
+        policy.paste_text(payload.text())
+    } else {
+        String::new()
+    };
+    let mut after = before.to_owned();
+    if inserted.is_empty() {
+        return Some((after, selection));
+    }
+    let start = utf16_offset(before, selection.0.min(selection.1));
+    let end = utf16_offset(before, selection.0.max(selection.1));
+    after.replace_range(start..end, &inserted);
+    let caret = utf16_index(after[..start + inserted.len()].encode_utf16().count());
+    Some((after, (caret, caret)))
+}
+
+pub(super) fn paste_text_bytes(payload: &impl PasteView) -> usize {
+    payload
+        .uris()
+        .iter()
+        .fold(
+            payload.text().len().saturating_add(payload.html().len()),
+            |total, uri| total.saturating_add(uri.len()),
+        )
+        .saturating_add(payload.files().fold(0usize, |total, file| {
+            total
+                .saturating_add(file.name().len())
+                .saturating_add(file.mime().len())
+        }))
+}
+
+pub(super) fn valid_paste_payload(payload: &impl PasteView) -> bool {
+    paste_text_bytes(payload) <= 2 * 1024 * 1024
+        && payload.files().count().saturating_add(payload.uris().len()) <= MAX_IMAGES
+        && payload
+            .files()
+            .all(|file| file.bytes().len() <= MAX_IMAGE_BYTES)
+        && payload.files().fold(0usize, |total, file| {
+            total.saturating_add(file.bytes().len())
+        }) <= MAX_TURN_IMAGE_BYTES
+        && payload.uris().iter().all(|uri| pasted_path(uri).is_some())
+}
+
 fn pasted_attachments(payload: &nsh_core::PasteEvent) -> Option<gpui_kit::ClipboardItem> {
-    if payload.files.len().saturating_add(payload.uris.len()) > MAX_IMAGES
-        || payload
-            .files
-            .iter()
-            .any(|file| file.data.len() > MAX_IMAGE_BYTES)
-        || payload
-            .files
-            .iter()
-            .fold(0usize, |total, file| total.saturating_add(file.data.len()))
-            > MAX_TURN_IMAGE_BYTES
-    {
+    if !valid_paste_payload(payload) {
         return None;
     }
     let mut entries = Vec::new();
@@ -889,6 +1651,7 @@ fn replacement(before: &str, after: &str) -> (Range<usize>, Range<usize>) {
 struct Dispatch {
     commands: mpsc::Sender<EditorRequest>,
     previous: Rc<RefCell<Option<oneshot::Receiver<()>>>>,
+    ledger: Rc<RefCell<EditLedger>>,
     revision: Signal<u64>,
     selection_revision: Signal<u64>,
     pending: Signal<usize>,
@@ -911,6 +1674,7 @@ impl Dispatch {
     }
 
     fn fail(&self) {
+        self.ledger.borrow_mut().fail();
         self.gate.close();
         let text = self.value.get_untracked();
         self.draft.save(text.clone());
@@ -920,12 +1684,50 @@ impl Dispatch {
             .update(|generation| *generation = generation.wrapping_add(1));
     }
 
+    fn send_authority(
+        &self,
+        operation: EditorOperation,
+        snapshot: EditorSnapshot,
+        failed: Signal<bool>,
+    ) {
+        if self.pending.get_untracked() != 0 {
+            return;
+        }
+        let Some(ticket) = EditLedger::new().issue() else {
+            failed.set(true);
+            return;
+        };
+        self.gate.close();
+        self.pending.set(1);
+        failed.set(false);
+        let dispatch = self.clone();
+        spawn(async move {
+            let (reply, response) = oneshot::channel();
+            let request = EditorRequest {
+                ticket: ticket.clone(),
+                revision: snapshot.revision,
+                selection_revision: snapshot.selection_revision,
+                operation,
+                reply,
+            };
+            let accepted = dispatch.commands.send(request).await.is_ok()
+                && matches!(response.await, Ok(outcome) if outcome.accepted && ticket.matches(&outcome.ticket));
+            if !accepted {
+                dispatch.gate.close();
+                failed.set(true);
+            }
+            dispatch.pending.set(0);
+        });
+    }
+
     fn send(&self, operation: EditorOperation) {
         self.gate.close();
         if self.failed.get_untracked() {
             return;
         }
         let bytes = match &operation {
+            EditorOperation::Restore { after, .. } => after.len(),
+            EditorOperation::ReloadNative => 0,
             EditorOperation::Replace { before, after }
             | EditorOperation::Paste { before, after, .. } => {
                 before.len().saturating_add(after.len())
@@ -933,8 +1735,12 @@ impl Dispatch {
             EditorOperation::Select { text, .. } | EditorOperation::Compose { text, .. } => {
                 text.len()
             }
+        };
+        let payload_bytes = match &operation {
+            EditorOperation::Paste { payload, .. } => paste_text_bytes(payload.as_ref()),
             _ => 0,
         };
+        let bytes = bytes.saturating_add(payload_bytes);
         let attachment_bytes = match &operation {
             EditorOperation::Paste { payload, .. } => payload
                 .files
@@ -953,6 +1759,11 @@ impl Dispatch {
             self.fail();
             return;
         }
+        let ticket = self.ledger.borrow_mut().issue();
+        let Some(ticket) = ticket else {
+            self.fail();
+            return;
+        };
         let (done, previous) = oneshot::channel();
         let predecessor = self.previous.borrow_mut().replace(previous);
         let dispatch = self.clone();
@@ -969,6 +1780,7 @@ impl Dispatch {
             {
                 let (reply, response) = oneshot::channel();
                 let request = EditorRequest {
+                    ticket: ticket.clone(),
                     revision: dispatch.revision.get_untracked(),
                     selection_revision: dispatch.selection_revision.get_untracked(),
                     operation,
@@ -983,13 +1795,19 @@ impl Dispatch {
                     {
                         match response {
                             Ok(EditorOutcome {
+                                ticket: receipt,
                                 accepted: true,
                                 snapshot: Some(snapshot),
                                 selection_revision,
-                            }) => {
-                                dispatch.revision.set(snapshot.revision);
-                                dispatch.selection_revision.set(selection_revision);
-                                if dispatch.pending.get_untracked() == 1 {
+                            }) if ticket.matches(&receipt) => {
+                                let decision = dispatch.ledger.borrow_mut().accept(&receipt);
+                                if decision == ReceiptDecision::Reject {
+                                    dispatch.fail();
+                                } else {
+                                    dispatch.revision.set(snapshot.revision);
+                                    dispatch.selection_revision.set(selection_revision);
+                                }
+                                if decision == ReceiptDecision::Synchronize {
                                     dispatch.set_value(snapshot.text.to_string());
                                     dispatch.selection.set(snapshot.selection);
                                     dispatch.composing.set(snapshot.composing);
@@ -1024,17 +1842,16 @@ fn editor(
     state: Signal<EditorSnapshot>,
     commands: mpsc::Sender<EditorRequest>,
     focus_revision: Signal<u64>,
-    route: Signal<ComposerRoute>,
     host_failed: Signal<bool>,
     host: &ComposerProjection,
 ) -> EditorView {
     let gate = host.gate.clone();
-    let shortcuts = host.shortcuts.clone();
     let draft = host.draft.clone();
     let first = state.get();
     let dispatch = Dispatch {
         commands,
         previous: Rc::new(RefCell::new(None)),
+        ledger: Rc::new(RefCell::new(EditLedger::new())),
         revision: signal(first.revision),
         selection_revision: signal(first.selection_revision),
         pending: signal(0),
@@ -1049,16 +1866,29 @@ fn editor(
         generation: signal(0),
         gate: gate.clone(),
     };
+    let transactional = host.native.is_some();
+    let reload_native = host.native.clone();
+    let restore_native = host.native.clone();
+    let authority_failed = signal(false);
     let failure = dispatch.clone();
     effect(move || {
         if host_failed.get() && !failure.failed.get_untracked() {
-            failure.fail();
+            if transactional {
+                failure.gate.close();
+                failure.failed.set(true);
+            } else {
+                failure.fail();
+            }
         }
     });
+    let native = host.native.clone();
+    let node = host.node.clone();
+    let focus_node = node.clone();
     let sync = dispatch.clone();
     effect(move || {
         let snapshot = state.get();
-        if !sync.failed.get()
+        if !transactional
+            && !sync.failed.get()
             && sync.pending.get() == 0
             && snapshot.revision >= sync.revision.get_untracked()
             && snapshot.selection_revision >= sync.selection_revision.get_untracked()
@@ -1074,6 +1904,10 @@ fn editor(
     let barrier = dispatch.clone();
     effect(move || {
         let snapshot = state.get();
+        if let Some(native) = &native {
+            synchronized.set(native.ready(&snapshot.text, snapshot.selection));
+            return;
+        }
         let ready = !host_failed.get()
             && !barrier.failed.get()
             && barrier.pending.get() == 0
@@ -1100,70 +1934,12 @@ fn editor(
     let reload = dispatch.clone();
     let restore = dispatch.clone();
     let copy = dispatch.clone();
-    let history = dispatch.clone();
-    let predict = dispatch.clone();
-    let shortcut_dispatch = dispatch.clone();
-    let shortcut_pending = signal(false);
-    let focused = signal(false);
-    let shortcut_intent = signal(None::<ShortcutIntent>);
-    let deliver = dispatch.clone();
-    effect(move || {
-        let Some(intent) = shortcut_intent.get() else {
-            return;
-        };
-        if !focused.get()
-            || deliver.failed.get()
-            || deliver.composing.get()
-            || intent.generation != deliver.generation.get()
-            || intent.text != deliver.value.get()
-            || intent.selection != deliver.selection.get()
-        {
-            shortcut_intent.set(None);
-            return;
-        }
-        if !synchronized.get() || shortcut_pending.get() {
-            return;
-        }
-        shortcut_intent.set(None);
-        if intent.route != route.get() {
-            return;
-        }
-        let snapshot = state.get();
-        let event = ComposerShortcut {
-            stamp: EditorStamp::from_snapshot(&snapshot),
-            route: intent.route,
-            key: intent.key,
-        };
-        shortcut_pending.set(true);
-        let shortcuts = shortcuts.clone();
-        let dispatch = deliver.clone();
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            if shortcuts
-                .send(ShortcutRequest { event, reply })
-                .await
-                .is_err()
-                || response.await.is_err()
-            {
-                dispatch.fail();
-            }
-            shortcut_pending.set(false);
-        });
-    });
     let readonly = dispatch.failed;
     let pending = dispatch.pending;
     let recovery = dispatch.recovery;
     let input_height =
         signal(Typography::BODY * Typography::BODY_LINE_HEIGHT * first.min_rows as f32);
     let input_ref = element_ref();
-    let scroll_y = signal(None::<f32>);
-    let caret = signal(None::<(String, (u32, u32), f32, f32)>);
-    nsh_core::element::watch_scroll(
-        move || input_ref.node(),
-        move |event| {
-            scroll_y.set(Some(event.offset.y.0));
-        },
-    );
     let last_focus = Rc::new(Cell::new(0));
     let requested_focus = last_focus.clone();
     effect(move || {
@@ -1192,20 +1968,24 @@ fn editor(
         .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .w_full()
         .h(move || px(input_height.get()))
+        .on_focus(move || {
+            focus_node.send_replace(input_ref.node());
+        })
         .on_layout(move |_: &Bounds<Points>| {
+            let current = input_ref.node();
+            node.send_if_modified(|previous| {
+                if *previous == current {
+                    false
+                } else {
+                    *previous = current;
+                    true
+                }
+            });
             let next = focus_revision.get_untracked();
             if next != last_focus.get() {
                 last_focus.set(next);
                 input_ref.focus();
             }
-        })
-        .on_caret_move(move |event: &nsh_core::element::CaretEvent| {
-            caret.set(Some((
-                value.get_untracked(),
-                selection.get_untracked(),
-                event.bounds.origin.y.0,
-                event.bounds.size.height.0,
-            )));
         })
         .on_content_size_change(move |size: &Size<Points>| {
             let snapshot = state.get_untracked();
@@ -1219,12 +1999,19 @@ fn editor(
         .readonly(readonly)
         .paste_behavior(nsh_core::PasteBehavior::Report)
         .on_paste(move |payload: &nsh_core::PasteEvent| {
+            if transactional {
+                return;
+            }
             if paste.failed.get_untracked() {
                 return;
             }
             paste.gate.close();
             let before: Arc<str> = Arc::from(value.get_untracked());
             let range = selection.get_untracked();
+            if !valid_selection(&before, range) {
+                paste.fail();
+                return;
+            }
             let start = utf16_offset(&before, range.0.min(range.1));
             let end = utf16_offset(&before, range.0.max(range.1));
             let inserted = if payload.uris.is_empty() {
@@ -1242,18 +2029,7 @@ fn editor(
             };
             paste.set_value(after.clone());
             selection.set(next_selection);
-            if payload.files.len().saturating_add(payload.uris.len()) > MAX_IMAGES
-                || payload.uris.iter().any(|uri| uri.len() > 32 * 1024)
-                || payload
-                    .files
-                    .iter()
-                    .any(|file| file.data.len() > MAX_IMAGE_BYTES)
-                || payload
-                    .files
-                    .iter()
-                    .fold(0usize, |bytes, file| bytes.saturating_add(file.data.len()))
-                    > MAX_TURN_IMAGE_BYTES
-            {
+            if !valid_paste_payload(payload) {
                 paste.fail();
                 return;
             }
@@ -1261,21 +2037,13 @@ fn editor(
                 before,
                 after,
                 selection: next_selection,
-                payload: Arc::new({
-                    let mut attachments = nsh_core::PasteEvent::default();
-                    attachments.uris = payload.uris.clone();
-                    attachments.files = payload
-                        .files
-                        .iter()
-                        .map(|file| nsh_core::PastedFile::new("", "", file.data.clone()))
-                        .collect();
-                    attachments
-                }),
+                payload: Arc::new(payload.clone()),
             });
         })
-        .on_focus(move || focused.set(true))
-        .on_blur(move || focused.set(false))
         .on_change(move |after: &str| {
+            if transactional {
+                return;
+            }
             change.gate.close();
             let before = Arc::from(value.get());
             change.set_value(after.to_owned());
@@ -1290,6 +2058,9 @@ fn editor(
             });
         })
         .on_selection_change(move |range: &Selection| {
+            if transactional {
+                return;
+            }
             select.gate.close();
             selection.set((range.start, range.end));
             select.send(EditorOperation::Select {
@@ -1298,6 +2069,9 @@ fn editor(
             });
         })
         .on_composition_change(move |event: &Composition| {
+            if transactional {
+                return;
+            }
             composition.gate.close();
             composing.set(event.composing);
             composition.send(EditorOperation::Compose {
@@ -1309,138 +2083,16 @@ fn editor(
     let element = view()
         .w_full()
         .gap_2()
-        .child(when(
-            move || focused.get() && !composing.get() && !readonly.get(),
-            move || {
-                for (key, redo) in [("mod+z", false), ("mod+shift+z", true), ("ctrl+y", true)] {
-                    let history = history.clone();
-                    on_key_with(
-                        key,
-                        KeyOptions {
-                            when: nsh_core::keymap::When::Always,
-                            ..Default::default()
-                        },
-                        move |_| {
-                            history.send(if redo {
-                                EditorOperation::Redo
-                            } else {
-                                EditorOperation::Undo
-                            })
-                        },
-                    );
-                }
-                view()
-            },
-        ))
-        .child(when(
-            move || {
-                focused.get()
-                    && !composing.get()
-                    && !readonly.get()
-                    && pending.get() == 0
-                    && !route.get().files
-                    && !route.get().actions
-                    && state.with(|snapshot| {
-                        snapshot.prediction.is_some()
-                            && snapshot.text.as_ref() == value.get().as_str()
-                    })
-            },
-            move || {
-                for (key, accept) in [
-                    ("tab", true),
-                    ("right", true),
-                    ("enter", true),
-                    ("escape", false),
-                ] {
-                    let predict = predict.clone();
-                    on_key_with(
-                        key,
-                        KeyOptions {
-                            when: nsh_core::keymap::When::Always,
-                            ..Default::default()
-                        },
-                        move |_| {
-                            predict.send(if accept {
-                                EditorOperation::AcceptPrediction
-                            } else {
-                                EditorOperation::DismissPrediction
-                            })
-                        },
-                    );
-                }
-                view()
-            },
-        ))
-        .child(when(
-            move || focused.get() && !composing.get() && !readonly.get(),
-            move || {
-                let current_route = route.get();
-                let prediction = state.with(|snapshot| snapshot.prediction.is_some());
-                let mut bindings = vec![
-                    ("mod+enter", ComposerKey::Send),
-                    ("shift+tab", ComposerKey::FocusPrevious),
-                ];
-                if current_route.files || current_route.actions {
-                    bindings.extend([
-                        ("enter", ComposerKey::Accept),
-                        ("tab", ComposerKey::Accept),
-                        ("escape", ComposerKey::Cancel),
-                        ("up", ComposerKey::Previous),
-                        ("down", ComposerKey::Next),
-                    ]);
-                } else {
-                    if !prediction {
-                        bindings.extend([
-                            ("enter", ComposerKey::Send),
-                            ("tab", ComposerKey::FocusNext),
-                        ]);
-                    }
-                    let first_row = scroll_y.get().is_some_and(|offset| offset.abs() < 0.5)
-                        && caret.get().is_some_and(|(text, range, y, height)| {
-                            text == value.get()
-                                && range == selection.get()
-                                && y.is_finite()
-                                && height.is_finite()
-                                && height > 0.
-                                && y >= -0.5
-                                && y < height * 0.5
-                        });
-                    if current_route.has_history && (current_route.recalling_history || first_row) {
-                        bindings.push(("up", ComposerKey::History));
-                    }
-                }
-                for (keystroke, key) in bindings {
-                    let dispatch = shortcut_dispatch.clone();
-                    on_key_with(
-                        keystroke,
-                        KeyOptions {
-                            when: nsh_core::keymap::When::Always,
-                            ..Default::default()
-                        },
-                        move |_| {
-                            if shortcut_pending.get_untracked()
-                                || shortcut_intent.get_untracked().is_some()
-                            {
-                                return;
-                            }
-                            shortcut_intent.set(Some(ShortcutIntent {
-                                text: value.get_untracked(),
-                                selection: selection.get_untracked(),
-                                generation: dispatch.generation.get_untracked(),
-                                route: route.get_untracked(),
-                                key,
-                            }));
-                        },
-                    );
-                }
-                view()
-            },
-        ))
         .child(input)
+        .child(when(
+            move || authority_failed.get(),
+            move || text(vega_i18n::t("ui.command_failed")),
+        ))
         .child(when(
             move || readonly.get(),
             move || {
                 let reload = reload.clone();
+                let native = reload_native.clone();
                 view()
                     .gap_2()
                     .child(text(move || {
@@ -1456,9 +2108,20 @@ fn editor(
                                     return;
                                 }
                                 let snapshot = state.get_untracked();
+                                if let Some(native) = &native {
+                                    if native.failed() {
+                                        reload.send_authority(
+                                            EditorOperation::ReloadNative,
+                                            snapshot,
+                                            authority_failed,
+                                        );
+                                    }
+                                    return;
+                                }
                                 reload
                                     .generation
                                     .update(|generation| *generation = generation.wrapping_add(1));
+                                *reload.ledger.borrow_mut() = EditLedger::new();
                                 reload.revision.set(snapshot.revision);
                                 reload.selection_revision.set(snapshot.selection_revision);
                                 reload.set_value(snapshot.text.to_string());
@@ -1477,6 +2140,7 @@ fn editor(
             move || {
                 let copy = copy.clone();
                 let restore = restore.clone();
+                let native = restore_native.clone();
                 view()
                     .flex_row()
                     .flex_wrap()
@@ -1505,10 +2169,22 @@ fn editor(
                                     return;
                                 }
                                 if let Some(after) = restore.recovery.get_untracked() {
-                                    restore.gate.close();
-                                    let before = Arc::from(value.get_untracked());
-                                    restore.set_value(after.clone());
-                                    restore.send(EditorOperation::Replace { before, after });
+                                    if let Some(native) = &native {
+                                        if let Some(token) = native.restore_token() {
+                                            restore.send_authority(
+                                                EditorOperation::Restore { token, after },
+                                                state.get_untracked(),
+                                                authority_failed,
+                                            );
+                                        } else {
+                                            authority_failed.set(true);
+                                        }
+                                    } else {
+                                        restore.gate.close();
+                                        let before = Arc::from(value.get_untracked());
+                                        restore.set_value(after.clone());
+                                        restore.send(EditorOperation::Replace { before, after });
+                                    }
                                 }
                             })
                             .child(text(move || {
@@ -1525,9 +2201,771 @@ fn editor(
     }
 }
 
+#[cfg(feature = "nsh-reading-integration")]
+mod native_integration;
+#[cfg(feature = "nsh-reading-integration")]
+pub use native_integration::mounted_native_recovery_history_ax_and_submit_close_production_loop;
+
 #[cfg(test)]
 mod recovery_tests {
-    use super::DraftRecovery;
+    use super::{
+        ComposerNativeBridge, DraftRecovery, EditorGate, InputPastePayload, NativeEdit, TextInput,
+    };
+    use gpui_kit::TestAppContext;
+
+    fn attach(input: &TextInput) -> (ComposerNativeBridge, super::EditorOwner) {
+        let snapshot = input.nsh_snapshot().expect("nonsecret snapshot");
+        let bridge = ComposerNativeBridge::new(
+            NativeEdit {
+                text: snapshot.text,
+                selection: snapshot.selection,
+                composing: false,
+                serial: 0,
+                mutation: None,
+            },
+            (snapshot.revision, snapshot.selection_revision),
+            EditorGate::new(),
+        );
+        let owner = bridge.attach().expect("native owner");
+        bridge.focus(&owner, true).expect("focused owner");
+        (bridge, owner)
+    }
+
+    #[gpui_kit::test]
+    fn native_selected_mention_replacement_preserves_exact_range_and_undo_redo(
+        cx: &mut TestAppContext,
+    ) {
+        cx.set_global(vega_theme::Theme::light());
+        for inserted in ["@foobar", "@foo"] {
+            let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+            window
+                .update(cx, |input, window, cx| {
+                    input.set_text_with_bindings(
+                        "中😀 @left @foo @keep",
+                        &[
+                            vega_conversation::types::FileReferenceMention {
+                                range: 8..13,
+                                path: "left".into(),
+                            },
+                            vega_conversation::types::FileReferenceMention {
+                                range: 14..18,
+                                path: "foo".into(),
+                            },
+                            vega_conversation::types::FileReferenceMention {
+                                range: 19..24,
+                                path: "keep".into(),
+                            },
+                        ],
+                        &[],
+                        cx,
+                    );
+                    input.selected_range = 14..18;
+                    input.selection_reversed = true;
+                    let (bridge, owner) = attach(input);
+                    let revision = input.content_revision;
+                    let edit = NativeEdit {
+                        text: format!("中😀 @left {inserted} @keep").into(),
+                        selection: (10 + inserted.len() as u32, 10 + inserted.len() as u32),
+                        composing: false,
+                        serial: 1,
+                        mutation: Some(super::super::editing_core::NativeMutation {
+                            range_utf16: (10, 14),
+                            inserted: inserted.into(),
+                        }),
+                    };
+                    assert!(bridge.observe(&owner, edit.clone()));
+                    assert!(input.commit_native_transaction(&bridge, &owner, &edit, None, cx));
+                    assert_eq!(input.text(), format!("中😀 @left {inserted} @keep"));
+                    assert_eq!(input.content_revision, revision + 1);
+                    assert_eq!(input.mentions.len(), 2);
+                    assert_eq!(input.mentions[0].path(), "left");
+                    assert_eq!(input.mentions[0].range(), 8..13);
+                    assert_eq!(input.mentions[1].path(), "keep");
+                    assert_eq!(
+                        input.mentions[1].range(),
+                        15 + inserted.len()..20 + inserted.len()
+                    );
+                    assert_eq!(
+                        input.selected_range,
+                        14 + inserted.len()..14 + inserted.len()
+                    );
+                    input.undo(&super::Undo, window, cx);
+                    assert_eq!(input.text(), "中😀 @left @foo @keep");
+                    assert_eq!(input.mentions.len(), 3);
+                    assert_eq!(input.mentions[1].path(), "foo");
+                    assert_eq!(input.mentions[1].range(), 14..18);
+                    assert_eq!(input.selected_range, 14..18);
+                    assert!(input.selection_reversed);
+                    input.redo(&super::Redo, window, cx);
+                    assert_eq!(input.text(), format!("中😀 @left {inserted} @keep"));
+                    assert_eq!(input.mentions.len(), 2);
+                    assert_eq!(input.mentions[0].range(), 8..13);
+                    assert_eq!(input.mentions[1].path(), "keep");
+                    assert_eq!(
+                        input.mentions[1].range(),
+                        15 + inserted.len()..20 + inserted.len()
+                    );
+                    assert_eq!(
+                        input.selected_range,
+                        14 + inserted.len()..14 + inserted.len()
+                    );
+                    assert!(!input.selection_reversed);
+                })
+                .expect("test window");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_marked_display_mutations_share_history_without_clearing_other_mentions(
+        cx: &mut TestAppContext,
+    ) {
+        cx.set_global(vega_theme::Theme::light());
+        let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+        window
+            .update(cx, |input, window, cx| {
+                input.set_text_with_bindings(
+                    "@foo @keep",
+                    &[
+                        vega_conversation::types::FileReferenceMention {
+                            range: 0..4,
+                            path: "foo".into(),
+                        },
+                        vega_conversation::types::FileReferenceMention {
+                            range: 5..10,
+                            path: "keep".into(),
+                        },
+                    ],
+                    &[],
+                    cx,
+                );
+                input.selected_range = 0..4;
+                input.selection_reversed = true;
+                let (bridge, owner) = attach(input);
+                for (serial, text, selection, composing, mutation) in [
+                    (1, "候 @keep", (1, 1), true, Some(((0, 4), "候"))),
+                    (2, "候选 @keep", (2, 2), true, Some(((0, 1), "候选"))),
+                    (3, "候选 @keep", (2, 2), false, None),
+                ] {
+                    let edit = NativeEdit {
+                        text: text.into(),
+                        selection,
+                        composing,
+                        serial,
+                        mutation: mutation.map(|(range_utf16, inserted)| {
+                            super::super::editing_core::NativeMutation {
+                                range_utf16,
+                                inserted: inserted.into(),
+                            }
+                        }),
+                    };
+                    assert!(bridge.observe(&owner, edit.clone()));
+                    assert!(input.commit_native_transaction(&bridge, &owner, &edit, None, cx));
+                    assert_eq!(input.text(), text);
+                    assert_eq!(input.mentions.len(), 1);
+                    assert_eq!(input.mentions[0].path(), "keep");
+                    assert_eq!(input.is_composing(), composing);
+                    assert_eq!(bridge.ready(text, selection), !composing);
+                }
+                assert_eq!(input.mentions[0].range(), 7..12);
+                input.undo(&super::Undo, window, cx);
+                assert_eq!(input.text(), "@foo @keep");
+                assert_eq!(input.mentions.len(), 2);
+                assert_eq!(input.mentions[0].path(), "foo");
+                assert_eq!(input.selected_range, 0..4);
+                assert!(input.selection_reversed);
+                input.redo(&super::Redo, window, cx);
+                assert_eq!(input.text(), "候选 @keep");
+                assert_eq!(input.mentions.len(), 1);
+                assert_eq!(input.mentions[0].range(), 7..12);
+                assert!(!input.is_composing());
+            })
+            .expect("test window");
+    }
+
+    #[gpui_kit::test]
+    fn selected_mention_paste_keeps_original_mutation_and_undo_redo(cx: &mut TestAppContext) {
+        cx.set_global(vega_theme::Theme::light());
+        let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+        for inserted in ["@foobar", "@foo"] {
+            window
+                .update(cx, |input, window, cx| {
+                    input.set_text_with_bindings(
+                        "@foo @keep",
+                        &[
+                            vega_conversation::types::FileReferenceMention {
+                                range: 0..4,
+                                path: "foo".into(),
+                            },
+                            vega_conversation::types::FileReferenceMention {
+                                range: 5..10,
+                                path: "keep".into(),
+                            },
+                        ],
+                        &[],
+                        cx,
+                    );
+                    input.selected_range = 0..4;
+                    input.selection_reversed = true;
+                    let (bridge, owner) = attach(input);
+                    let before = bridge.local_draft();
+                    let mut payload = nsh_core::PasteEvent::default();
+                    payload.text = inserted.into();
+                    let (text, selection) = super::pasted_text(
+                        &before.text,
+                        before.selection,
+                        &payload,
+                        super::NativeEditorPolicy::Composer,
+                    )
+                    .expect("paste");
+                    let edit = NativeEdit {
+                        text: text.into(),
+                        selection,
+                        composing: false,
+                        serial: 1,
+                        mutation: Some(super::super::editing_core::NativeMutation {
+                            range_utf16: (0, 4),
+                            inserted: inserted.into(),
+                        }),
+                    };
+                    assert!(bridge.begin_paste(&owner, &before));
+                    assert!(bridge.observe_paste(&owner, &before, edit.clone()));
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        &owner,
+                        &edit,
+                        Some(std::rc::Rc::new(InputPastePayload::Synthetic(payload))),
+                        cx
+                    ));
+                    assert_eq!(input.text(), format!("{inserted} @keep"));
+                    assert_eq!(input.mentions.len(), 1);
+                    assert_eq!(input.mentions[0].path(), "keep");
+                    assert_eq!(
+                        input.mentions[0].range(),
+                        inserted.len() + 1..inserted.len() + 6
+                    );
+                    assert_eq!(input.selected_range, inserted.len()..inserted.len());
+                    input.undo(&super::Undo, window, cx);
+                    assert_eq!(input.text(), "@foo @keep");
+                    assert_eq!(input.mentions.len(), 2);
+                    assert_eq!(input.mentions[0].range(), 0..4);
+                    assert_eq!(input.mentions[0].path(), "foo");
+                    assert_eq!(input.selected_range, 0..4);
+                    assert!(input.selection_reversed);
+                    input.redo(&super::Redo, window, cx);
+                    assert_eq!(input.text(), format!("{inserted} @keep"));
+                    assert_eq!(input.mentions.len(), 1);
+                    assert_eq!(input.mentions[0].path(), "keep");
+                    assert_eq!(input.selected_range, inserted.len()..inserted.len());
+                    assert!(!input.selection_reversed);
+                })
+                .expect("test window");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_attachment_commit_delivers_complete_original_item_to_image_paste(
+        cx: &mut TestAppContext,
+    ) {
+        cx.set_global(vega_theme::Theme::light());
+        let received = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let output = received.clone();
+        let window = cx.add_window(move |_, cx| {
+            cx.subscribe_self(
+                move |_: &mut TextInput, event: &super::super::ImagePaste, _| {
+                    output.borrow_mut().push(event.0.clone());
+                },
+            )
+            .detach();
+            TextInput::new(cx, "", false)
+        });
+        let item = gpui_kit::ClipboardItem {
+            entries: vec![
+                gpui_kit::ClipboardEntry::String(gpui_kit::ClipboardString {
+                    text: "label".into(),
+                    metadata: Some("opaque-not-html".into()),
+                }),
+                gpui_kit::ClipboardEntry::Image(gpui_kit::Image::from_bytes(
+                    gpui_kit::ImageFormat::Png,
+                    vec![137, 80, 78, 71, 13, 10, 26, 10],
+                )),
+                gpui_kit::ClipboardEntry::String(gpui_kit::ClipboardString {
+                    text: String::new(),
+                    metadata: Some(String::new()),
+                }),
+                gpui_kit::ClipboardEntry::ExternalPaths(gpui_kit::ExternalPaths(
+                    [std::path::PathBuf::from("/tmp/original.png")]
+                        .into_iter()
+                        .collect(),
+                )),
+            ],
+        };
+        let expected = item.clone();
+        let gpui_kit::ClipboardEntry::String(value) = &item.entries[0] else {
+            panic!("string");
+        };
+        let original_text = value.text.as_ptr();
+        window
+            .update(cx, |input, _, cx| {
+                input.image_paste = true;
+                input.set_text("draft", cx);
+                let (bridge, owner) = attach(input);
+                let before = bridge.local_draft();
+                let edit = NativeEdit {
+                    serial: 1,
+                    ..before.clone()
+                };
+                assert!(bridge.begin_paste(&owner, &before));
+                assert!(bridge.observe_paste(&owner, &before, edit.clone()));
+                assert!(input.commit_native_transaction(
+                    &bridge,
+                    &owner,
+                    &edit,
+                    Some(std::rc::Rc::new(InputPastePayload::native(Some(item)))),
+                    cx
+                ));
+                assert_eq!(input.text(), "draft");
+                assert_eq!(edit.mutation, None);
+            })
+            .expect("test window");
+        cx.run_until_parked();
+        let items = received.borrow();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].as_ref(), &expected);
+        let gpui_kit::ClipboardEntry::String(value) = &items[0].entries[0] else {
+            panic!("string");
+        };
+        assert_eq!(value.text.as_ptr(), original_text);
+    }
+
+    #[gpui_kit::test]
+    fn native_text_original_is_released_after_authorized_commit_without_image_event(
+        cx: &mut TestAppContext,
+    ) {
+        cx.set_global(vega_theme::Theme::light());
+        let events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let output = events.clone();
+        let window = cx.add_window(move |_, cx| {
+            cx.subscribe_self(move |_: &mut TextInput, _: &super::super::ImagePaste, _| {
+                output.set(output.get() + 1);
+            })
+            .detach();
+            TextInput::new(cx, "", false)
+        });
+        let original = std::rc::Rc::new(InputPastePayload::native(Some(
+            gpui_kit::ClipboardItem::new_string_with_metadata("x".into(), "opaque".into()),
+        )));
+        let observed = std::rc::Rc::downgrade(&original);
+        window
+            .update(cx, |input, _, cx| {
+                let (bridge, owner) = attach(input);
+                let before = bridge.local_draft();
+                let edit = NativeEdit {
+                    text: "x".into(),
+                    selection: (1, 1),
+                    composing: false,
+                    serial: 1,
+                    mutation: Some(super::super::editing_core::NativeMutation {
+                        range_utf16: (0, 0),
+                        inserted: "x".into(),
+                    }),
+                };
+                assert!(bridge.begin_paste(&owner, &before));
+                assert!(bridge.observe_paste(&owner, &before, edit.clone()));
+                assert!(input.commit_native_transaction(
+                    &bridge,
+                    &owner,
+                    &edit,
+                    Some(original),
+                    cx
+                ));
+                assert_eq!(input.text(), "x");
+            })
+            .expect("test window");
+        cx.run_until_parked();
+        assert!(observed.upgrade().is_none());
+        assert_eq!(events.get(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn single_line_paste_authority_replaces_reversed_non_bmp_selection(cx: &mut TestAppContext) {
+        use super::{NativeEditorPolicy, NativeEditorRoute};
+        cx.set_global(vega_theme::Theme::light());
+        let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+        for (original, inserted, expected, caret) in [
+            ("x\ny", "x y", "中x y文", 4),
+            ("x\r\ny", "x\r y", "中x\r y文", 5),
+            ("x\ry", "x\ry", "中x\ry文", 4),
+        ] {
+            window
+                .update(cx, |input, _, cx| {
+                    input.set_text("中😀文", cx);
+                    input.selected_range = 3..7;
+                    input.selection_reversed = true;
+                    let (bridge, owner) = attach(input);
+                    bridge.route(NativeEditorRoute {
+                        policy: NativeEditorPolicy::SingleLine(gpui_kit::EntityId::from(1_u64)),
+                        ..Default::default()
+                    });
+                    let before = bridge.local_draft();
+                    assert_eq!(before.selection, (3, 1));
+                    let edit = NativeEdit {
+                        text: expected.into(),
+                        selection: (caret, caret),
+                        composing: false,
+                        serial: 1,
+                        mutation: Some(super::super::editing_core::NativeMutation {
+                            range_utf16: (1, 3),
+                            inserted: inserted.into(),
+                        }),
+                    };
+                    assert!(bridge.begin_paste(&owner, &before));
+                    assert!(bridge.observe_paste(&owner, &before, edit.clone()));
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        &owner,
+                        &edit,
+                        Some(std::rc::Rc::new(InputPastePayload::native(Some(
+                            gpui_kit::ClipboardItem::new_string(original.into())
+                        )))),
+                        cx
+                    ));
+                    assert_eq!(input.text(), expected);
+                    assert_eq!(input.selected_range, inserted.len() + 3..inserted.len() + 3);
+                    assert!(!input.selection_reversed);
+                    assert!(bridge.ready(expected, (caret, caret)));
+                })
+                .expect("window");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_paste_hooks_adapter_authority_preserve_each_explicit_line_policy(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::native_adapter::{NativeAdapter, NativeDelivery};
+        use super::{NativeEditorPolicy, NativeEditorRoute};
+        cx.set_global(vega_theme::Theme::light());
+        for (policy, original, expected) in [
+            (NativeEditorPolicy::Composer, "alpha\nbeta", "alpha\nbeta"),
+            (NativeEditorPolicy::Composer, "alpha\r\nbeta", "alpha\nbeta"),
+            (NativeEditorPolicy::Composer, "alpha\rbeta", "alpha\rbeta"),
+            (
+                NativeEditorPolicy::SingleLine(gpui_kit::EntityId::from(1_u64)),
+                "alpha\nbeta",
+                "alpha beta",
+            ),
+            (
+                NativeEditorPolicy::SingleLine(gpui_kit::EntityId::from(1_u64)),
+                "alpha\r\nbeta",
+                "alpha\r beta",
+            ),
+            (
+                NativeEditorPolicy::SingleLine(gpui_kit::EntityId::from(1_u64)),
+                "alpha\rbeta",
+                "alpha\rbeta",
+            ),
+        ] {
+            let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+            window
+                .update(cx, |input, _, cx| {
+                    let snapshot = input.nsh_snapshot().expect("snapshot");
+                    let bridge = ComposerNativeBridge::new(
+                        NativeEdit {
+                            text: snapshot.text,
+                            selection: snapshot.selection,
+                            composing: false,
+                            serial: 0,
+                            mutation: None,
+                        },
+                        (snapshot.revision, snapshot.selection_revision),
+                        EditorGate::new(),
+                    );
+                    bridge.route(NativeEditorRoute {
+                        policy,
+                        ..Default::default()
+                    });
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+                    let adapter = NativeAdapter::new(
+                        bridge.clone(),
+                        DraftRecovery::new(String::new()),
+                        sender,
+                        false,
+                    )
+                    .expect("adapter");
+                    let original = gpui_kit::ClipboardItem::new_string_with_metadata(
+                        original.into(),
+                        "opaque-not-html".into(),
+                    );
+                    let expected_original = original.clone();
+                    let hooks = adapter.clone();
+                    let retire = nsh_platform_gpui::host_regressions::native_paste_through_hooks(
+                        Some(original),
+                        move |identity| hooks.hooks(identity),
+                    );
+                    assert!(!adapter.is_failed());
+                    let NativeDelivery::Edit(initial) = receiver.try_recv().expect("initial")
+                    else {
+                        panic!("initial")
+                    };
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        adapter.owner(),
+                        &initial,
+                        None,
+                        cx
+                    ));
+                    let NativeDelivery::Paste {
+                        edit,
+                        payload,
+                        _budget,
+                    } = receiver.try_recv().expect("paste")
+                    else {
+                        panic!("paste")
+                    };
+                    let observed = std::rc::Rc::downgrade(&payload);
+                    assert_eq!(payload.original(), Some(&expected_original));
+                    assert!(payload.html().is_empty());
+                    assert_eq!(edit.text.as_ref(), expected);
+                    assert_eq!(
+                        edit.selection,
+                        (
+                            expected.encode_utf16().count() as u32,
+                            expected.encode_utf16().count() as u32
+                        )
+                    );
+                    assert_eq!(
+                        edit.mutation.as_ref().expect("mutation").inserted.as_ref(),
+                        expected
+                    );
+                    assert!(!bridge.ready(expected, edit.selection));
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        adapter.owner(),
+                        &edit,
+                        Some(payload),
+                        cx
+                    ));
+                    assert_eq!(input.text(), expected);
+                    assert!(bridge.ready(expected, edit.selection));
+                    assert!(observed.upgrade().is_none());
+                    assert!(receiver.try_recv().is_err());
+                    drop(_budget);
+                    retire();
+                })
+                .expect("window");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_full_budget_carrier_hooks_adapter_authority_deliver_original_images(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::native_adapter::{NativeAdapter, NativeDelivery};
+        cx.set_global(vega_theme::Theme::light());
+        for count in [2, 4] {
+            let received = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let output = received.clone();
+            let window = cx.add_window(move |_, cx| {
+                cx.subscribe_self(
+                    move |_: &mut TextInput, event: &super::super::ImagePaste, _| {
+                        output.borrow_mut().push(event.0.clone())
+                    },
+                )
+                .detach();
+                TextInput::new(cx, "", false)
+            });
+            let size = 16 * 1024 * 1024 / count;
+            let mut entries = vec![gpui_kit::ClipboardEntry::String(
+                gpui_kit::ClipboardString {
+                    text: String::new(),
+                    metadata: Some("opaque, not HTML".into()),
+                },
+            )];
+            for _ in 0..count {
+                let mut bytes = Vec::with_capacity(size + 4096);
+                bytes.resize(size, 0);
+                bytes[..8].copy_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+                entries.push(gpui_kit::ClipboardEntry::Image(
+                    gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes),
+                ));
+            }
+            let original = gpui_kit::ClipboardItem { entries };
+            let expected = original.clone();
+            window
+                .update(cx, move |input, _, cx| {
+                    input.image_paste = true;
+                    let snapshot = input.nsh_snapshot().expect("snapshot");
+                    let bridge = ComposerNativeBridge::new(
+                        NativeEdit {
+                            text: snapshot.text,
+                            selection: snapshot.selection,
+                            composing: false,
+                            serial: 0,
+                            mutation: None,
+                        },
+                        (snapshot.revision, snapshot.selection_revision),
+                        EditorGate::new(),
+                    );
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
+                    let adapter = NativeAdapter::new(
+                        bridge.clone(),
+                        DraftRecovery::new(String::new()),
+                        sender,
+                        true,
+                    )
+                    .expect("adapter");
+                    let hooks = adapter.clone();
+                    let retire = nsh_platform_gpui::host_regressions::native_paste_through_hooks(
+                        Some(original),
+                        move |identity| hooks.hooks(identity),
+                    );
+                    assert!(!adapter.is_failed());
+                    let NativeDelivery::Edit(initial) =
+                        receiver.try_recv().expect("initial native snapshot")
+                    else {
+                        panic!("initial")
+                    };
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        adapter.owner(),
+                        &initial,
+                        None,
+                        cx
+                    ));
+                    let NativeDelivery::Paste {
+                        edit,
+                        payload,
+                        _budget,
+                    } = receiver.try_recv().expect("accepted full-budget paste")
+                    else {
+                        panic!("paste")
+                    };
+                    assert_eq!(
+                        payload.files().map(|file| file.capacity()).sum::<usize>(),
+                        16 * 1024 * 1024
+                    );
+                    assert_eq!(payload.files().count(), count);
+                    assert!(payload.html().is_empty());
+                    assert_eq!(edit.mutation, None);
+                    assert_eq!(edit.serial, initial.serial + 1);
+                    assert!(input.commit_native_transaction(
+                        &bridge,
+                        adapter.owner(),
+                        &edit,
+                        Some(payload),
+                        cx
+                    ));
+                    assert_eq!(input.text(), "");
+                    assert!(bridge.ready("", (0, 0)));
+                    assert!(receiver.try_recv().is_err());
+                    drop(_budget);
+                    retire();
+                })
+                .expect("window");
+            cx.run_until_parked();
+            let items = received.borrow();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].as_ref(), &expected);
+            for entry in &items[0].entries {
+                if let gpui_kit::ClipboardEntry::Image(image) = entry {
+                    assert_eq!(image.bytes.capacity(), size);
+                }
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn failed_draft_reload_restore_continues_editing_and_send_readiness(cx: &mut TestAppContext) {
+        cx.set_global(vega_theme::Theme::light());
+        let window = cx.add_window(|_, cx| TextInput::new(cx, "", false));
+        window
+            .update(cx, |input, window, cx| {
+                input.set_text("authority", cx);
+                let (failed, old_owner) = attach(input);
+                let local = NativeEdit {
+                    text: "unsent 中文".into(),
+                    selection: (9, 9),
+                    composing: false,
+                    serial: 1,
+                    mutation: Some(super::super::editing_core::NativeMutation {
+                        range_utf16: (0, 9),
+                        inserted: "unsent 中文".into(),
+                    }),
+                };
+                assert!(failed.observe(&old_owner, local.clone()));
+                failed.fail();
+                let recovery = DraftRecovery::new(local.text.to_string());
+                recovery.preserve();
+                assert!(failed.restore_token().is_none());
+                failed.retire();
+                let recovery = recovery.restarted(input.text().into());
+                let (reloaded, _) = attach(input);
+                let token = reloaded.restore_token().expect("reloaded native settled");
+                assert!(!input.restore_native_draft(&failed, &token, "wrong"));
+                assert_eq!(input.text(), "authority");
+                let saved = recovery.saved().expect("saved draft");
+                input.nsh_selection_revision += 1;
+                assert!(!input.restore_native_draft(&reloaded, &token, &saved));
+                assert_eq!(input.text(), "authority");
+                assert_eq!(recovery.saved().as_deref(), Some("unsent 中文"));
+                input.nsh_selection_revision -= 1;
+                assert!(input.restore_native_draft(&reloaded, &token, &saved));
+                assert_eq!(input.text(), "unsent 中文");
+                assert_eq!(recovery.saved().as_deref(), Some("unsent 中文"));
+                assert!(!reloaded.ready(input.text(), (9, 9)));
+                let (current, owner) = attach(input);
+                assert!(!input.commit_native_transaction(&current, &old_owner, &local, None, cx));
+                assert!(current.ready(input.text(), (9, 9)));
+                let next = NativeEdit {
+                    text: "unsent 中文!".into(),
+                    selection: (10, 10),
+                    composing: false,
+                    serial: 1,
+                    mutation: Some(super::super::editing_core::NativeMutation {
+                        range_utf16: (9, 9),
+                        inserted: "!".into(),
+                    }),
+                };
+                assert!(current.observe(&owner, next.clone()));
+                assert!(input.commit_native_transaction(&current, &owner, &next, None, cx));
+                assert_eq!(input.text(), "unsent 中文!");
+                let snapshot = input.nsh_snapshot().expect("continued draft");
+                assert!(current.ready(&snapshot.text, snapshot.selection));
+                let gate = EditorGate::new();
+                gate.open(&snapshot);
+                assert!(gate.matches(input));
+                let epoch = current.focus(&owner, true).expect("send focus");
+                let modifiers = super::super::editing_core::NativeModifiers {
+                    meta: cfg!(target_os = "macos"),
+                    control: !cfg!(target_os = "macos"),
+                    ..Default::default()
+                };
+                let command = current.key(
+                    &owner,
+                    epoch,
+                    super::super::editing_core::NativeEditorKey::Return,
+                    modifiers,
+                    false,
+                    false,
+                );
+                let super::super::editing_core::NativeKeyDecision::Command(command) = command
+                else {
+                    panic!("send ready")
+                };
+                assert_eq!(
+                    command.command,
+                    super::super::editing_core::NativeEditorCommand::Submit
+                );
+                current.finish_command(&command);
+                input.undo(&super::Undo, window, cx);
+                assert_eq!(input.text(), "unsent 中文");
+                input.undo(&super::Undo, window, cx);
+                assert_eq!(input.text(), "authority");
+                input.redo(&super::Redo, window, cx);
+                assert_eq!(input.text(), "unsent 中文");
+            })
+            .expect("test window");
+    }
 
     #[test]
     fn reload_preserves_unsynchronized_text_without_replacing_authoritative_draft() {
@@ -1555,5 +2993,49 @@ mod recovery_tests {
         restarted.preserve();
         assert_eq!(restarted.saved().as_deref(), Some("new host draft"));
         assert_eq!(failed.saved().as_deref(), Some("late old host state"));
+    }
+
+    #[test]
+    fn paste_uses_original_text_and_directed_selection_without_inserting_file_paths() {
+        let mut payload = nsh_core::PasteEvent::default();
+        payload.text = "x\r\ny".into();
+        assert_eq!(
+            super::pasted_text(
+                "中😀文",
+                (3, 1),
+                &payload,
+                super::NativeEditorPolicy::Composer
+            ),
+            Some(("中x\ny文".into(), (4, 4)))
+        );
+        payload.uris.push("file:///tmp/example.png".into());
+        assert_eq!(
+            super::pasted_text(
+                "中😀文",
+                (3, 1),
+                &payload,
+                super::NativeEditorPolicy::Composer
+            ),
+            Some(("中😀文".into(), (3, 1)))
+        );
+        assert!(super::valid_paste_payload(&payload));
+        payload.uris[0] = "file:///tmp/%00.png".into();
+        assert!(!super::valid_paste_payload(&payload));
+        assert!(super::pasted_attachments(&payload).is_none());
+    }
+
+    #[test]
+    fn paste_limits_metadata_and_does_not_trust_declared_image_mime() {
+        let mut payload = nsh_core::PasteEvent::default();
+        payload.files.push(nsh_core::PastedFile::new(
+            "image.png",
+            "image/png",
+            b"not an image".to_vec(),
+        ));
+        assert!(super::valid_paste_payload(&payload));
+        assert!(super::pasted_attachments(&payload).is_none());
+        payload.html = "x".repeat(2 * 1024 * 1024 + 1);
+        assert!(!super::valid_paste_payload(&payload));
+        assert!(super::pasted_attachments(&payload).is_none());
     }
 }

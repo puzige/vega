@@ -46,23 +46,33 @@ pub(crate) fn settings_section() -> Div {
         .gap(px(Layout::SETTINGS_CONTENT_GAP))
 }
 
-pub(crate) fn settings_group(colors: vega_theme::ThemeColors) -> Div {
+pub(crate) fn settings_group(
+    colors: vega_theme::ThemeColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     settings_section()
         .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .rounded(px(Layout::PANEL_RADIUS))
         .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_subtle)
+        .border_color(gpui_kit::transparent_black())
+        .relative()
+        .child(super::nsh_tail::group(colors, window, cx))
 }
 
 pub(crate) fn settings_field(
+    key: &'static str,
     label: &'static str,
     description: Option<String>,
     control: impl IntoElement,
     colors: vega_theme::ThemeColors,
-) -> Div {
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::Stateful<Div> {
     div()
+        .id(key)
+        .relative()
         .min_w_0()
         .flex_shrink_0()
         .flex()
@@ -72,7 +82,8 @@ pub(crate) fn settings_field(
         .gap_y_2()
         .py(px(Layout::SETTINGS_ROW_PADDING_Y))
         .border_b_1()
-        .border_color(colors.border_subtle)
+        .border_color(gpui_kit::transparent_black())
+        .child(super::nsh_tail::rule(key, colors.border_subtle, window, cx))
         .child(
             div()
                 .w(px(Layout::SETTINGS_LABEL_WIDTH))
@@ -83,13 +94,27 @@ pub(crate) fn settings_field(
                 .flex_col()
                 .gap_1()
                 .text_size(px(Typography::BODY))
-                .child(label)
+                .child(super::nsh_tail::label(
+                    "settings-field-label",
+                    label.to_string(),
+                    colors.text_primary,
+                    Typography::BODY,
+                    window,
+                    cx,
+                ))
                 .when_some(description, |view, description| {
                     view.child(
                         div()
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .child(description),
+                            .child(super::nsh_tail::label(
+                                "settings-field-description",
+                                description,
+                                colors.text_secondary,
+                                Typography::METADATA,
+                                window,
+                                cx,
+                            )),
                     )
                 }),
         )
@@ -128,12 +153,24 @@ pub(crate) fn pricing_notice_label(notice: PricingNotice) -> &'static str {
     }
 }
 
-pub(crate) fn section_title(label: &'static str, color: gpui_kit::Rgba) -> Div {
+pub(crate) fn section_title(
+    label: &'static str,
+    color: gpui_kit::Rgba,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     div()
         .text_size(px(Typography::HEADING_BLOCK))
         .font_weight(Typography::HEADING_BLOCK_WEIGHT)
         .text_color(color)
-        .child(label)
+        .child(super::nsh_tail::label(
+            "settings-defaults-title",
+            label.to_string(),
+            color,
+            Typography::HEADING_BLOCK,
+            window,
+            cx,
+        ))
 }
 
 /// Maximum UTF-8 bytes retained for one provider model ID.

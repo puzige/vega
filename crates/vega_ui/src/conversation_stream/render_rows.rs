@@ -2,14 +2,8 @@ use super::code_drag::CodeDragSelection;
 use super::code_viewport::CodeViewport;
 use super::copy_receipt::{CopyReceiptButton, CopySource};
 use super::links::link_ranges;
-use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
-use gpui_kit::{
-    Radians, Transformation,
-    component::{IconName, IconNamed, Sizable as _},
-    svg,
-};
 
 pub(crate) fn user_markdown_model(text: &str) -> StreamModel {
     let mut stream = MarkdownStream::new();
@@ -74,9 +68,7 @@ pub(crate) fn context_compaction_label(
 }
 
 #[derive(Clone)]
-pub(crate) struct MessageInteraction<'a> {
-    pub(crate) focus: &'a FocusHandle,
-    pub(crate) actions_enabled: bool,
+pub(crate) struct MessageInteraction {
     pub(crate) user_top: f32,
     pub(crate) stream: Option<gpui_kit::WeakEntity<ConversationStream>>,
     pub(crate) text_width: f32,
@@ -90,7 +82,7 @@ pub(crate) fn render_entry_with_selection(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    interaction: MessageInteraction<'_>,
+    interaction: MessageInteraction,
 ) -> AnyElement {
     render_entry_internal(entry, window, cx, Some(interaction), false)
 }
@@ -101,7 +93,7 @@ pub(crate) fn render_stream_entry(
     process_top: f32,
     window: &mut Window,
     cx: &mut App,
-    interaction: MessageInteraction<'_>,
+    interaction: MessageInteraction,
 ) -> AnyElement {
     let body = render_entry_internal(entry, window, cx, Some(interaction), suppress_run_notices);
     if matches!(
@@ -143,46 +135,21 @@ pub(crate) fn process_surface(_colors: &ThemeColors) -> gpui_kit::Div {
 }
 
 pub(crate) fn render_compaction_activity(
-    label: impl IntoElement,
+    label: impl Into<String>,
     colors: &ThemeColors,
 ) -> AnyElement {
-    let (glyph, color) = context_compaction_visual(
+    let (_, color) = context_compaction_visual(
         vega_conversation::types::ContextCompactionStatus::Compacting,
         colors,
     );
-    let line_height = Typography::CONVERSATION * Typography::CONVERSATION_LINE_HEIGHT;
-    let vertical_padding = (Layout::CONVERSATION_TOOL_HEIGHT - line_height) / 2.;
-    div()
-        .w_full()
-        .flex_shrink_0()
-        .min_w_0()
-        .min_h(px(Layout::CONVERSATION_TOOL_HEIGHT))
-        .py(px(vertical_padding))
-        .flex()
-        .items_start()
-        .gap(px(Layout::CONVERSATION_INLINE_GAP))
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(gpui_kit::relative(Typography::CONVERSATION_LINE_HEIGHT))
-        .text_color(color)
-        .child(
-            div()
-                .w(px(Layout::ICON_SIZE))
-                .h(px(line_height))
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_shrink_0()
-                .child(icon(glyph, color)),
-        )
-        .child(div().min_w_0().flex_1().whitespace_normal().child(label))
-        .into_any_element()
+    super::conversation_status::compaction(label.into(), color)
 }
 
 fn render_entry_internal(
     entry: &StreamEntry,
     window: &mut Window,
     cx: &mut App,
-    interaction: Option<MessageInteraction<'_>>,
+    interaction: Option<MessageInteraction>,
     suppress_run_notices: bool,
 ) -> AnyElement {
     let colors = theme(cx).colors;
@@ -344,45 +311,6 @@ fn markdown_message_item(
         .into_any_element()
 }
 
-pub(super) fn status_notice(message: String, color: Rgba, colors: &ThemeColors) -> AnyElement {
-    status_notice_with_icon(message, color, colors, Icon::Warning)
-}
-
-pub(super) fn status_notice_with_icon(
-    message: String,
-    color: Rgba,
-    colors: &ThemeColors,
-    icon_kind: Icon,
-) -> AnyElement {
-    div()
-        .w_full()
-        .min_w_0()
-        .flex()
-        .items_start()
-        .gap(px(Layout::STATUS_GAP))
-        .p(px(Layout::STATUS_PADDING))
-        .rounded(px(Layout::STATUS_RADIUS))
-        .border_1()
-        .border_color(colors.border_subtle)
-        .text_size(px(Typography::BODY))
-        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-        .text_color(color)
-        .child(
-            div()
-                .mt(px((Typography::BODY * Typography::BODY_LINE_HEIGHT
-                    - Layout::ICON_SIZE)
-                    / 2.0))
-                .size(px(Layout::ICON_SIZE))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(icon_kind, color)),
-        )
-        .child(div().min_w_0().flex_1().child(message))
-        .into_any_element()
-}
-
 fn user_message_bubble(content: AnyElement, colors: &ThemeColors, top: f32) -> AnyElement {
     div()
         .w_full()
@@ -397,11 +325,15 @@ fn user_message_bubble(content: AnyElement, colors: &ThemeColors, top: f32) -> A
             div()
                 .max_w(gpui_kit::relative(Layout::CONVERSATION_USER_RATIO))
                 .min_w_0()
-                .bg(Rgba {
-                    a: colors.conversation_bubble.a,
-                    ..colors.accent
-                })
-                .rounded(px(Layout::USER_MESSAGE_RADIUS))
+                .relative()
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(super::foreground_chrome::decoration(
+                            super::foreground_chrome::Decoration::UserBubble,
+                        )),
+                )
                 .text_size(px(Typography::CONVERSATION))
                 .line_height(gpui_kit::relative(
                     Typography::CONVERSATION_USER_LINE_HEIGHT,
@@ -449,7 +381,7 @@ pub(crate) fn user_message_item(
 fn selectable_user_message(
     model: &StreamModel,
     copy: &MessageCopy,
-    interaction: MessageInteraction<'_>,
+    interaction: MessageInteraction,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
@@ -483,77 +415,19 @@ fn selectable_user_message(
         .flex()
         .flex_col()
         .child(content)
-        .when(collapsed, |body| body.child(div().child("…")))
+        .when(collapsed, |body| {
+            body.child(super::conversation_status::user_ellipsis(
+                colors.conversation_user,
+            ))
+        })
         .when(preview.collapsible, |body| {
-            let id: gpui_kit::SharedString = format!("user-message-disclosure-{}", copy.id).into();
-            let focus = crate::disclosure::focus(id.clone(), window, cx);
-            let mouse_copy = copy.clone();
-            let key_copy = copy.clone();
-            let mouse_stream = interaction.stream.clone();
-            let key_stream = interaction.stream.clone();
-            let focus_background = colors.bg_active_alpha;
-            let label = vega_i18n::t(if expanded {
-                "ui.show_less"
-            } else {
-                "ui.show_more"
-            });
-            body.child(
-                div()
-                    .mt(px(Layout::USER_MESSAGE_TOGGLE_GAP))
-                    .flex()
-                    .justify_start()
-                    .child(
-                        div()
-                            .id(id)
-                            .role(gpui_kit::Role::Button)
-                            .aria_label(label)
-                            .aria_expanded(expanded)
-                            .track_focus(&focus)
-                            .tab_stop(true)
-                            .cursor_pointer()
-                            .flex()
-                            .items_center()
-                            .flex_shrink_0()
-                            .gap(px(Layout::CONVERSATION_INLINE_GAP))
-                            .h(px(Typography::CONVERSATION
-                                * Typography::CONVERSATION_USER_LINE_HEIGHT))
-                            .whitespace_nowrap()
-                            .text_size(px(Typography::BODY))
-                            .rounded(px(Layout::COPY_ACTION_GAP))
-                            .focus_visible(move |style| style.bg(focus_background))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(move |_, window, cx| {
-                                super::user_disclosure::toggle(
-                                    &mouse_copy,
-                                    &mouse_stream,
-                                    window,
-                                    cx,
-                                )
-                            })
-                            .on_key_down(move |event, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    super::user_disclosure::toggle(
-                                        &key_copy,
-                                        &key_stream,
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            })
-                            .child(label)
-                            .child(
-                                svg()
-                                    .path(IconName::ChevronDown.path())
-                                    .size(px(Layout::CONVERSATION_CHEVRON_SIZE))
-                                    .flex_shrink_0()
-                                    .text_color(colors.conversation_user)
-                                    .with_transformation(Transformation::rotate(Radians(
-                                        if expanded { std::f32::consts::PI } else { 0. },
-                                    ))),
-                            ),
-                    ),
-            )
+            body.child(super::user_disclosure::control(
+                copy,
+                &interaction.stream,
+                colors,
+                window,
+                cx,
+            ))
         });
     user_message_bubble(content.into_any_element(), colors, interaction.user_top)
 }
@@ -562,7 +436,7 @@ fn selectable_markdown_message(
     model: &StreamModel,
     failure: Option<RunFailureKind>,
     copy: &MessageCopy,
-    interaction: MessageInteraction<'_>,
+    interaction: MessageInteraction,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
@@ -591,88 +465,14 @@ fn selectable_markdown_message(
 pub(crate) fn selectable_markdown_content(
     model: &StreamModel,
     copy: &MessageCopy,
-    interaction: MessageInteraction<'_>,
+    interaction: MessageInteraction,
     colors: &ThemeColors,
     copy_original: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
-    let mut document =
-        SelectionDocumentBuilder::new(copy.clone(), interaction.focus.clone(), selection_color);
-    let body = div().w_full().min_w_0().flex_shrink_0().flex().flex_col();
-    let mut previous: Option<(u64, LineKind, Option<Arc<StreamCodeBlock>>)> = None;
-    let selection = document.code_drag_selection(window, cx);
-    let mut fade_block = None;
-    let mut fade_line = 0;
-    let fade = copy
-        .stream_fade
-        .as_ref()
-        .map_or_else(stream_fade::FadeFrame::default, |fade| {
-            fade.borrow_mut().frame(window, cx.reduce_motion())
-        });
-    let blocks = markdown_blocks(
-        model,
-        colors,
-        Some(copy.id),
-        Some(selection),
-        interaction.actions_enabled,
-        copy_original,
-        |line, index| {
-            if fade_block == Some(line.block_id) {
-                fade_line += 1;
-            } else {
-                fade_block = Some(line.block_id);
-                fade_line = 0;
-            }
-            let line_fade = fade.line(line.block_id, fade_line);
-            if !matches!(line.kind, LineKind::Rule)
-                && let Some((previous_block, previous_kind, previous_code)) = &previous
-            {
-                let same_multiline_block = (*previous_kind == LineKind::Code
-                    && line.kind == LineKind::Code
-                    && previous_code
-                        .as_ref()
-                        .zip(line.code_block.as_ref())
-                        .is_some_and(|(previous, current)| Arc::ptr_eq(previous, current)))
-                    || (*previous_block == line.block_id
-                        && (matches!(previous_kind, LineKind::ListItem)
-                            && matches!(line.kind, LineKind::ListItem)));
-                document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
-            }
-            let marker = independent_list_marker(line).map(|marker| {
-                render_line_selectable(
-                    &marker,
-                    colors,
-                    &mut document,
-                    index,
-                    copy.id,
-                    copy_original,
-                    &line_fade,
-                )
-            });
-            let content = list_item_content(line);
-            let element = render_line_selectable(
-                content.as_ref().unwrap_or(line),
-                colors,
-                &mut document,
-                index,
-                copy.id,
-                copy_original,
-                &line_fade,
-            );
-            if !matches!(line.kind, LineKind::Rule) {
-                previous = Some((line.block_id, line.kind, line.code_block.clone()));
-            }
-            (marker, element)
-        },
-    );
-    selection_context_menu(
-        document.wrap(body.children(blocks).into_any_element(), window, cx),
-        copy,
-        copy_original,
-        interaction.actions_enabled,
-    )
+    let body = super::selection_menu::body::render_model(model, copy, *colors, window, cx);
+    selection_context_menu(body, copy, copy_original, true, interaction.stream)
 }
 
 fn independent_list_marker(line: &StreamLine) -> Option<StreamLine> {
@@ -998,341 +798,10 @@ pub(super) fn selection_context_menu(
     copy: &MessageCopy,
     copy_original: bool,
     enabled: bool,
+    stream: Option<gpui_kit::WeakEntity<ConversationStream>>,
 ) -> AnyElement {
-    use gpui_kit::component::menu::PopupMenuItem;
-
-    let copy_for_menu = copy.clone();
-    super::selection_menu::SelectionMenu::new(copy.id, body, move |menu, window, cx| {
-        let selected = copy_for_menu.clone();
-        let original = copy_for_menu.clone();
-        let menu = menu
-            .when(copy_original, |menu| {
-                menu.item(
-                    PopupMenuItem::new(vega_i18n::t("ui.copy_original"))
-                        .on_click(move |_, _, cx| original.copy(cx)),
-                )
-            })
-            .item(
-                PopupMenuItem::new(vega_i18n::t("ui.copy"))
-                    .disabled(!copy_for_menu.has_selected_text())
-                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
-            );
-        let menu = if let Some(builder) = copy_for_menu.fork_menu.borrow().as_ref() {
-            builder(menu, window, cx)
-        } else {
-            menu
-        };
-        if let Some(builder) = copy_for_menu.compaction_menu.borrow().as_ref() {
-            builder(menu, window, cx)
-        } else {
-            menu
-        }
-    })
-    .enabled(enabled)
-    .into_any_element()
-}
-
-fn render_line_selectable(
-    line: &StreamLine,
-    colors: &ThemeColors,
-    document: &mut SelectionDocumentBuilder,
-    line_index: usize,
-    message_id: u64,
-    in_user_bubble: bool,
-    fade: &stream_fade::LineFade<'_>,
-) -> AnyElement {
-    let body_style = markdown_body_style(colors.text_primary, in_user_bubble);
-    let id_prefix = format!("assistant-{message_id}-line-{line_index}");
-    if let Some(table) = &line.table {
-        return render_table_selectable(
-            line.block_id,
-            &id_prefix,
-            table,
-            colors,
-            document,
-            in_user_bubble,
-            fade,
-        );
-    }
-    let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
-    let item = div()
-        .when(
-            line.kind != LineKind::Code
-                && !(line.kind == LineKind::ListItem && line.spans.is_empty()),
-            |item| item.w_full(),
-        )
-        .flex_shrink_0()
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(body_style.line_height)
-        .text_color(colors.text_primary);
-    match line.kind {
-        LineKind::Spacer => item.py(px(6.0)).into_any_element(),
-        LineKind::UserLabel => item
-            .pt(px(4.0))
-            .pb(px(2.0))
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_secondary)
-            .child(div().px_2().child(vega_i18n::t("ui.you")))
-            .into_any_element(),
-        LineKind::UserLine { .. } => {
-            let selected = document.append_styled_runs(
-                &text,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Body,
-                    block_text_runs(&line.spans, user_body_style(colors), colors),
-                ),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-user"),
-            );
-            item.child(div().px_2().py(px(1.0)).child(selected))
-                .into_any_element()
-        }
-        LineKind::Code => {
-            let selected = document.append_styled_runs(
-                &text,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Body,
-                    block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
-                ),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-code"),
-            );
-            let code = div()
-                .text_size(px(Typography::CODE))
-                .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
-                .whitespace_nowrap()
-                .text_color(colors.text_primary)
-                .child(selected);
-            let code = if text.is_empty() {
-                code.h(px(Typography::CODE * Typography::CODE_LINE_HEIGHT))
-            } else {
-                code
-            };
-            item.child(code).into_any_element()
-        }
-        LineKind::Rule => item
-            .py(px(4.0))
-            .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
-            .into_any_element(),
-        LineKind::Heading(level) => {
-            let (size, weight) = heading_style(level);
-            let selected = document.append_styled_runs(
-                &text,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Body,
-                    block_text_runs(
-                        &line.spans,
-                        TextStyle {
-                            line_height: body_style.line_height,
-                            ..heading_run_style(level, colors)
-                        },
-                        colors,
-                    ),
-                ),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-heading"),
-            );
-            item.text_size(px(size))
-                .font_weight(weight)
-                .child(selected)
-                .into_any_element()
-        }
-        LineKind::Table => item.into_any_element(),
-        LineKind::ListItem => {
-            let marker = format!("{} ", line.marker);
-            document.append_literal(&"  ".repeat(line.depth));
-            let mut row = div().pl(px(line.list_marker_inset())).flex().flex_row();
-            let marker_text = document.append_styled_runs(
-                &marker,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Marker,
-                    vec![
-                        TextStyle {
-                            color: if line.marker == "•" {
-                                colors.text_primary
-                            } else {
-                                colors.text_secondary
-                            }
-                            .into(),
-                            font_weight: if line.marker == "•" {
-                                FontWeight::BOLD
-                            } else {
-                                FontWeight::NORMAL
-                            },
-                            ..body_style.clone()
-                        }
-                        .to_run(marker.len()),
-                    ],
-                ),
-                Vec::new(),
-                &format!("{id_prefix}-list-marker"),
-            );
-            row = row.child(
-                div()
-                    .flex_shrink_0()
-                    .w(px(Layout::MARKDOWN_LIST_INDENT))
-                    .text_color(if line.marker == "•" {
-                        colors.text_primary
-                    } else {
-                        colors.text_secondary
-                    })
-                    .font_weight(if line.marker == "•" {
-                        FontWeight::BOLD
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .child(marker_text),
-            );
-            if let Some(checked) = line.checked {
-                let checkbox = if checked { "[x]" } else { "[ ]" };
-                let checkbox_text = document.append_styled_runs(
-                    checkbox,
-                    fade.runs(
-                        0,
-                        stream_fade::TextPart::Checkbox,
-                        vec![
-                            TextStyle {
-                                color: if checked {
-                                    colors.success
-                                } else {
-                                    colors.text_tertiary
-                                }
-                                .into(),
-                                ..body_style.clone()
-                            }
-                            .to_run(checkbox.len()),
-                        ],
-                    ),
-                    Vec::new(),
-                    &format!("{id_prefix}-list-checkbox"),
-                );
-                row = row.child(
-                    div()
-                        .flex_shrink_0()
-                        .mr_1()
-                        .text_color(if checked {
-                            colors.success
-                        } else {
-                            colors.text_tertiary
-                        })
-                        .child(checkbox_text),
-                );
-                document.append_literal(" ");
-            }
-            let content = document.append_styled_runs(
-                &text,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Body,
-                    block_text_runs(&line.spans, body_style.clone(), colors),
-                ),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-list-content"),
-            );
-            row = row.child(div().flex_1().min_w_0().child(content));
-            item.child(row).into_any_element()
-        }
-        LineKind::Paragraph => {
-            let selected = document.append_styled_runs(
-                &text,
-                fade.runs(
-                    0,
-                    stream_fade::TextPart::Body,
-                    block_text_runs(&line.spans, body_style.clone(), colors),
-                ),
-                link_ranges(&line.spans),
-                &format!("{id_prefix}-paragraph"),
-            );
-            item.child(selected).into_any_element()
-        }
-    }
-}
-
-fn render_table_selectable(
-    block_id: u64,
-    id_prefix: &str,
-    table: &StreamTable,
-    colors: &ThemeColors,
-    document: &mut SelectionDocumentBuilder,
-    in_user_bubble: bool,
-    fade: &stream_fade::LineFade<'_>,
-) -> AnyElement {
-    let ordinal = table.ordinal;
-    let columns = table.alignments.len();
-    let weights = table.column_weights();
-    let mut body = div()
-        .text_size(px(Typography::CONVERSATION))
-        .line_height(markdown_body_style(colors.text_primary, in_user_bubble).line_height)
-        .w_full()
-        .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
-        .flex_shrink_0()
-        .flex()
-        .flex_col();
-    for (row_index, cells) in table.rows.iter().enumerate() {
-        if row_index > 0 {
-            document.append_literal("\n");
-        }
-        let mut row = div()
-            .w_full()
-            .flex()
-            .flex_row()
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(colors.border_subtle)
-            .when(row_index == 0, |row| row.bg(colors.bg_hover));
-        for (column, spans) in cells.iter().enumerate() {
-            if column > 0 {
-                document.append_literal("\t");
-            }
-            let mut style = markdown_body_style(colors.text_primary, in_user_bubble);
-            if row_index == 0 {
-                style.font_weight = Typography::HEADING_CARD_WEIGHT;
-            }
-            let alignment = match table.alignments[column] {
-                TableAlignment::Center => gpui_kit::TextAlign::Center,
-                TableAlignment::Right => gpui_kit::TextAlign::Right,
-                _ => gpui_kit::TextAlign::Left,
-            };
-            let cell_text: String = spans.iter().map(|span| span.text.as_str()).collect();
-            let selected = document.append_styled_runs(
-                &cell_text,
-                fade.runs(
-                    row_index,
-                    stream_fade::TextPart::Cell(column),
-                    block_text_runs(spans, style, colors),
-                ),
-                link_ranges(spans),
-                &format!("{id_prefix}-table-{block_id}-{ordinal}-{row_index}-{column}"),
-            );
-            row = row.child(
-                div()
-                    .flex_basis(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH))
-                    .flex_grow(weights[column])
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
-                    .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
-                    .text_align(alignment)
-                    .child(selected),
-            );
-        }
-        body = body.child(row);
-    }
-    div()
-        .w_full()
-        .min_w_0()
-        .flex_shrink_0()
-        .child(CodeViewport::new(
-            gpui_kit::SharedString::from(format!(
-                "{id_prefix}-markdown-table-{block_id}-{ordinal}"
-            )),
-            body,
-            colors.bg_base,
-        ))
+    super::selection_menu::SelectionMenu::new(body, copy.clone(), copy_original, stream)
+        .enabled(enabled)
         .into_any_element()
 }
 
@@ -1697,160 +1166,6 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
-pub(super) struct MessageActions<'a> {
-    pub(super) id: gpui_kit::SharedString,
-    pub(super) user: bool,
-    pub(super) user_bubble: bool,
-    pub(super) colors: ThemeColors,
-    pub(super) enabled: bool,
-    pub(super) timestamp: Option<super::timestamp_format::TimestampDisplay>,
-    pub(super) focus: Option<&'a FocusHandle>,
-    pub(super) fork: Option<(ForkRequested, gpui_kit::WeakEntity<ConversationStream>)>,
-    pub(super) fork_pending: Option<&'a str>,
-    pub(super) fork_enabled: bool,
-}
-
-pub(super) fn message_with_copy(
-    body: AnyElement,
-    copy: Option<&MessageCopy>,
-    actions: MessageActions<'_>,
-    window: &Window,
-    cx: &App,
-) -> AnyElement {
-    let MessageActions {
-        id,
-        user,
-        user_bubble,
-        colors,
-        enabled: actions_enabled,
-        timestamp,
-        focus,
-        fork,
-        fork_pending,
-        fork_enabled,
-    } = actions;
-    if copy.is_none_or(|copy| !copy.has_text()) && timestamp.is_none() {
-        return body;
-    }
-    let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
-    let focused = focus.is_some_and(|focus| focus.contains_focused(window, cx));
-    let fork_is_pending = fork
-        .as_ref()
-        .is_some_and(|(request, _)| fork_pending == Some(request.message_id.as_str()));
-    let footer_visible = focused || fork_is_pending;
-    let mut wrapper = div()
-        .id(id)
-        .group(group.clone())
-        .w_full()
-        .min_w_0()
-        .flex_shrink_0()
-        .relative()
-        .flex()
-        .flex_col()
-        .when(!user_bubble, |body| {
-            body.pb(px(Layout::MESSAGE_COPY_FOOTER))
-        })
-        .child(body);
-    if let Some(focus) = focus {
-        wrapper = wrapper.track_focus(focus).tab_stop(true);
-    }
-    let mut row = div()
-        .absolute()
-        .when(user, |row| row.right_0())
-        .when(!user, |row| row.left_0())
-        .when(user_bubble, |row| {
-            row.bottom(px(
-                Layout::CONVERSATION_USER_BOTTOM - Layout::MESSAGE_COPY_FOOTER
-            ))
-        })
-        .when(!user_bubble, |row| row.bottom_0())
-        .flex()
-        .items_center();
-    if actions_enabled && let Some(copy) = copy.filter(|copy| copy.has_text()) {
-        row = row.child(CopyReceiptButton::new(
-            format!("message-copy-receipt-{}", copy.id).into(),
-            CopySource::Message(copy.clone()),
-            if user {
-                vega_i18n::t("ui.copy_message")
-            } else {
-                vega_i18n::t("ui.copy_final_reply")
-            },
-            colors,
-            |button| {
-                button
-                    .id(("message-copy", copy.id))
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .opacity(if footer_visible { 1. } else { 0. })
-                    .group_hover(group.clone(), |style| style.opacity(1.))
-                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active))
-            },
-        ));
-    }
-    if let Some((request, stream)) = fork {
-        if fork_is_pending {
-            let indicator = if window.is_window_active() && !cx.reduce_motion() {
-                gpui_kit::component::spinner::Spinner::new()
-                    .ease(gpui_kit::linear)
-                    .with_size(px(Layout::ICON_SIZE))
-                    .icon(gpui_kit::component::IconName::LoaderCircle)
-                    .into_any_element()
-            } else {
-                icon(Icon::GitBranch, colors.text_secondary)
-            };
-            row = row.child(
-                div()
-                    .id("message-fork-pending")
-                    .size(px(Layout::COPY_ACTION_SIZE))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(colors.text_secondary)
-                    .aria_label(vega_i18n::t("ui.fork_creating"))
-                    .child(indicator),
-            );
-        } else if fork_enabled {
-            row = row.child(
-                crate::icons::icon_button(
-                    Icon::GitBranch,
-                    vega_i18n::t("ui.branch_in_new_chat"),
-                    colors,
-                    move |_, _, cx| {
-                        let _ = stream.update(cx, |stream, cx| stream.request_fork(&request, cx));
-                    },
-                )
-                .id("message-fork")
-                .size(px(Layout::COPY_ACTION_SIZE))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .opacity(if footer_visible { 1. } else { 0. })
-                .group_hover(group.clone(), |style| style.opacity(1.))
-                .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
-            );
-        }
-    }
-    if let Some(timestamp) = timestamp {
-        row = row.child(
-            div()
-                .id("message-time")
-                .aria_label(timestamp.accessible)
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_tertiary)
-                .opacity(if footer_visible { 1. } else { 0. })
-                .group_hover(group, |style| style.opacity(1.))
-                .child(timestamp.message),
-        );
-    }
-    wrapper.child(row).into_any_element()
-}
-
 pub(super) fn plain_error_notice(message: String, color: Rgba) -> AnyElement {
-    div()
-        .w_full()
-        .min_w_0()
-        .text_size(px(Typography::BODY))
-        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-        .text_color(color)
-        .whitespace_normal()
-        .child(message)
-        .into_any_element()
+    super::conversation_status::notice(message, color)
 }

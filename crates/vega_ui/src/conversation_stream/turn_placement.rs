@@ -20,13 +20,21 @@ pub(super) struct TurnPlacement {
     scrolled: bool,
     scrolling_down: bool,
     release: bool,
+    scroll_scope: Option<nsh_platform_gpui::ScrollScope>,
 }
 
 pub(super) type PlacementHandle = Rc<RefCell<TurnPlacement>>;
 
 impl TurnPlacement {
     pub(super) fn begin(&mut self, index: usize, list: &ListState) {
-        *self = Self::default();
+        let scroll_scope = self.scroll_scope.clone();
+        if let Some(scope) = &scroll_scope {
+            scope.cancel();
+        }
+        *self = Self {
+            scroll_scope,
+            ..Self::default()
+        };
         self.target = Some(index);
         self.pending = true;
         self.interrupted = false;
@@ -41,9 +49,13 @@ impl TurnPlacement {
     }
 
     pub(super) fn reset(&mut self) {
+        if let Some(scope) = &self.scroll_scope {
+            scope.cancel();
+        }
         let release = self.active() || self.release;
         *self = Self {
             release,
+            scroll_scope: self.scroll_scope.clone(),
             ..Self::default()
         };
     }
@@ -130,6 +142,23 @@ impl TurnList {
         count: usize,
         render: impl FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static,
     ) -> Self {
+        if placement.borrow().scroll_scope.is_none() {
+            let owner = Rc::downgrade(&placement);
+            let outer = list.clone();
+            let scope = nsh_platform_gpui::ScrollScope::new(
+                nsh_platform_gpui::ScrollRoute::new(),
+                move |remaining, window, cx| {
+                    let Some(owner) = owner.upgrade() else { return };
+                    if crate::nsh::scroll::consume_list(&outer, remaining, window, cx) {
+                        let mut owner = owner.borrow_mut();
+                        owner.interrupt(&outer);
+                        owner.scrolling_down = remaining.delta.pixel_delta(px(20.)).y < px(0.);
+                        owner.scrolled();
+                    }
+                },
+            );
+            placement.borrow_mut().scroll_scope = Some(scope);
+        }
         let scrolled = placement.clone();
         list.set_scroll_handler(move |_, _, _| {
             scrolled.borrow_mut().scrolled();
@@ -306,7 +335,12 @@ impl Element for TurnList {
             window,
             cx,
         );
-        body.prepaint_at(bounds.origin, window, cx);
+        let scope = self.placement.borrow().scroll_scope.clone();
+        if let Some(scope) = scope {
+            scope.with(|| body.prepaint_at(bounds.origin, window, cx));
+        } else {
+            body.prepaint_at(bounds.origin, window, cx);
+        }
         self.placement.borrow_mut().last_offset =
             Some(-self.list.scroll_px_offset_for_scrollbar().y);
         body
@@ -345,6 +379,11 @@ impl Element for TurnList {
                 placement.borrow_mut().interrupt(&list);
             }
         });
-        body.paint(window, cx);
+        let scope = self.placement.borrow().scroll_scope.clone();
+        if let Some(scope) = scope {
+            scope.with(|| body.paint(window, cx));
+        } else {
+            body.paint(window, cx);
+        }
     }
 }

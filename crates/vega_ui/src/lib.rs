@@ -4,9 +4,17 @@ pub mod branch_selector;
 pub mod command_palette;
 pub mod commit_panel;
 pub mod conversation_stream;
+#[cfg(feature = "nsh-reading-integration")]
+pub use conversation_stream::{
+    repeated_production_header_render_retains_unowned_mount_and_projection,
+    revoked_thinking_root_rejects_open_retry_and_delayed_completion,
+    stationary_thinking_hover_survives_fade_open_and_retry,
+};
 pub mod cua_onboarding;
 pub mod diff_view;
 mod disclosure;
+#[cfg(feature = "nsh-reading-integration")]
+pub use disclosure::scroll_group::host_regressions as nsh_scroll_group_regressions;
 pub mod file_preview;
 pub mod file_selector;
 mod file_size;

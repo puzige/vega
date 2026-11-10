@@ -2,6 +2,12 @@ use super::inline_code::{RunIndex, shape_flow};
 use super::*;
 use std::rc::Rc;
 
+mod native;
+pub(super) use native::control;
+
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub(super) struct UserDisclosure {
     pub(super) expanded: bool,
@@ -343,23 +349,46 @@ pub(super) fn estimated_height(copy: &MessageCopy, width: f32, fallback: f32) ->
     content + Layout::USER_MESSAGE_TOGGLE_GAP + line_height
 }
 
-pub(super) fn toggle(
-    copy: &MessageCopy,
-    stream: &Option<gpui_kit::WeakEntity<ConversationStream>>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    copy.invalidate_selection();
-    let mut state = copy.user_disclosure.borrow_mut();
-    state.expanded = !state.expanded;
-    state.revision = state.revision.wrapping_add(1);
-    drop(state);
-    if let Some(stream) = stream {
-        let _ = stream.update(cx, |stream, cx| {
-            let index = stream.entries.iter().position(|entry| matches!(entry, StreamEntry::User { copy: owner, .. } if owner.id == copy.id));
-            stream.invalidate_item(index);
-            cx.notify();
-        });
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisclosureStamp {
+    source: u64,
+    generation: u64,
+    revision: u64,
+    expanded: bool,
+}
+
+impl DisclosureStamp {
+    fn capture(copy: &MessageCopy) -> Self {
+        let state = copy.user_disclosure.borrow();
+        Self {
+            source: copy.id,
+            generation: copy.content_generation(),
+            revision: state.revision,
+            expanded: state.expanded,
+        }
     }
-    window.refresh();
+
+    fn matches(self, copy: &MessageCopy) -> bool {
+        self == Self::capture(copy)
+    }
+
+    fn toggle(self, copy: &MessageCopy) -> bool {
+        if !self.matches(copy) {
+            return false;
+        }
+        let mut state = copy.user_disclosure.borrow_mut();
+        if state.generation != self.generation
+            || !state
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.collapsible)
+        {
+            return false;
+        }
+        state.expanded = !state.expanded;
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
+        copy.invalidate_selection();
+        true
+    }
 }

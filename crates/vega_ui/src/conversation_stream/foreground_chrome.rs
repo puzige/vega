@@ -1,0 +1,197 @@
+use crate::nsh::Surface;
+use gpui_kit::{prelude::*, *};
+use ns::{Accessible as _, IntoElement as _, ParentElement as _, Styled as _};
+use nsh_core::prelude as ns;
+use vega_theme::theme;
+
+mod context_usage;
+
+pub(super) use context_usage::indicator;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Decoration {
+    Fade,
+    Base,
+    ConversationBase,
+    UserBubble,
+}
+
+#[derive(Clone, PartialEq)]
+struct Background {
+    color: Rgba,
+    fade: bool,
+    radius: f32,
+}
+
+struct BackgroundHost {
+    surface: Surface<Background, ()>,
+    published: Background,
+    _release: Subscription,
+}
+
+pub(super) fn decoration(kind: Decoration) -> AnyElement {
+    BackgroundElement { kind }.into_any_element()
+}
+
+#[derive(gpui_kit::IntoElement)]
+struct BackgroundElement {
+    kind: Decoration,
+}
+
+impl RenderOnce for BackgroundElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = theme(cx).colors;
+        let state = Background {
+            color: if self.kind == Decoration::UserBubble {
+                Rgba {
+                    a: colors.conversation_bubble.a,
+                    ..colors.accent
+                }
+            } else {
+                colors.bg_base
+            },
+            fade: self.kind == Decoration::Fade,
+            radius: if self.kind == Decoration::UserBubble {
+                vega_theme::Layout::USER_MESSAGE_RADIUS
+            } else {
+                0.
+            },
+        };
+        let key = match self.kind {
+            Decoration::Fade => "nsh-foreground-fade",
+            Decoration::Base => "nsh-foreground-base",
+            Decoration::ConversationBase => "nsh-conversation-base",
+            Decoration::UserBubble => "nsh-user-message-background",
+        };
+        let host = window.use_keyed_state(key, cx, |window, cx| {
+            let (surface, _) =
+                Surface::new_transparent(state.clone(), background_pixels, window, cx);
+            surface.focus_handle(cx).tab_stop(false);
+            BackgroundHost {
+                surface,
+                published: state.clone(),
+                _release: cx.on_release(|host: &mut BackgroundHost, cx| {
+                    host.surface.entity().read(cx).stop();
+                }),
+            }
+        });
+        host.update(cx, |host, _| {
+            if host.published != state {
+                host.surface.publish(state.clone());
+                host.published = state;
+            }
+        });
+        host.into_any_element()
+    }
+}
+
+impl Render for BackgroundHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.surface.sync_environment(cx);
+        Passive::new(div().size_full().child(self.surface.entity()))
+    }
+}
+
+fn background_pixels(
+    state: ns::Signal<Background>,
+    _: tokio::sync::mpsc::Sender<()>,
+) -> ns::AnyElement {
+    ns::view()
+        .size_full()
+        .accessibility_elements_hidden(true)
+        .rounded(move || ns::px(state.get().radius))
+        .bg(move || {
+            let state = state.get();
+            crate::nsh::color(if state.fade {
+                state.color.opacity(0.)
+            } else {
+                state.color
+            })
+        })
+        .child(
+            ns::view()
+                .size_full()
+                .bg_linear_to_b()
+                .gradient_from(move || crate::nsh::color(state.get().color.opacity(0.)))
+                .gradient_to(move || {
+                    let state = state.get();
+                    crate::nsh::color(if state.fade {
+                        state.color
+                    } else {
+                        state.color.opacity(0.)
+                    })
+                }),
+        )
+        .into_element()
+}
+
+struct Passive {
+    child: AnyElement,
+}
+
+impl Passive {
+    fn new(child: impl IntoElement) -> Self {
+        Self {
+            child: child.into_any_element(),
+        }
+    }
+}
+
+impl IntoElement for Passive {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Passive {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mask = ContentMask {
+            bounds: Bounds {
+                origin: window.content_mask().bounds.center(),
+                size: Default::default(),
+            },
+        };
+        window.with_content_mask(Some(mask), |window| self.child.prepaint(window, cx));
+    }
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let bounds = bounds.intersect(&window.content_mask().bounds);
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            self.child.paint(window, cx);
+        });
+    }
+}

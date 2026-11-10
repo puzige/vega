@@ -10,7 +10,7 @@ fn glyph(action: Action, ink: gpui_kit::Rgba) -> AnyElement {
         Action::Environment => "<path d='M3 6h.01M8 6h13M3 12h.01M8 12h13M3 18h.01M8 18h13'/>",
         Action::Terminal => "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M3 15h18'/>",
         Action::Panel => "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M15 3v18'/>",
-        Action::Update => "",
+        Action::Update | Action::PermissionSettings => "",
     };
     let source = format!(
         "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>{path}</svg>"
@@ -98,6 +98,28 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                         .child(text(snapshot.observation.title.clone()))
                         .into_element();
                 }
+                Kind::PermissionReset => {
+                    let sender = commands.clone();
+                    let observed = snapshot.clone();
+                    body = body
+                        .h(nsh_core::geometry::Length::Auto)
+                        .px_3()
+                        .py_1()
+                        .on_layout(move |bounds: &Bounds<Points>| {
+                            root.set(Some(rect(bounds)));
+                            sender.send(Request::Height(observed.clone(), bounds.size.height.0));
+                        })
+                        .child(
+                            text(snapshot.observation.title.clone())
+                                .min_w(px(0.))
+                                .flex_1()
+                                .text_size(px(Typography::METADATA))
+                                .line_height(
+                                    px(Typography::METADATA * Typography::BODY_LINE_HEIGHT),
+                                )
+                                .text_color(color(colors.warning)),
+                        );
+                }
                 Kind::Slots => {}
             }
             for control in &snapshot.observation.controls {
@@ -143,7 +165,12 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                         values.push((action, rect(bounds)));
                         controls.set(values);
                     });
-                if action == Action::Update {
+                if action == Action::PermissionSettings {
+                    button = button
+                        .px_2()
+                        .text_size(px(Typography::METADATA))
+                        .child(text(control.label.clone()));
+                } else if action == Action::Update {
                     button = button
                         .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
                         .mr(px(Layout::SETTINGS_CONTENT_GAP))

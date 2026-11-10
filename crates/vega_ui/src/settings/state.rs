@@ -173,6 +173,12 @@ impl SettingsView {
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
+                if let Some(page) = &mut this.input_preferences_presentation {
+                    page.revoke();
+                }
+                if let Some(page) = &mut this.appearance_presentation {
+                    page.revoke();
+                }
                 this.settings_motion.interrupt();
                 this.cancel_provider_operation(cx);
                 this.cancel_mcp_oauth(cx);

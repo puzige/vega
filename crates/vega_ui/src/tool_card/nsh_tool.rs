@@ -1,8 +1,16 @@
+mod layout;
+#[cfg(feature = "nsh-reading-integration")]
+pub mod mounted_regressions;
+
 use super::*;
 use crate::nsh::{ProjectionId, Surface};
 use gpui_kit::{Context, Window};
 use nsh_core::prelude::Signal;
-use std::time::Instant;
+use std::{
+    cell::RefCell,
+    rc::{Rc, Weak},
+    time::Instant,
+};
 use tokio::sync::{mpsc, oneshot};
 use vega_theme::Typography;
 
@@ -11,23 +19,36 @@ pub(super) struct Presentation {
     surface: Surface<Snapshot, Request>,
     height: f32,
     headline: Option<(String, Option<Icon>, Option<Instant>)>,
+    observed: Snapshot,
+    mount: Weak<RefCell<layout::Authority>>,
+    measured: Option<(layout::Authority, [f32; 2])>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct AgentTarget {
     parent: String,
     agent: String,
     message: String,
 }
 
+#[derive(Clone, PartialEq)]
+struct ShellControl {
+    operation: String,
+    label: String,
+    enabled: bool,
+}
+
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
+    layout: Option<layout::Authority>,
     title: String,
     label: String,
     icon: Option<String>,
     icon_color: gpui_kit::Rgba,
     notice: Option<String>,
+    control_failed: bool,
+    shell_control: Option<ShellControl>,
     status: Option<(String, bool)>,
     expanded: bool,
     expandable: bool,
@@ -39,24 +60,69 @@ struct Snapshot {
     copy_command: String,
     copy_output: String,
     failed: String,
+    auto_hide_scrollbars: bool,
+}
+
+impl Snapshot {
+    fn same_content(&self, other: &Self) -> bool {
+        self.title == other.title
+            && self.label == other.label
+            && self.icon == other.icon
+            && self.icon_color == other.icon_color
+            && self.notice == other.notice
+            && self.control_failed == other.control_failed
+            && self.shell_control == other.shell_control
+            && self.status == other.status
+            && self.expanded == other.expanded
+            && self.expandable == other.expandable
+            && self.target == other.target
+            && self.detail == other.detail
+            && self.activity == other.activity
+            && self.epoch == other.epoch
+            && self.copy_command == other.copy_command
+            && self.copy_output == other.copy_output
+            && self.failed == other.failed
+            && self.auto_hide_scrollbars == other.auto_hide_scrollbars
+            && self.colors.conversation_tool == other.colors.conversation_tool
+            && self.colors.text_primary == other.colors.text_primary
+            && self.colors.code_bg == other.colors.code_bg
+            && self.colors.border_subtle == other.colors.border_subtle
+            && self.colors.text_secondary == other.colors.text_secondary
+    }
 }
 
 enum Request {
+    ShellControl {
+        observed: Box<Snapshot>,
+        reply: oneshot::Sender<bool>,
+    },
     Activate {
         id: ProjectionId,
         expanded: bool,
         target: Option<AgentTarget>,
         reply: oneshot::Sender<bool>,
     },
-    Layout(f32),
+    Layout {
+        observed: Box<Snapshot>,
+        authority: layout::Authority,
+        size: [f32; 2],
+    },
 }
 
 impl ToolCard {
+    pub(super) fn invalidate_layout(&mut self) {
+        if let Some(page) = &mut self.presentation {
+            page.id = ProjectionId::new();
+            page.measured = None;
+        }
+    }
+
     fn nsh_snapshot(
         &self,
         id: ProjectionId,
         headline: Option<&(String, Option<Icon>, Option<Instant>)>,
         colors: ThemeColors,
+        auto_hide_scrollbars: bool,
     ) -> Snapshot {
         let invocation = self.is_subagent_invocation();
         let target = invocation
@@ -137,9 +203,29 @@ impl ToolCard {
             );
             (vega_i18n::t(label).to_owned(), failed)
         });
-        let notice = (!invocation)
-            .then(|| headline.and_then(|(title, _, _)| self.headline_notice(title)))
-            .flatten();
+        let notice = if self.shell_control_failed {
+            Some(vega_i18n::t("ui.shell_session.control_failed").to_owned())
+        } else {
+            (!invocation)
+                .then(|| headline.and_then(|(title, _, _)| self.headline_notice(title)))
+                .flatten()
+        };
+        let shell_control = self.shell_command.as_ref().and_then(|command| {
+            (command.concurrent && (command.can_cancel || command.can_retry)).then(|| {
+                ShellControl {
+                    operation: command.operation_id.clone(),
+                    label: vega_i18n::t(if self.shell_control_pending {
+                        "ui.shell_session.stopping"
+                    } else if command.can_retry {
+                        "ui.shell_recovery.retry"
+                    } else {
+                        "ui.shell_session.cancel"
+                    })
+                    .to_owned(),
+                    enabled: !self.shell_control_pending,
+                }
+            })
+        });
         let label = if let Some((status, _)) = &status {
             vega_i18n::t_args("ui.title_status", &[("title", &title), ("status", status)])
         } else {
@@ -164,6 +250,11 @@ impl ToolCard {
         };
         Snapshot {
             id,
+            layout: self
+                .presentation
+                .as_ref()
+                .and_then(|page| page.mount.upgrade())
+                .map(|mount| mount.borrow().clone()),
             title,
             label,
             icon: icon.and_then(crate::icons::nsh_source),
@@ -173,6 +264,8 @@ impl ToolCard {
                 self.leading_icon_color(&colors)
             },
             notice,
+            control_failed: self.shell_control_failed,
+            shell_control,
             status,
             expanded,
             expandable,
@@ -196,6 +289,7 @@ impl ToolCard {
             copy_command: vega_i18n::t("ui.copy_command").into(),
             copy_output: vega_i18n::t("ui.copy_output").into(),
             failed: vega_i18n::t("ui.command_failed").into(),
+            auto_hide_scrollbars,
         }
     }
 
@@ -219,14 +313,22 @@ impl ToolCard {
             let colors = theme(cx).colors;
             if this.presentation.is_none() {
                 let id = ProjectionId::new();
-                let snapshot = this.nsh_snapshot(id.clone(), headline.as_ref(), colors);
+                let snapshot = this.nsh_snapshot(
+                    id.clone(),
+                    headline.as_ref(),
+                    colors,
+                    cx.should_auto_hide_scrollbars(),
+                );
                 let height = this.estimated_height();
-                let (surface, mut commands) = Surface::new(snapshot, render, window, cx);
+                let (surface, mut commands) = Surface::new(snapshot.clone(), render, window, cx);
                 this.presentation = Some(Presentation {
                     id,
                     surface,
                     height,
                     headline: headline.clone(),
+                    observed: snapshot,
+                    mount: Weak::new(),
+                    measured: None,
                 });
                 cx.spawn_in(window, async move |this, cx| {
                     while let Some(request) = commands.recv().await {
@@ -244,42 +346,163 @@ impl ToolCard {
                 presentation.headline = headline;
                 presentation.surface.sync_environment(cx);
             }
+            let authority = this
+                .presentation
+                .as_ref()
+                .and_then(|page| page.mount.upgrade())
+                .unwrap_or_else(|| Rc::new(RefCell::new(layout::Authority::default())));
+            if let Some(page) = &mut this.presentation {
+                page.mount = Rc::downgrade(&authority);
+            }
             this.publish_nsh(cx);
             div()
                 .w_full()
                 .flex_shrink_0()
                 .when(indented, |view| view.pl_4())
                 .children(this.presentation.as_ref().map(|presentation| {
-                    div()
-                        .w_full()
-                        .h(px(presentation.height))
-                        .child(presentation.surface.entity())
+                    layout::Mounted {
+                        child: div()
+                            .debug_selector(|| "shell-command-native-host".to_owned())
+                            .w_full()
+                            .h(this
+                                .measured_size(cx)
+                                .map_or(px(presentation.height), |size| size.height))
+                            .child(presentation.surface.entity())
+                            .into_any_element(),
+                        card: cx.weak_entity(),
+                        entity_id: cx.entity_id(),
+                        authority: authority.clone(),
+                    }
                 }))
                 .into_any_element()
         })
     }
 
-    fn publish_nsh(&self, cx: &App) {
-        if let Some(presentation) = &self.presentation {
-            presentation.surface.publish(self.nsh_snapshot(
-                presentation.id.clone(),
-                presentation.headline.as_ref(),
-                theme(cx).colors,
-            ));
+    fn publish_nsh(&mut self, cx: &App) {
+        let Some(page) = &self.presentation else {
+            return;
+        };
+        let mut snapshot = self.nsh_snapshot(
+            page.id.clone(),
+            page.headline.as_ref(),
+            theme(cx).colors,
+            cx.should_auto_hide_scrollbars(),
+        );
+        let Some(page) = &mut self.presentation else {
+            return;
+        };
+        if !snapshot.same_content(&page.observed) {
+            page.id = ProjectionId::new();
+            page.measured = None;
+            snapshot.id = page.id.clone();
         }
+        let same_layout = match (&snapshot.layout, &page.observed.layout) {
+            (Some(current), Some(previous)) => current.matches(previous),
+            (None, None) => true,
+            _ => false,
+        };
+        if snapshot.id.matches(&page.observed.id)
+            && snapshot.same_content(&page.observed)
+            && same_layout
+        {
+            return;
+        }
+        page.observed = snapshot.clone();
+        page.surface.publish(snapshot);
+    }
+
+    pub(crate) fn measured_size(&self, cx: &App) -> Option<gpui_kit::Size<gpui_kit::Pixels>> {
+        let page = self.presentation.as_ref()?;
+        let (authority, size) = page.measured.as_ref()?;
+        let mount = page.mount.upgrade()?;
+        let current = self.nsh_snapshot(
+            page.id.clone(),
+            page.headline.as_ref(),
+            theme(cx).colors,
+            cx.should_auto_hide_scrollbars(),
+        );
+        (authority.matches(&mount.borrow())
+            && current.same_content(&page.observed)
+            && page.surface.errors().borrow().is_none())
+        .then(|| gpui_kit::size(px(size[0]), px(size[1])))
     }
 
     fn nsh_request(&mut self, request: Request, cx: &mut Context<Self>) {
         match request {
-            Request::Layout(height) if height.is_finite() && height > 0. => {
-                if let Some(presentation) = &mut self.presentation
-                    && (presentation.height - height).abs() > 0.5
-                {
-                    presentation.height = height;
+            Request::ShellControl { observed, reply } => {
+                let valid = self.presentation.as_ref().is_some_and(|page| {
+                    observed.id.matches(&page.id)
+                        && observed.same_content(&self.nsh_snapshot(
+                            page.id.clone(),
+                            page.headline.as_ref(),
+                            theme(cx).colors,
+                            cx.should_auto_hide_scrollbars(),
+                        ))
+                        && observed.layout.as_ref().is_some_and(|authority| {
+                            page.mount
+                                .upgrade()
+                                .is_some_and(|mount| authority.matches(&mount.borrow()))
+                        })
+                        && page.surface.errors().borrow().is_none()
+                });
+                let operation = observed.shell_control.as_ref().filter(|control| {
+                    valid
+                        && control.enabled
+                        && !self.shell_control_pending
+                        && matches!(&self.input, Some(ToolCardInputProjection::Bash { .. }))
+                        && matches!(&self.result, Some(ToolCardResultProjection::Bash { operation_id: Some(operation), .. }) if operation.as_ref() == control.operation.as_str())
+                        && self.shell_command.as_ref().is_some_and(|command| {
+                            command.operation_id == control.operation
+                                && command.concurrent
+                                && (command.can_cancel || command.can_retry)
+                        })
+                });
+                let accepted = if let Some(control) = operation {
+                    self.shell_control_pending = true;
+                    self.shell_control_failed = false;
+                    cx.emit(ShellControlRequested {
+                        operation_id: control.operation.clone(),
+                    });
                     cx.notify();
+                    true
+                } else {
+                    false
+                };
+                self.publish_nsh(cx);
+                let _ = reply.send(accepted);
+            }
+            Request::Layout {
+                observed,
+                authority,
+                size,
+            } => {
+                let valid = self.presentation.as_ref().is_some_and(|page| {
+                    observed.id.matches(&page.id)
+                        && observed.same_content(&self.nsh_snapshot(
+                            page.id.clone(),
+                            page.headline.as_ref(),
+                            theme(cx).colors,
+                            cx.should_auto_hide_scrollbars(),
+                        ))
+                        && page
+                            .mount
+                            .upgrade()
+                            .is_some_and(|mount| authority.matches(&mount.borrow()))
+                        && page.surface.errors().borrow().is_none()
+                        && authority.accepts_size(size)
+                });
+                if valid && let Some(page) = &mut self.presentation {
+                    let changed = (page.height - size[1]).abs() > 0.5
+                        || page.measured.as_ref().is_none_or(|(previous, measured)| {
+                            !previous.matches(&authority) || *measured != size
+                        });
+                    page.height = size[1];
+                    page.measured = Some((authority, size));
+                    if changed {
+                        cx.notify();
+                    }
                 }
             }
-            Request::Layout(_) => {}
             Request::Activate {
                 id,
                 expanded,
@@ -340,11 +563,66 @@ fn render(
     commands: mpsc::Sender<Request>,
 ) -> nsh_core::prelude::AnyElement {
     use nsh_core::prelude::*;
+    let scrollbar_presentation = stored(None);
+    effect(move || {
+        let snapshot = state.get();
+        let presentation = (snapshot.colors.text_primary, snapshot.auto_hide_scrollbars);
+        if scrollbar_presentation.get() == Some(presentation) {
+            return;
+        }
+        scrollbar_presentation.replace(Some(presentation));
+        let mut look = nsh_base::ScrollbarLook::default();
+        look.class = Some("absolute top-0 right-0 bottom-0 w-4 p-1".into());
+        let tint = crate::nsh::color(snapshot.colors.text_primary);
+        let idle = u32::from(tint.opacity(0.35));
+        let engaged = u32::from(tint.opacity(0.55));
+        look.thumb_class = Some(
+            format!(
+                "w-full rounded-full bg-[#{idle:08x}] hover:bg-[#{engaged:08x}] active:bg-[#{engaged:08x}]"
+            )
+            .into(),
+        );
+        let mut scrollbar = nsh_base::ScrollbarTheme::default();
+        scrollbar.mode = if snapshot.auto_hide_scrollbars {
+            nsh_base::ScrollbarMode::Hover
+        } else {
+            nsh_base::ScrollbarMode::Always
+        };
+        scrollbar.vertical = Some(look);
+        nsh_base::set_scrollbar_theme(Some(scrollbar));
+    });
     let pending = signal(false);
     let failed = signal(false);
-    let height = signal(0.0f32);
+    let root = element_ref();
+    let measured = signal_with(None::<(ProjectionId, ProjectionId)>, SignalEquals::Never);
     let scroll_offset = signal(point(px(0.), px(0.)));
-    let layout = commands.clone();
+    let layout = crate::nsh::OrderedCommands::new(commands.clone());
+    let layout_event = layout.clone();
+    effect(move || {
+        let observed = state.get();
+        let Some(authority) = observed.layout.clone().filter(|layout| layout.width > 0.) else {
+            return;
+        };
+        if measured.with_untracked(|previous| {
+            previous
+                .as_ref()
+                .is_some_and(|(id, mount)| id.matches(&observed.id) && mount.matches(&authority.id))
+        }) {
+            return;
+        }
+        measured.set(Some((observed.id.clone(), authority.id.clone())));
+        let layout = layout.clone();
+        spawn(async move {
+            if let Some(bounds) = root.measure().await {
+                layout.send(Request::Layout {
+                    observed: Box::new(observed),
+                    authority,
+                    size: [bounds.frame.size.width.0, bounds.frame.size.height.0],
+                });
+            }
+        });
+    });
+    let shell_commands = commands.clone();
     let activate = commands;
     let phase = signal(0.0f32);
     let title = text("").child(each(
@@ -376,17 +654,24 @@ fn render(
     ));
     view()
         .w_full()
+        .element_ref(&root)
         .flex_shrink_0()
         .text_size(px(Typography::CONVERSATION))
         .text_color(move || crate::nsh::color(state.get().colors.conversation_tool).to_hsla())
-        .on_layout(move |bounds: &Bounds<Points>| {
-            let next = bounds.size.height.0;
-            if next.is_finite() && next > 0. && (height.get_untracked() - next).abs() > 0.5 {
-                height.set(next);
-                let commands = layout.clone();
+        .on_layout(move |_: &Bounds<Points>| {
+            let observed = state.get_untracked();
+            if let Some(authority) = observed.layout.clone() {
+                let layout = layout_event.clone();
                 spawn(async move {
-                    if commands.send(Request::Layout(next)).await.is_err() {
-                        failed.set(true);
+                    if let Some(measurement) = root.measure().await {
+                        layout.send(Request::Layout {
+                            observed: Box::new(observed),
+                            authority,
+                            size: [
+                                measurement.frame.size.width.0,
+                                measurement.frame.size.height.0,
+                            ],
+                        });
                     }
                 });
             }
@@ -512,8 +797,96 @@ fn render(
             move || {
                 text(move || state.get().notice.unwrap_or_default()).text_color(move || {
                     let snapshot = state.get();
-                    crate::nsh::color(snapshot.activity.terminal_color(&snapshot.colors)).to_hsla()
+                    crate::nsh::color(if snapshot.control_failed {
+                        snapshot.colors.text_secondary
+                    } else {
+                        snapshot.activity.terminal_color(&snapshot.colors)
+                    })
+                    .to_hsla()
                 })
+            },
+        ))
+        .child(when(
+            move || state.get().shell_control.is_some(),
+            move || {
+                let commands = shell_commands.clone();
+                let pending = signal(false);
+                let target = element_ref();
+                #[cfg(feature = "nsh-reading-integration")]
+                effect(move || {
+                    mounted_regressions::measure_control(state, target, state.get());
+                });
+                view()
+                    .element_ref(&target)
+                    .role(AccessibilityRole::Button)
+                    .optional_label(move || {
+                        state
+                            .get()
+                            .shell_control
+                            .map(|control| control.label.into())
+                    })
+                    .disabled(move || {
+                        pending.get()
+                            || state
+                                .get()
+                                .shell_control
+                                .is_none_or(|control| !control.enabled)
+                    })
+                    .accessibility_state(move || AccessibilityState {
+                        disabled: pending.get()
+                            || state
+                                .get()
+                                .shell_control
+                                .is_none_or(|control| !control.enabled),
+                        ..Default::default()
+                    })
+                    .on_layout(move |_: &Bounds<Points>| {
+                        #[cfg(feature = "nsh-reading-integration")]
+                        mounted_regressions::measure_control(state, target, state.get_untracked());
+                    })
+                    .px_2()
+                    .py_1()
+                    .rounded(px(Layout::PANEL_RADIUS))
+                    .text_color(move || {
+                        crate::nsh::color(state.get().colors.text_secondary).to_hsla()
+                    })
+                    .hover(move |style| style.bg(crate::nsh::color(state.get().colors.bg_hover)))
+                    .on_press(move |_: &nsh_core::PressEvent| {
+                        let observed = state.get_untracked();
+                        if pending.get_untracked()
+                            || observed
+                                .shell_control
+                                .as_ref()
+                                .is_none_or(|control| !control.enabled)
+                        {
+                            return;
+                        }
+                        pending.set(true);
+                        failed.set(false);
+                        let commands = commands.clone();
+                        spawn(async move {
+                            let (reply, response) = oneshot::channel();
+                            if commands
+                                .send(Request::ShellControl {
+                                    observed: Box::new(observed),
+                                    reply,
+                                })
+                                .await
+                                .is_err()
+                                || !matches!(response.await, Ok(true))
+                            {
+                                failed.set(true);
+                            }
+                            pending.set(false);
+                        });
+                    })
+                    .child(text(move || {
+                        state
+                            .get()
+                            .shell_control
+                            .map(|control| control.label)
+                            .unwrap_or_default()
+                    }))
             },
         ))
         .child(when(

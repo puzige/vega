@@ -208,6 +208,11 @@ pub(crate) struct ThinkingBlock {
 }
 
 impl ThinkingBlock {
+    #[cfg(feature = "nsh-reading-integration")]
+    pub(crate) fn integration_source_copy(&self) -> MessageCopy {
+        self.source_copy.clone()
+    }
+
     pub(crate) fn summary_title(&self) -> Option<&str> {
         (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
     }
@@ -247,9 +252,27 @@ impl ThinkingBlock {
         self.summary_has_content || self.thinking_has_content
     }
 
-    pub(crate) fn copy_selected_source(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn reading_menu_current(&self, source: u64) -> bool {
+        self.ancestor_visible && self.body.painted.get() && self.source_copy.id == source
+    }
+
+    pub(crate) fn copy_selected_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reading = self.source_copy.nsh_reading.borrow().clone();
+        if let Some(reading) = reading {
+            if self.ancestor_visible && self.body.painted.get() {
+                reading.copy(window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if self.ancestor_visible
-            && self.owner.as_ref().is_some_and(|owner| owner.current(cx))
+            && self.body.painted.get()
+            && self
+                .source_copy
+                .reading_owner
+                .borrow()
+                .as_ref()
+                .is_some_and(|owner| owner.root_current(window, cx))
             && self.source_copy.has_selected_text()
         {
             self.source_copy.copy_selected_text(cx);
@@ -262,10 +285,7 @@ impl ThinkingBlock {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let (focus, scroll) = {
-            let state = card.read(cx);
-            (state.focus.clone(), state.scroll.clone())
-        };
+        let focus = card.read(cx).focus.clone();
         let content = Self::render_source(card.clone(), window, cx);
         let scope_id = format!("thinking-{}", card.entity_id());
         div()
@@ -274,15 +294,13 @@ impl ThinkingBlock {
             .min_w_0()
             .pt(px(Layout::PROCESS_ITEM_GAP))
             .track_focus(&focus)
-            .on_action(move |_: &CopySelectedText, _, cx| {
-                card.update(cx, ThinkingBlock::copy_selected_source);
+            .on_action(move |_: &CopySelectedText, window, cx| {
+                card.update(cx, |card, cx| card.copy_selected_source(window, cx));
             })
             .child(
                 crate::link_preview::MarkdownReadingScope::new(scope_id, focus.clone())
-                    .track_scroll(scroll.clone())
                     .child(content),
             )
-            .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
             .into_any_element()
     }
 
@@ -511,8 +529,8 @@ impl Render for ThinkingBlock {
             .flex()
             .flex_col()
             .gap(px(Layout::PROCESS_ITEM_GAP))
-            .on_action(cx.listener(|this, _: &CopySelectedText, _, cx| {
-                this.copy_selected_source(cx);
+            .on_action(cx.listener(|this, _: &CopySelectedText, window, cx| {
+                this.copy_selected_source(window, cx);
             }))
             .child(header)
             .when(self.expanded && self.source_copy.has_text(), |block| {
@@ -521,8 +539,7 @@ impl Render for ThinkingBlock {
                         .relative()
                         .w_full()
                         .min_w_0()
-                        .child(self.render_body(window, cx))
-                        .child(crate::tool_card::disclosure_scrollbar(&self.scroll, cx)),
+                        .child(self.render_body(window, cx)),
                 )
             })
             .when(self.truncated, |block| {
@@ -549,6 +566,23 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         let group_id = group.entity_id();
+        if self.entries.iter().any(|entry| {
+            matches!(entry, StreamEntry::RunActivity { group } | StreamEntry::RunActivitySegment { group, .. } if group.entity_id() == group_id)
+        }) {
+            for child in group.read(cx).children() {
+                if let RunActivityChild::Thinking(card) = child {
+                    let reading = super::selection_menu::ReadingOwner::thinking(
+                        self, cx.weak_entity(), card.downgrade(), group_id,
+                    );
+                    card.update(cx, |card, _| {
+                        let changed = card.source_copy.reading_owner.borrow().as_ref()
+                            .is_some_and(|previous| !previous.same_binding(&reading));
+                        if changed { card.source_copy.invalidate_selection(); }
+                        *card.source_copy.reading_owner.borrow_mut() = Some(reading);
+                    });
+                }
+            }
+        }
         if self.permissions_revoked
             || self.permission_change_pending()
             || self.reading_preview

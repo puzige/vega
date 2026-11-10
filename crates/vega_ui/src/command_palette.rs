@@ -1,5 +1,12 @@
 mod presentation;
 
+#[cfg(feature = "nsh-reading-integration")]
+pub use presentation::mounted_regressions::{
+    marked_palette_keys_leave_controller_and_focus_unchanged,
+    ordinary_palette_keys_repeat_only_navigation_and_emit_exact_events,
+    retired_palette_requests_cannot_mutate_mounted_controller,
+};
+
 use crate::nsh::ProjectionId;
 use crate::text_input::TextInput;
 use gpui_kit::{prelude::*, *};

@@ -1,5 +1,4 @@
 use super::*;
-use vega_ui::interaction::InteractionExt;
 
 fn merge_permission_refresh(current: &Thread, saved: &Thread) -> Thread {
     let mut refreshed = current.clone();
@@ -164,67 +163,16 @@ impl VegaWindow {
 
     pub(in crate::window) fn render_permission_reset_notice(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.permission_reset.projection.authority_blocked() {
-            return None;
-        }
-        let colors = theme(cx).colors;
-        let focus = self
-            .permission_reset
-            .notice_focus
-            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone();
-        let key = if self.permission_reset.session.is_some() {
-            "ui.permission_reset_paused_notice"
-        } else {
-            "ui.permission_reset_failed_notice"
-        };
-        Some(
-            div()
-                .px_3()
-                .py_1()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.warning)
-                .child(vega_i18n::t(key))
-                .child(
-                    div()
-                        .id("permission-reset-return-settings")
-                        .role(gpui_kit::Role::Button)
-                        .aria_label(vega_i18n::t("ui.permission_reset_open_settings"))
-                        .track_focus(&focus)
-                        .tab_stop(true)
-                        .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                        .cursor_pointer()
-                        .rounded(px(4.0))
-                        .px_2()
-                        .py_1()
-                        .interaction_surface(
-                            colors.bg_base,
-                            colors.bg_hover,
-                            colors.bg_active,
-                            true,
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.open_permission_reset_settings(cx)),
-                        )
-                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_permission_reset_settings(cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .child(vega_i18n::t("ui.permission_reset_open_settings")),
-                )
-                .into_any_element(),
-        )
+        self.permission_reset
+            .projection
+            .authority_blocked()
+            .then(|| self.render_shell_chrome(shell_chrome::Kind::PermissionReset, window, cx))
     }
 
-    fn open_permission_reset_settings(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::window) fn open_permission_reset_settings(&mut self, cx: &mut Context<Self>) {
         cx.set_global(SettingsOpen(true));
         cx.set_global(PricingSettingsRequested(false));
         if let Some(view) = &self.settings_view {

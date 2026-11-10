@@ -1,16 +1,10 @@
-//! Shared functional icons for Vega's compact native chrome.
+use gpui_kit::{AnyElement, IntoElement, Rgba, component::IconName, prelude::*, px};
 
-//! Generic UI symbols come from the embedded GPUI Kit icon set. The source
-//! assets are Lucide-style SVGs with a 24px viewBox and round line joins; the
-//! wrapper below keeps every icon on Vega's fixed 16px optical grid. Keeping
-//! the renderer SVG-backed avoids fractional `PathBuilder` geometry at small
+mod nsh;
+mod tooltip;
 
-use gpui_kit::{
-    AnyElement, IntoElement, Rgba,
-    component::{Icon as KitIcon, IconName, Sizable as _},
-    prelude::*,
-    px, svg,
-};
+#[cfg(feature = "nsh-reading-integration")]
+pub mod host_regressions;
 
 use crate::interaction::{Interaction, InteractionExt};
 use vega_theme::Layout;
@@ -125,7 +119,7 @@ const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
 
 const CODE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-15-2 18"/></svg>"#;
 
-const TEXT_SELECT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/><line x1="7" x2="15" y1="8" y2="8"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="7" x2="13" y1="16" y2="16"/></svg>"#;
+pub(crate) const TEXT_SELECT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/><line x1="7" x2="15" y1="8" y2="8"/><line x1="7" x2="17" y1="12" y2="12"/><line x1="7" x2="13" y1="16" y2="16"/></svg>"#;
 
 const COPY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26.6667 26.6667" fill="none" stroke="currentColor" stroke-width="2.2222" stroke-linecap="round" stroke-linejoin="round"><g transform="translate(1.3333 1.3333)"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></g></svg>"#;
 
@@ -192,24 +186,6 @@ fn icon_name(kind: Icon) -> IconName {
     }
 }
 
-fn kit_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
-    KitIcon::new(icon_name(kind))
-        .with_size(px(size))
-        .text_color(color)
-        .flex_shrink_0()
-        .into_any_element()
-}
-
-fn inline_icon(data: &'static [u8], color: Rgba, size: f32) -> AnyElement {
-    svg()
-        .data(data)
-        .size(px(size))
-        .flex_shrink_0()
-        .text_color(color)
-        .into_any_element()
-}
-
-/// Paints a 16px icon in the caller's semantic text color.
 pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
     sized_icon(kind, color, Layout::ICON_SIZE)
 }
@@ -261,24 +237,9 @@ pub(crate) fn nsh_source(kind: Icon) -> Option<String> {
 }
 
 pub(crate) fn sized_icon(kind: Icon, color: Rgba, size: f32) -> AnyElement {
-    let glyph = if let Some(data) = inline_data(kind) {
-        inline_icon(data, color, size)
-    } else {
-        kit_icon(kind, color, size)
-    };
-    gpui_kit::div()
-        .size(px(size))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(glyph)
-        .into_any_element()
+    nsh::element(kind, color, size)
 }
 
-/// Native tooltip body: a label plus an optional shortcut keycap chip. The
-/// chip reuses existing semantic tokens (`bg_hover`, `border_subtle`,
-/// `METADATA`, `text_secondary`) so no new color or font size is introduced.
 struct IconTooltip(gpui_kit::SharedString, Option<gpui_kit::SharedString>);
 impl gpui_kit::Render for IconTooltip {
     fn render(
@@ -286,32 +247,7 @@ impl gpui_kit::Render for IconTooltip {
         _: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl IntoElement {
-        let colors = vega_theme::theme(cx).colors;
-        let shortcut = self.1.clone();
-        gpui_kit::div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .text_size(px(vega_theme::Typography::METADATA))
-            .text_color(colors.text_primary)
-            .child(self.0.clone())
-            .children(shortcut.map(|shortcut| {
-                gpui_kit::div()
-                    .px_1()
-                    .rounded_md()
-                    .bg(colors.bg_hover)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .text_size(px(vega_theme::Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(shortcut)
-            }))
+        tooltip::element(self.0.clone(), self.1.clone(), vega_theme::theme(cx).colors)
     }
 }
 
@@ -323,21 +259,6 @@ pub fn icon_button(
     activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
 ) -> Interaction {
     icon_button_with_content(icon(kind, colors.text_secondary), label, colors, activate)
-}
-
-pub(crate) fn localized_icon_button(
-    kind: Icon,
-    key: &'static str,
-    colors: vega_theme::ThemeColors,
-    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
-) -> Interaction {
-    icon_button_with_id(
-        icon(kind, colors.text_secondary),
-        key,
-        vega_i18n::t(key),
-        colors,
-        activate,
-    )
 }
 
 fn icon_button_with_content(
@@ -461,16 +382,4 @@ pub fn shell_icon_button(
                 colors.text_tertiary
             },
         ))
-}
-
-pub(crate) fn link_icon(site: vega_conversation::types::LinkSiteKind, color: Rgba) -> AnyElement {
-    let name = match site {
-        vega_conversation::types::LinkSiteKind::Github => gpui_kit::assets::IconName::Github,
-        vega_conversation::types::LinkSiteKind::Mail => gpui_kit::assets::IconName::Mail,
-        vega_conversation::types::LinkSiteKind::Web => return icon(Icon::Globe, color),
-    };
-    KitIcon::new(name)
-        .with_size(px(Layout::ICON_SIZE))
-        .text_color(color)
-        .into_any_element()
 }

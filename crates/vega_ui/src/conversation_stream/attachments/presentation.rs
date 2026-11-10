@@ -552,7 +552,7 @@ impl NativeComponent for RecoveryFocus {
                 .size_full()
                 .track_focus(&focus)
                 .role(Role::Button)
-                .aria_label(vega_i18n::t("nsh.preview.reload"))
+                .aria_label(vega_i18n::t("ui.reload_view"))
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     let _ = pointer.update(cx, |this, cx| this.reload(&pointer_id, window, cx));
                     cx.stop_propagation();

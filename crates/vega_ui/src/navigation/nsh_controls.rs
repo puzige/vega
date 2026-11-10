@@ -26,7 +26,7 @@ impl Action {
             Self::Search => "ui.search_k",
             Self::Back => "ui.back",
             Self::Forward => "ui.forward",
-            Self::Reload => "nsh.preview.reload",
+            Self::Reload => "ui.reload_view",
         })
     }
 

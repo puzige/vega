@@ -10,6 +10,9 @@ use nsh_core::prelude as ns;
 use std::rc::{Rc, Weak};
 use tokio::sync::mpsc;
 
+pub(super) mod chrome;
+mod geometry;
+
 #[derive(Clone)]
 pub(super) struct Item {
     pub label: String,
@@ -21,6 +24,8 @@ pub(super) struct Item {
     pub double_action: Option<usize>,
     pub quiet: bool,
     pub resting: Option<String>,
+    pub running: bool,
+    motion: bool,
     pub emphasis: bool,
     pub hint: Option<String>,
     pub wrap: bool,
@@ -40,6 +45,8 @@ impl Item {
             double_action: None,
             quiet: false,
             resting: None,
+            running: false,
+            motion: false,
             emphasis: false,
             hint: None,
             wrap: false,
@@ -149,6 +156,7 @@ enum Request {
     },
     Layout {
         id: ProjectionId,
+        width: f32,
         height: f32,
     },
 }
@@ -161,13 +169,16 @@ struct Leaf {
     surface: Option<Surface<Snapshot, Request>>,
     focus: FocusHandle,
     selected: Option<Selection<usize>>,
-    lease: Weak<()>,
+    lease: Weak<chrome::ChromeLease>,
     handler: Handler,
     guard: Guard,
     guard_valid: bool,
     geometry: gpui_kit::ScrollHandle,
     authority: Authority,
     measured_height: Option<f32>,
+    acknowledged: Option<(ProjectionId, f32)>,
+    mount: ProjectionId,
+    motion_visible: bool,
     menu_scroll: Option<gpui_kit::ScrollHandle>,
     _subscriptions: Vec<Subscription>,
 }
@@ -181,6 +192,25 @@ impl Leaf {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self
+            .surface
+            .as_ref()
+            .is_some_and(|surface| surface.errors().borrow().is_none())
+            || !self
+                .acknowledged
+                .as_ref()
+                .is_some_and(|(projection, width)| {
+                    let native_width = f32::from(self.geometry.bounds().size.width);
+                    projection.matches(&self.snapshot.id)
+                        && native_width.is_finite()
+                        && native_width > 0.
+                        && width.is_finite()
+                        && *width > 0.
+                        && (native_width - width).abs() <= 1.
+                })
+        {
+            return;
+        }
         if !self.snapshot.accepts(
             id,
             index,
@@ -195,8 +225,10 @@ impl Leaf {
             if let Some(surface) = self.surface.take() {
                 surface.entity().read(cx).stop();
             }
+            self.lease = Weak::new();
             self.snapshot.id = ProjectionId::new();
             self.snapshot.recovery = false;
+            self.acknowledged = None;
             self.selected = None;
             cx.notify();
             return;
@@ -218,27 +250,43 @@ impl Leaf {
         }
         let (surface, mut requests) = Surface::new(self.snapshot.clone(), render, window, cx);
         let mut errors = surface.errors();
+        self.mount = ProjectionId::new();
+        let mount = self.mount.clone();
         cx.spawn(async move |this, cx| {
             while let Some(request) = requests.recv().await {
                 if this
-                    .update_in(cx, |this, window, cx| match request {
-                        Request::Activate { id, index, double } => {
-                            this.activate(&id, index, double, window, cx)
+                    .update_in(cx, |this, window, cx| {
+                        if !this.mount.matches(&mount) {
+                            return;
                         }
-                        Request::Layout { id, height }
-                            if this.snapshot.id.matches(&id)
-                                && height.is_finite()
-                                && height > 0. =>
-                        {
-                            if this
-                                .measured_height
-                                .is_none_or(|previous| (previous - height).abs() > 0.5)
-                            {
-                                this.measured_height = Some(height);
-                                cx.notify();
+                        match request {
+                            Request::Activate { id, index, double } => {
+                                this.activate(&id, index, double, window, cx)
                             }
+                            Request::Layout { id, width, height }
+                                if this.snapshot.id.matches(&id)
+                                    && this.lease.upgrade().is_some()
+                                    && this.authority == Authority::current(cx)
+                                    && (this.guard)(cx)
+                                    && this.surface.as_ref().is_some_and(|surface| {
+                                        surface.errors().borrow().is_none()
+                                    })
+                                    && width.is_finite()
+                                    && width > 0.
+                                    && height.is_finite()
+                                    && height > 0. =>
+                            {
+                                this.acknowledged = Some((id, width));
+                                if this
+                                    .measured_height
+                                    .is_none_or(|previous| (previous - height).abs() > 0.5)
+                                {
+                                    this.measured_height = Some(height);
+                                    cx.notify();
+                                }
+                            }
+                            Request::Layout { .. } => {}
                         }
-                        Request::Layout { .. } => {}
                     })
                     .is_err()
                 {
@@ -247,10 +295,16 @@ impl Leaf {
             }
         })
         .detach();
+        let mount = self.mount.clone();
         cx.spawn(async move |this, cx| {
             while errors.changed().await.is_ok() {
                 if errors.borrow_and_update().is_some() {
-                    let _ = this.update(cx, |_, cx| cx.notify());
+                    let _ = this.update(cx, |this, cx| {
+                        if this.mount.matches(&mount) {
+                            this.acknowledged = None;
+                            cx.notify();
+                        }
+                    });
                     break;
                 }
             }
@@ -507,6 +561,8 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 cx.notify();
             }),
             cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()),
+            cx.observe_window_activation(window, |_, _, cx| cx.notify()),
+            cx.observe_window_visibility(window, |_, _, _, cx| cx.notify()),
         ];
         Leaf {
             snapshot: Snapshot {
@@ -528,18 +584,24 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             geometry: gpui_kit::ScrollHandle::new(),
             authority: Authority::current(cx),
             measured_height: None,
+            acknowledged: None,
+            mount: ProjectionId::new(),
+            motion_visible: false,
             menu_scroll: menu_scroll.clone(),
             _subscriptions: subscriptions,
         }
     });
     state.update(cx, |this, cx| {
         let entering = this.lease.upgrade().is_none();
-        let lease = this.lease.upgrade().unwrap_or_else(|| {
+        if entering {
+            if let Some(surface) = this.surface.take() {
+                surface.entity().read(cx).stop();
+            }
             this.snapshot.id = ProjectionId::new();
+            this.acknowledged = None;
             this.selected = None;
-            Rc::new(())
-        });
-        this.lease = Rc::downgrade(&lease);
+            this.motion_visible = false;
+        }
         if this
             .surface
             .as_ref()
@@ -548,8 +610,10 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             if let Some(surface) = this.surface.take() {
                 surface.entity().read(cx).stop();
             }
+            this.lease = Weak::new();
             this.snapshot.id = ProjectionId::new();
             this.snapshot.recovery = true;
+            this.acknowledged = None;
             this.selected = None;
         }
         let authority = Authority::current(cx);
@@ -571,6 +635,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     || a.double_action != b.double_action
                     || a.quiet != b.quiet
                     || a.resting != b.resting
+                    || a.running != b.running
                     || a.emphasis != b.emphasis
                     || a.hint != b.hint
                     || a.wrap != b.wrap
@@ -581,10 +646,17 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             this.snapshot.id = ProjectionId::new();
             this.selected = None;
             this.measured_height = None;
+            this.acknowledged = None;
         }
         this.authority = authority;
         this.snapshot.text = text;
-        this.snapshot.items = items;
+        this.snapshot.items = items
+            .into_iter()
+            .map(|mut item| {
+                item.motion = this.motion_visible;
+                item
+            })
+            .collect();
         this.snapshot.colors = theme(cx).colors;
         this.snapshot.horizontal = horizontal;
         this.handler = handler;
@@ -616,6 +688,11 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         let Some(surface) = &mut this.surface else {
             return div().into_any_element();
         };
+        let lease = this
+            .lease
+            .upgrade()
+            .unwrap_or_else(|| Rc::new(chrome::ChromeLease::new(surface, cx)));
+        this.lease = Rc::downgrade(&lease);
         surface.sync_environment(cx);
         surface.publish(this.snapshot.clone());
         let mut host = div()
@@ -654,7 +731,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         if let Some(index) = this.snapshot.selected {
             let id = this.snapshot.id.clone();
             let label = if this.snapshot.recovery {
-                vega_i18n::t("nsh.preview.reload").to_string()
+                vega_i18n::t("ui.reload_view").to_string()
             } else {
                 this.snapshot.items[index].label.clone()
             };
@@ -680,27 +757,50 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                     }),
             );
         }
+        let weak = cx.weak_entity();
+        let mount = this.mount.clone();
         Mounted {
             id: key,
-            child: host.into_any_element(),
+            child: geometry::sample(host.into_any_element(), move |bounds, window, cx| {
+                let visible = !bounds.intersect(&window.content_mask().bounds).is_empty()
+                    && window.is_visible()
+                    && window.is_window_active()
+                    && !cx.reduce_motion();
+                let _ = weak.update(cx, |this, _cx| {
+                    if this.mount.matches(&mount)
+                        && this.lease.upgrade().is_some()
+                        && this.motion_visible != visible
+                    {
+                        this.motion_visible = visible;
+                        for item in &mut this.snapshot.items {
+                            item.motion = visible;
+                        }
+                        if let Some(surface) = &this.surface
+                            && surface.errors().borrow().is_none()
+                        {
+                            surface.publish(this.snapshot.clone());
+                        }
+                    }
+                });
+            }),
             lease,
         }
         .into_any_element()
     })
 }
 
-struct Mounted {
+struct Mounted<L = ()> {
     id: gpui_kit::SharedString,
     child: AnyElement,
-    lease: Rc<()>,
+    lease: Rc<L>,
 }
-impl IntoElement for Mounted {
+impl<L: 'static> IntoElement for Mounted<L> {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
-impl Element for Mounted {
+impl<L: 'static> Element for Mounted<L> {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
@@ -728,7 +828,7 @@ impl Element for Mounted {
         cx: &mut App,
     ) {
         if let Some(id) = id {
-            window.with_element_state::<Rc<()>, _>(id, |_, _| ((), self.lease.clone()));
+            window.with_element_state::<Rc<L>, _>(id, |_, _| ((), self.lease.clone()));
         }
         self.child.prepaint(window, cx);
     }
@@ -752,22 +852,28 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
     ns::view()
         .w_full()
         .h_full()
+        .accessible(false)
         .child(ns::dynamic(move || {
             let snapshot = state.get();
             let colors = snapshot.colors;
             let layout = commands.clone();
             let id = snapshot.id.clone();
-            let measured = ns::signal(0.0f32);
+            let measured = ns::signal((0.0f32, 0.0f32));
             let mut content = ns::view().w_full().flex_col().gap(ns::px(4.)).on_layout(
                 move |bounds: &nsh_core::Bounds<nsh_core::Points>| {
+                    let width = bounds.size.width.0;
                     let height = bounds.size.height.0;
-                    if height.is_finite()
+                    let previous = measured.get_untracked();
+                    if width.is_finite()
+                        && width > 0.
+                        && height.is_finite()
                         && height > 0.
-                        && (measured.get_untracked() - height).abs() > 0.5
+                        && ((previous.0 - width).abs() > 0.5 || (previous.1 - height).abs() > 0.5)
                     {
-                        measured.set(height);
+                        measured.set((width, height));
                         layout.send(Request::Layout {
                             id: id.clone(),
+                            width,
                             height,
                         });
                     }
@@ -782,7 +888,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             }
             let items = if snapshot.recovery {
                 vec![Item::action(
-                    vega_i18n::t("nsh.preview.reload"),
+                    vega_i18n::t("ui.reload_view"),
                     Some(Icon::Refresh),
                 )]
             } else {
@@ -859,7 +965,58 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                     button = button.flex_1();
                 }
                 if quiet {
-                    if let Some(resting) = item.resting {
+                    if item.running {
+                        let phase = ns::signal(0.0f32);
+                        button = button.child(
+                            ns::view()
+                                .size(ns::px(Layout::ICON_SIZE))
+                                .items_center()
+                                .justify_center()
+                                .child(ns::when(
+                                    move || {
+                                        item.motion
+                                            && ns::lifecycle()
+                                                == nsh_core::platform::Lifecycle::Active
+                                            && !ns::reduce_motion()
+                                    },
+                                    move || {
+                                        let epoch = std::time::Instant::now();
+                                        phase.set(0.);
+                                        ns::spawn(async move {
+                                            loop {
+                                                ns::next_frame().await;
+                                                phase.set(
+                                                    epoch.elapsed().as_secs_f32() * 360. * 1000.
+                                                        / vega_theme::Motion::THINKING_SHIMMER_MS
+                                                            as f32,
+                                                );
+                                            }
+                                        });
+                                        ns::view()
+                                    },
+                                ))
+                                .child(
+                                    ns::svg(nsh_core::element::ImageSrc::svg_markup(
+                                        &nsh_source(Icon::Refresh).unwrap_or_default(),
+                                    ))
+                                    .size(ns::px(Layout::ICON_SIZE))
+                                    .rotate(move || {
+                                        ns::deg(
+                                            if item.motion
+                                                && ns::lifecycle()
+                                                    == nsh_core::platform::Lifecycle::Active
+                                                && !ns::reduce_motion()
+                                            {
+                                                phase.get()
+                                            } else {
+                                                0.
+                                            },
+                                        )
+                                    })
+                                    .text_color(crate::nsh::color(colors.text_secondary)),
+                                ),
+                        );
+                    } else if let Some(resting) = item.resting {
                         button = button.child(
                             ns::text(resting)
                                 .text_size(ns::px(Typography::METADATA))
@@ -906,7 +1063,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                     );
                 }
                 if let Some(hint) = item.hint {
-                    button = button.child(
+                    button = button.hint(hint.clone()).child(
                         ns::text(hint)
                             .text_size(ns::px(Typography::METADATA))
                             .text_color(crate::nsh::color(colors.text_tertiary)),
@@ -918,7 +1075,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             content
                 .child(ns::dynamic(move || {
                     if failed.get() {
-                        ns::text(vega_i18n::t("nsh.preview.reload"))
+                        ns::text(vega_i18n::t("ui.reload_view"))
                             .text_color(crate::nsh::color(colors.danger))
                             .into_element()
                     } else {

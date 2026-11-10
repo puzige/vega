@@ -24,22 +24,6 @@ pub(super) struct CodeDragSelection {
     hit_text: Rc<dyn Fn(Point<Pixels>) -> Option<u64>>,
 }
 
-impl CodeDragSelection {
-    pub(super) fn new(
-        copy: MessageCopy,
-        focus: FocusHandle,
-        handle: TextSelectionHandle,
-        hit_text: impl Fn(Point<Pixels>) -> Option<u64> + 'static,
-    ) -> Self {
-        Self {
-            copy,
-            focus,
-            handle,
-            hit_text: Rc::new(hit_text),
-        }
-    }
-}
-
 #[derive(Default)]
 struct RefreshEpoch {
     value: u64,

@@ -1,10 +1,10 @@
 use super::attachments::ImagePreview;
 use super::*;
-use crate::icons::{Icon, icon};
-use crate::interaction::InteractionExt;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+use crate::icons::Icon;
+
+mod native;
 use gpui_kit::{
-    Anchor, Bounds, Div, Focusable, Global, Role, Stateful, anchored, canvas, deferred, point,
+    Anchor, Bounds, Div, Focusable, Global, Stateful, anchored, canvas, deferred, point,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -47,6 +47,7 @@ pub(crate) struct PendingQueueUi {
     menu_focus: [FocusHandle; 2],
     scroll: ScrollHandle,
     restore_focus: bool,
+    epoch: crate::nsh::ProjectionId,
 }
 
 impl PendingQueueUi {
@@ -62,16 +63,16 @@ impl PendingQueueUi {
             menu_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             scroll: ScrollHandle::new(),
             restore_focus: false,
+            epoch: crate::nsh::ProjectionId::new(),
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum PendingControlAction {
     Queue(PendingQueueAction),
     Menu(String),
     RecoverEdit,
-    Submit,
 }
 
 struct PendingButton {
@@ -83,6 +84,7 @@ struct PendingButton {
     enabled: bool,
     selected: bool,
     action: PendingControlAction,
+    style: native::ButtonStyle,
 }
 
 const ECHO_TEXT_KIND: &str = "user-text";
@@ -155,6 +157,7 @@ impl ConversationStream {
         error: Option<crate::localized_copy::LocalizedCopy>,
         cx: &mut Context<Self>,
     ) {
+        self.pending_ui.epoch = crate::nsh::ProjectionId::new();
         self.pending_ui.error = error;
         for (message_id, sent_at_ms) in &projection.timestamps {
             self.timestamps
@@ -502,11 +505,6 @@ impl ConversationStream {
     ) {
         match action {
             PendingControlAction::Queue(action) => self.queue_action(action.clone(), window, cx),
-            PendingControlAction::Submit => {
-                if self.shows_running_send(cx) && !self.input.read(cx).is_composing() {
-                    self.submit_message(cx);
-                }
-            }
             PendingControlAction::Menu(id) => {
                 if self.pending_ui.menu.as_ref() == Some(id) {
                     self.close_pending_menu(window, cx);
@@ -531,146 +529,14 @@ impl ConversationStream {
     }
 
     fn pending_button(&self, button: PendingButton, cx: &mut Context<Self>) -> Stateful<Div> {
-        let colors = theme(cx).colors;
-        let PendingButton {
-            id,
-            label,
-            description,
-            glyph,
-            focus,
-            enabled,
-            selected,
-            action,
-        } = button;
-        let keyboard_action = action.clone();
+        let id = button.id.clone();
         div()
             .id(id)
-            .role(Role::Button)
-            .aria_label(label)
-            .when_some(description, |element, description| {
-                element.aria_description(description)
-            })
-            .key_context("PendingMessageControl")
-            .track_focus(&focus)
-            .tab_stop(enabled)
-            .size(px(Layout::TITLEBAR_CONTROL_SIZE))
             .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1()
-            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-            .text_size(px(Typography::BODY))
-            .text_color(if enabled {
-                colors.text_secondary
-            } else {
-                colors.text_tertiary
-            })
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .when(selected, |element| element.bg(colors.bg_active))
-            .when(enabled, |element| {
-                element
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
-            })
-            .tooltip(move |_, cx| crate::icons::tooltip(description.unwrap_or(label), cx))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    if enabled {
-                        this.activate_pending_control(&action, window, cx);
-                    }
-                }),
-            )
-            .on_action(
-                cx.listener(move |this, _: &ActivatePendingMessageControl, window, cx| {
-                    cx.stop_propagation();
-                    if enabled {
-                        this.activate_pending_control(&keyboard_action, window, cx);
-                    }
-                }),
-            )
-            .child(icon(
-                glyph,
-                if enabled {
-                    colors.text_secondary
-                } else {
-                    colors.text_tertiary
-                },
-            ))
-    }
-
-    pub(crate) fn render_running_send(&self, can_send: bool, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let enabled = can_send && !self.input.read(cx).is_composing();
-        let label = match self.running_message_behavior(cx) {
-            PendingMessageBehavior::Queue => vega_i18n::t("ui.queue_message"),
-            PendingMessageBehavior::Steer => vega_i18n::t("ui.steer"),
-        };
-        div()
-            .id("composer-running-send")
-            .role(Role::Button)
-            .aria_label(label)
-            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-            .key_context("PendingMessageControl")
-            .tab_stop(true)
-            .size(px(Layout::COMPOSER_SEND_SIZE))
-            .flex_shrink_0()
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(if enabled {
-                colors.accent
-            } else {
-                colors.bg_hover
-            })
-            .text_color(if enabled {
-                colors.brand_on_accent
-            } else {
-                colors.text_tertiary
-            })
-            .when(enabled, |button| button.cursor_pointer())
-            .interaction_surface(
-                if enabled {
-                    colors.accent
-                } else {
-                    colors.bg_hover
-                },
-                colors.brand_primary_strong,
-                colors.accent,
-                enabled,
-            )
-            .track_focus(&self.action_focus[1])
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.activate_pending_control(&PendingControlAction::Submit, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &ActivatePendingMessageControl, window, cx| {
-                    cx.stop_propagation();
-                    this.activate_pending_control(&PendingControlAction::Submit, window, cx);
-                }),
-            )
-            .child(icon(
-                Icon::ArrowUp,
-                if enabled {
-                    colors.brand_on_accent
-                } else {
-                    colors.text_tertiary
-                },
-            ))
-            .into_any_element()
+            .child(native::Chrome::button(cx.weak_entity(), button))
     }
 
     pub(crate) fn render_pending_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
         let mut status = div()
             .w_full()
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
@@ -693,13 +559,13 @@ impl ConversationStream {
                         enabled: !self.actions.running && self.pending_controls_enabled(),
                         selected: false,
                         action: PendingControlAction::Queue(PendingQueueAction::Resume),
+                        style: native::ButtonStyle::Label,
                     },
                     cx,
                 )
                 .w_auto()
                 .px_2()
-                .rounded_full()
-                .child(vega_i18n::t("ui.continue_queue"));
+                .rounded_full();
             status = status.child(div().flex().justify_end().mb_1().child(resume));
         }
         if let Some(message) = self.pending_ui.recovered_edit.front() {
@@ -716,13 +582,13 @@ impl ConversationStream {
                         enabled: can_restore,
                         selected: false,
                         action: PendingControlAction::RecoverEdit,
+                        style: native::ButtonStyle::Label,
                     },
                     cx,
                 )
                 .w_auto()
                 .px_2()
-                .rounded_full()
-                .child(vega_i18n::t("ui.continue_editing"));
+                .rounded_full();
             let preview = if message.content.is_empty() {
                 vega_i18n::t("ui.image").to_string()
             } else {
@@ -744,35 +610,40 @@ impl ConversationStream {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .truncate()
-                                    .text_size(px(Typography::BODY))
-                                    .text_color(colors.text_secondary)
-                                    .child(preview),
+                                    .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                                    .child(native::Chrome::text(
+                                        cx.weak_entity(),
+                                        "recovered-preview",
+                                        preview,
+                                        native::TextKind::Secondary,
+                                    )),
                             )
                             .child(recover),
                     )
                     .when(!can_restore, |element| {
-                        element.child(
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .child(vega_i18n::t("ui.send_or_clear_the_current_draft_first")),
-                        )
+                        element.child(div().h(px(Typography::SIDEBAR_LINE_HEIGHT)).child(
+                            native::Chrome::text(
+                                cx.weak_entity(),
+                                "recovered-reason",
+                                vega_i18n::t("ui.send_or_clear_the_current_draft_first").to_owned(),
+                                native::TextKind::Reason,
+                            ),
+                        ))
                     }),
             );
         }
         if let Some(error) = &self.pending_ui.error {
-            status = status.child(div().mb_2().child(render_rows::status_notice(
+            status = status.child(div().mb_2().child(native::Chrome::text(
+                cx.weak_entity(),
+                "pending-error",
                 error.render(),
-                colors.danger,
-                &colors,
+                native::TextKind::Error,
             )));
         }
         status.into_any_element()
     }
 
     pub(crate) fn render_pending_queue(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
         let visible = self
             .visible_pending_messages()
             .len()
@@ -812,13 +683,13 @@ impl ConversationStream {
                             action: PendingControlAction::Queue(PendingQueueAction::Steer(
                                 id.clone(),
                             )),
+                            style: native::ButtonStyle::Label,
                         },
                         cx,
                     )
                     .w_auto()
                     .px_1()
-                    .rounded_full()
-                    .child(vega_i18n::t("ui.steer"));
+                    .rounded_full();
                 let remove = self.pending_button(
                     PendingButton {
                         id: format!("pending-remove-{id}"),
@@ -829,6 +700,7 @@ impl ConversationStream {
                         enabled,
                         selected: false,
                         action: PendingControlAction::Queue(PendingQueueAction::Remove(id.clone())),
+                        style: native::ButtonStyle::Icon,
                     },
                     cx,
                 );
@@ -843,6 +715,7 @@ impl ConversationStream {
                             enabled,
                             selected: self.pending_ui.menu.as_ref() == Some(&id),
                             action: PendingControlAction::Menu(id.clone()),
+                            style: native::ButtonStyle::Icon,
                         },
                         cx,
                     )
@@ -868,14 +741,19 @@ impl ConversationStream {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(icon(
-                            if message.behavior == PendingMessageBehavior::Queue {
-                                Icon::Queue
-                            } else {
-                                Icon::Steer
-                            },
-                            colors.text_tertiary,
-                        ))
+                        .child(
+                            div()
+                                .size(px(Layout::ICON_SIZE))
+                                .child(native::Chrome::glyph(
+                                    cx.weak_entity(),
+                                    format!("pending-kind-{id}"),
+                                    if message.behavior == PendingMessageBehavior::Queue {
+                                        Icon::Queue
+                                    } else {
+                                        Icon::Steer
+                                    },
+                                )),
+                        )
                         .children(item.images.iter().take(1).map(|image| {
                             div()
                                 .size(px(Layout::PENDING_MESSAGE_THUMBNAIL))
@@ -894,10 +772,14 @@ impl ConversationStream {
                                             .right_0()
                                             .px_1()
                                             .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                                            .bg(colors.bg_elevated)
-                                            .text_color(colors.text_secondary)
-                                            .text_size(px(Typography::METADATA))
-                                            .child(format!("+{}", message.images.len() - 1)),
+                                            .w(px(Layout::PENDING_MESSAGE_THUMBNAIL))
+                                            .h(px(Typography::METADATA + 4.))
+                                            .child(native::Chrome::text(
+                                                cx.weak_entity(),
+                                                format!("pending-images-{id}"),
+                                                format!("+{}", message.images.len() - 1),
+                                                native::TextKind::Badge,
+                                            )),
                                     )
                                 })
                         }))
@@ -905,12 +787,13 @@ impl ConversationStream {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .text_size(px(Typography::BODY))
-                                .text_color(colors.text_primary)
-                                .child(preview),
+                                .h(px(Layout::TITLEBAR_CONTROL_SIZE))
+                                .child(native::Chrome::text(
+                                    cx.weak_entity(),
+                                    format!("pending-preview-{id}"),
+                                    preview,
+                                    native::TextKind::Primary,
+                                )),
                         )
                         .child(
                             div()
@@ -936,40 +819,25 @@ impl ConversationStream {
                     .relative()
                     .w_full()
                     .h(px(viewport_height + Layout::PENDING_MESSAGE_OVERLAP))
-                    .rounded(px(Layout::PENDING_MESSAGE_RADIUS))
-                    .bg(colors.bg_elevated)
                     .overflow_hidden()
-                    .map(|mut rail| {
-                        let fade = ScrollFade::compact()
-                            .rounded_parent(rail.style())
-                            .bottom_extension(px(Layout::PENDING_MESSAGE_OVERLAP));
-                        rail.child(
-                            div()
-                                .id("pending-message-scroll")
-                                .h(px(viewport_height))
-                                .w_full()
-                                .flex()
-                                .flex_col()
-                                .overflow_y_scroll()
-                                .track_scroll(&self.pending_ui.scroll)
-                                .key_context("Composer")
-                                .on_action(cx.listener(Self::next_composer_control))
-                                .on_action(cx.listener(Self::previous_composer_control))
-                                .children(rows)
-                                .tracked_scroll_edge_fade(
-                                    self.pending_ui.scroll.clone(),
-                                    colors.bg_elevated,
-                                    fade,
-                                ),
-                        )
-                    })
+                    .child(div().absolute().inset_0().child(native::Chrome::panel(
+                        cx.weak_entity(),
+                        "pending-rail",
+                        false,
+                    )))
                     .child(
                         div()
-                            .absolute()
-                            .inset_0()
-                            .rounded(px(Layout::PENDING_MESSAGE_RADIUS))
-                            .border_1()
-                            .border_color(colors.border_subtle),
+                            .id("pending-message-scroll")
+                            .h(px(viewport_height))
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.pending_ui.scroll)
+                            .key_context("Composer")
+                            .on_action(cx.listener(Self::next_composer_control))
+                            .on_action(cx.listener(Self::previous_composer_control))
+                            .children(rows),
                     ),
             )
             .into_any_element()
@@ -1029,7 +897,6 @@ impl ConversationStream {
         let id = self.pending_ui.menu.as_ref()?;
         let item = self.pending_ui.items.get(id)?;
         let bounds = item.bounds.get()?;
-        let colors = theme(cx).colors;
         let enabled = self.pending_controls_enabled();
         let editable = self.pending_draft_is_empty(cx) && self.pending_ui.recovered_edit.is_empty();
         let edit_reason = if !self.pending_ui.recovered_edit.is_empty() {
@@ -1048,6 +915,7 @@ impl ConversationStream {
                     enabled: enabled && editable,
                     selected: false,
                     action: PendingControlAction::Queue(PendingQueueAction::Edit(id.clone())),
+                    style: native::ButtonStyle::Menu,
                 },
                 cx,
             )
@@ -1056,23 +924,7 @@ impl ConversationStream {
             .min_h(px(Layout::PENDING_MESSAGE_ROW_HEIGHT))
             .px_2()
             .py_1()
-            .justify_start()
-            .tab_stop(true)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_w_0()
-                    .child(vega_i18n::t("ui.edit_message"))
-                    .when(!editable, |element| {
-                        element.child(
-                            div()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_tertiary)
-                                .child(edit_reason),
-                        )
-                    }),
-            );
+            .justify_start();
         let toggle_label =
             if Self::default_running_message_behavior(cx) == PendingMessageBehavior::Queue {
                 vega_i18n::t("ui.turn_queue_off")
@@ -1090,14 +942,14 @@ impl ConversationStream {
                     enabled,
                     selected: false,
                     action: PendingControlAction::Queue(PendingQueueAction::ToggleDefault),
+                    style: native::ButtonStyle::Menu,
                 },
                 cx,
             )
             .w_full()
             .h(px(Layout::PENDING_MESSAGE_ROW_HEIGHT))
             .px_2()
-            .justify_start()
-            .child(toggle_label);
+            .justify_start();
         let menu = div()
             .id("pending-message-menu")
             .key_context("PendingMessageMenu")
@@ -1124,12 +976,12 @@ impl ConversationStream {
             .p_1()
             .flex()
             .flex_col()
-            .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_color(colors.text_primary)
-            .shadow_sm()
+            .relative()
+            .child(div().absolute().inset_0().child(native::Chrome::panel(
+                cx.weak_entity(),
+                "pending-menu-panel",
+                true,
+            )))
             .child(edit)
             .child(toggle);
         Some(

@@ -1,5 +1,9 @@
 use super::*;
+#[cfg(feature = "nsh-reading-integration")]
+pub mod command_control_regressions;
 mod nsh_view;
+#[cfg(feature = "nsh-reading-integration")]
+pub use nsh_view::mounted_regressions;
 
 use crate::nsh::ProjectionId;
 use vega_conversation::types::{
@@ -20,7 +24,47 @@ pub enum ShellRecoveryAction {
 pub struct ShellRecoveryRequested {
     pub source: Thread,
     pub sequence: u64,
+    pub draft: bool,
     pub action: ShellRecoveryAction,
+}
+
+impl ShellRecoveryRequested {
+    fn matches_route(&self, thread: &Thread, draft: bool, sequence: u64) -> bool {
+        self.source.id == thread.id
+            && self.source.project_id == thread.project_id
+            && same_recovery_authority(&self.source, thread)
+            && self.draft == draft
+            && self.sequence == sequence
+    }
+}
+
+pub(super) fn same_recovery_authority(source: &Thread, current: &Thread) -> bool {
+    source.backend == current.backend
+        && source.mode == current.mode
+        && source.permission_mode == current.permission_mode
+        && source.permission_revision == current.permission_revision
+        && source.draft_authority_epoch == current.draft_authority_epoch
+        && source.default_permission == current.default_permission
+        && source.full_access_grant == current.full_access_grant
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryPresentation {
+    Hidden,
+    Summary(&'static str),
+    Details,
+}
+
+fn recovery_presentation(draft: bool, blocked: bool, unavailable: bool) -> RecoveryPresentation {
+    if !draft {
+        RecoveryPresentation::Details
+    } else if unavailable {
+        RecoveryPresentation::Summary("ui.shell_recovery.status_unavailable")
+    } else if blocked {
+        RecoveryPresentation::Summary("ui.shell_recovery.paused")
+    } else {
+        RecoveryPresentation::Hidden
+    }
 }
 
 pub enum ShellRecoveryOutcome {
@@ -33,6 +77,7 @@ impl EventEmitter<ShellRecoveryRequested> for ConversationStream {}
 pub(crate) struct ShellRecoveryUi {
     sequence: u64,
     pending: Option<&'static str>,
+    pending_read: bool,
     pub(super) opened: bool,
     pub(super) projection: Option<ShellRecoveryProjection>,
     decision: RecoveryDecision<ShellRecoveryConfirmation>,
@@ -44,6 +89,7 @@ pub(crate) struct ShellRecoveryUi {
     projection_identity: ProjectionId,
     confirmation_identity: ProjectionId,
     presentation: Option<nsh_view::Presentation>,
+    summary: Option<nsh_view::Presentation>,
 }
 
 struct RecoveryDecision<T> {
@@ -61,9 +107,11 @@ impl<T> Default for RecoveryDecision<T> {
 }
 
 impl<T> RecoveryDecision<T> {
-    fn dismiss(&mut self) {
+    fn dismiss(&mut self, sequence: &mut u64, pending: &mut Option<&'static str>) {
         if !self.submitted {
             self.confirmation = None;
+            *sequence = sequence.saturating_add(1);
+            *pending = None;
         }
     }
 }
@@ -73,6 +121,7 @@ impl ShellRecoveryUi {
         Self {
             sequence: 0,
             pending: None,
+            pending_read: false,
             opened: false,
             projection: None,
             decision: RecoveryDecision::default(),
@@ -84,17 +133,30 @@ impl ShellRecoveryUi {
             projection_identity: ProjectionId::new(),
             confirmation_identity: ProjectionId::new(),
             presentation: None,
+            summary: None,
         }
     }
 }
 
 impl ConversationStream {
+    pub(super) fn reset_shell_recovery(&mut self, cx: &mut Context<Self>) {
+        let sequence = self.shell_recovery.sequence.saturating_add(1);
+        self.shell_recovery = ShellRecoveryUi::new(cx);
+        self.shell_recovery.sequence = sequence;
+        let stream = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = stream.update(cx, |this, cx| this.refresh_shell_recovery(cx));
+        });
+    }
+
     pub(super) fn dismiss_shell_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.opened = false;
-        if self.shell_recovery.pending.is_none() {
-            self.shell_recovery.decision.dismiss();
-        }
+        self.shell_recovery.decision.dismiss(
+            &mut self.shell_recovery.sequence,
+            &mut self.shell_recovery.pending,
+        );
+        self.shell_recovery.confirmation_identity = ProjectionId::new();
         self.shell_recovery.review_focus.focus(window, cx);
         cx.notify();
     }
@@ -109,7 +171,28 @@ impl ConversationStream {
         }
     }
 
-    fn request_shell_recovery(&mut self, action: ShellRecoveryAction, cx: &mut Context<Self>) {
+    pub(super) fn request_shell_control(&mut self, operation_id: String, cx: &mut Context<Self>) {
+        if (self.shell_recovery.pending.is_some() && !self.shell_recovery.pending_read)
+            || self.shell_recovery.sequence.checked_add(1).is_none()
+        {
+            for card in self.tool_cards.values() {
+                card.update(cx, |card, cx| {
+                    if card.finish_shell_control(&operation_id, true) {
+                        cx.notify();
+                    }
+                });
+            }
+            return;
+        }
+        self.shell_recovery.pending = None;
+        self.request_shell_recovery(ShellRecoveryAction::Cancel(operation_id), cx);
+    }
+
+    pub(super) fn request_shell_recovery(
+        &mut self,
+        action: ShellRecoveryAction,
+        cx: &mut Context<Self>,
+    ) {
         if self.shell_recovery.pending.is_some() {
             return;
         }
@@ -128,10 +211,12 @@ impl ConversationStream {
         self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.sequence = sequence;
         self.shell_recovery.pending = Some(label);
+        self.shell_recovery.pending_read = matches!(&action, ShellRecoveryAction::Read);
         self.shell_recovery.error = None;
         cx.emit(ShellRecoveryRequested {
             source: self.thread.clone(),
             sequence,
+            draft: self.draft_route,
             action,
         });
         cx.notify();
@@ -143,14 +228,23 @@ impl ConversationStream {
         result: Result<ShellRecoveryOutcome, ShellRecoveryError>,
         cx: &mut Context<Self>,
     ) {
-        if request.source.id != self.thread.id
-            || request.source.project_id != self.thread.project_id
-            || request.sequence != self.shell_recovery.sequence
-        {
+        if !request.matches_route(&self.thread, self.draft_route, self.shell_recovery.sequence) {
             return;
         }
         self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.pending = None;
+        self.shell_recovery.pending_read = false;
+        let mut card_control = false;
+        if let ShellRecoveryAction::Cancel(operation_id) = &request.action {
+            for card in self.tool_cards.values() {
+                card.update(cx, |card, cx| {
+                    if card.finish_shell_control(operation_id, result.is_err()) {
+                        card_control = true;
+                        cx.notify();
+                    }
+                });
+            }
+        }
         match result {
             Ok(ShellRecoveryOutcome::Projection(projection)) => {
                 self.shell_recovery.projection_identity = ProjectionId::new();
@@ -182,7 +276,9 @@ impl ConversationStream {
                 if error == ShellRecoveryError::Changed {
                     self.shell_recovery.decision = RecoveryDecision::default();
                 }
-                self.shell_recovery.error = Some(error);
+                if !card_control {
+                    self.shell_recovery.error = Some(error);
+                }
             }
         }
         let refresh = self

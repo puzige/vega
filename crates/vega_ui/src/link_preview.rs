@@ -1,7 +1,7 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use gpui_kit::{
-    base::{Align, Placement, Positioner, SelectableText},
+    base::{Align, Placement, Positioner},
     prelude::*,
     *,
 };
@@ -14,6 +14,16 @@ use vega_theme::{Layout, Typography, theme};
 
 use crate::conversation_stream::links::{LinkRange, link_regions};
 
+#[cfg(feature = "nsh-reading-integration")]
+pub(crate) mod integration_support;
+
+mod decoration;
+#[cfg(feature = "nsh-reading-integration")]
+mod focus_integration;
+mod native;
+#[cfg(feature = "nsh-reading-integration")]
+pub use focus_integration::measured_focus_paints_wrapped_fragments_and_tracks_tab_reverse_and_escape;
+
 #[derive(Clone, Default)]
 struct Dependencies {
     service: LinkPreviewService,
@@ -24,6 +34,8 @@ struct Registry {
     windows: HashMap<WindowId, WeakEntity<Coordinator>>,
     stack: Vec<ReadingScope>,
     dependencies: Dependencies,
+    #[cfg(feature = "nsh-reading-integration")]
+    request: Option<integration_support::Request>,
 }
 
 impl Global for Registry {}
@@ -76,6 +88,8 @@ struct ReadingScope {
     scroll: ScrollSource,
 }
 
+pub(crate) type LinkValidity = Rc<dyn Fn(&Window, &App) -> bool>;
+
 #[derive(Clone)]
 struct VisibleLink {
     key: String,
@@ -90,6 +104,13 @@ struct VisibleLink {
     focus: FocusHandle,
     scopes: Vec<ReadingScope>,
     scroll: Vec<ScrollStamp>,
+    validity: Option<LinkValidity>,
+}
+
+impl VisibleLink {
+    fn current(&self, window: &Window, cx: &App) -> bool {
+        self.validity.as_ref().is_none_or(|valid| valid(window, cx))
+    }
 }
 
 struct ActivePreview {
@@ -98,11 +119,11 @@ struct ActivePreview {
     generation: u64,
     cancellation: CancellationToken,
     data: Option<Result<LinkPreviewData, LinkPreviewFailure>>,
-    image: Option<Arc<Image>>,
     open: FocusHandle,
     retry: FocusHandle,
     address: FocusHandle,
     expanded: bool,
+    validity: Option<LinkValidity>,
 }
 
 impl Drop for ActivePreview {
@@ -119,10 +140,11 @@ pub struct Coordinator {
     focused: Option<String>,
     hovered: Option<String>,
     suppressed: Option<String>,
-    armed: Option<(String, CancellationToken)>,
+    armed: Option<(VisibleLink, CancellationToken)>,
     leaving: Option<CancellationToken>,
     active: Option<ActivePreview>,
     card_bounds: Option<Bounds<Pixels>>,
+    presentation: Option<native::Presentation>,
     pointer_down: bool,
     generation: u64,
     _activation: Subscription,
@@ -135,7 +157,7 @@ impl Coordinator {
             .active
             .as_ref()
             .map(|active| active.key.clone())
-            .or_else(|| self.armed.as_ref().map(|(key, _)| key.clone()));
+            .or_else(|| self.armed.as_ref().map(|(link, _)| link.key.clone()));
         if let Some(dismissed) = dismissed {
             self.suppressed = Some(dismissed);
         }
@@ -145,34 +167,68 @@ impl Coordinator {
         if let Some(token) = self.leaving.take() {
             token.cancel();
         }
+        let card_focused = self.card_focused(window, cx);
         if let Some(active) = self.active.take()
             && keyboard
-            && (active.open.is_focused(window)
-                || active.retry.is_focused(window)
-                || active.address.is_focused(window))
-            && let Some(link) = self.visible.iter().find(|link| link.key == active.key)
+            && card_focused
+            && let Some(link) = self
+                .visible
+                .iter()
+                .find(|link| link.key == active.key && link.current(window, cx))
         {
             window.focus(&link.focus, cx);
             self.focused = Some(link.key.clone());
+        }
+        if let Some(page) = self.presentation.take() {
+            page.stop(cx);
         }
         self.card_bounds = None;
         self.generation = self.generation.wrapping_add(1);
         window.refresh();
     }
 
-    fn pointer_link(&self, position: Point<Pixels>) -> Option<String> {
+    fn pointer_link(&self, position: Point<Pixels>, window: &Window, cx: &App) -> Option<String> {
         self.visible
             .iter()
             .find(|link| {
-                link.text_bounds
-                    .iter()
-                    .chain(&link.icon_bounds)
-                    .any(|bounds| bounds.contains(&position))
+                link.current(window, cx)
+                    && link
+                        .text_bounds
+                        .iter()
+                        .chain(&link.icon_bounds)
+                        .any(|bounds| bounds.contains(&position))
             })
             .map(|link| link.key.clone())
     }
 
-    fn card_focused(&self, window: &Window) -> bool {
+    fn active_current(&self, window: &Window, cx: &App) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active
+                .validity
+                .as_ref()
+                .is_none_or(|valid| valid(window, cx))
+                && self.visible.iter().any(|link| {
+                    link.key == active.key
+                        && link.target == active.target
+                        && link.current(window, cx)
+                        && link
+                            .scopes
+                            .iter()
+                            .map(|scope| scope.scroll.stamp())
+                            .collect::<Vec<_>>()
+                            == link.scroll
+                })
+        })
+    }
+
+    fn card_focused(&self, window: &Window, cx: &App) -> bool {
+        if self
+            .presentation
+            .as_ref()
+            .is_some_and(|page| page.focused(window, cx))
+        {
+            return true;
+        }
         self.active.as_ref().is_some_and(|active| {
             active.open.is_focused(window)
                 || active.retry.is_focused(window)
@@ -228,7 +284,10 @@ fn acquire(window: &mut Window, cx: &mut App) -> Entity<Coordinator> {
                     state.dismiss(false, window, cx);
                 }
             });
-        cx.on_release(move |_, cx| {
+        cx.on_release(move |state: &mut Coordinator, cx| {
+            if let Some(page) = state.presentation.take() {
+                page.stop(cx);
+            }
             if cx.has_global::<Registry>() {
                 cx.global_mut::<Registry>().windows.remove(&id);
             }
@@ -246,6 +305,7 @@ fn acquire(window: &mut Window, cx: &mut App) -> Entity<Coordinator> {
             leaving: None,
             active: None,
             card_bounds: None,
+            presentation: None,
             pointer_down: false,
             generation: 0,
             _activation: activation,
@@ -439,17 +499,34 @@ impl Element for MarkdownLinkPreviewLayer {
                     .collect();
             }
             let previous = std::mem::replace(&mut state.visible, std::mem::take(&mut state.staged));
+            let stale_arm = state.armed.as_ref().is_some_and(|(armed, _)| {
+                !armed.current(window, cx)
+                    || !state.visible.iter().any(|link| {
+                        link.key == armed.key
+                            && link.current(window, cx)
+                            && link.text_bounds == armed.text_bounds
+                            && link.icon_bounds == armed.icon_bounds
+                            && link.scroll == armed.scroll
+                    })
+            });
+            if stale_arm && let Some((_, token)) = state.armed.take() {
+                token.cancel();
+            }
             let mut closed = false;
             let current_key = state
                 .active
                 .as_ref()
                 .map(|active| active.key.clone())
-                .or_else(|| state.armed.as_ref().map(|(key, _)| key.clone()))
+                .or_else(|| state.armed.as_ref().map(|(link, _)| link.key.clone()))
                 .or_else(|| state.focused.clone());
             if let Some(key) = current_key {
                 let old = previous.iter().find(|link| link.key == key);
-                let current = state.visible.iter().find(|link| link.key == key);
+                let current = state
+                    .visible
+                    .iter()
+                    .find(|link| link.key == key && link.current(window, cx));
                 if current.is_none()
+                    || (state.active.is_some() && !state.active_current(window, cx))
                     || old
                         .zip(current)
                         .is_some_and(|(old, current)| old.scroll != current.scroll)
@@ -462,10 +539,10 @@ impl Element for MarkdownLinkPreviewLayer {
                                 .find(|scope| state.scopes.iter().any(|live| live.id == scope.id))
                         })
                         .map(|scope| scope.focus.clone());
-                    let restore = state.card_focused(window)
+                    let restore = state.card_focused(window, cx)
                         || old.is_some_and(|link| link.focus.is_focused(window));
                     state.dismiss(false, window, cx);
-                    if let Some(hovered) = state.pointer_link(window.mouse_position()) {
+                    if let Some(hovered) = state.pointer_link(window.mouse_position(), window, cx) {
                         state.hovered = Some(hovered.clone());
                         state.suppressed = Some(hovered);
                     }
@@ -478,7 +555,7 @@ impl Element for MarkdownLinkPreviewLayer {
             let focused = state
                 .visible
                 .iter()
-                .find(|link| link.focus.is_focused(window))
+                .find(|link| link.focus.is_focused(window) && link.current(window, cx))
                 .map(|link| link.key.clone());
             let changed = state.focused != focused;
             if changed
@@ -502,9 +579,10 @@ impl Element for MarkdownLinkPreviewLayer {
             let bounds_state = entity.downgrade();
             let measured = div()
                 .child(card)
-                .on_children_prepainted(move |bounds, _, cx| {
-                    let _ = bounds_state
-                        .update(cx, |state, _| state.card_bounds = bounds.first().copied());
+                .on_children_prepainted(move |bounds, window, cx| {
+                    let _ = bounds_state.update(cx, |state, _| {
+                        native::positioned(state, bounds.first().copied(), window);
+                    });
                 });
             let mut positioned = Positioner::side(anchor)
                 .placement(Placement::Bottom)
@@ -557,7 +635,7 @@ impl Element for MarkdownLinkPreviewLayer {
                 {
                     return;
                 }
-                let suppressed = state.pointer_link(event.position);
+                let suppressed = state.pointer_link(event.position, window, cx);
                 state.hovered = suppressed.clone();
                 state.dismiss(false, window, cx);
                 if let Some(key) = suppressed {
@@ -573,14 +651,14 @@ impl Element for MarkdownLinkPreviewLayer {
             });
         });
         let weak = entity.downgrade();
-        window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
             if phase.capture() {
-                let _ = weak.update(cx, |state, _| {
+                let _ = weak.update(cx, |state, cx| {
                     state.pointer_down = false;
                     if !state
                         .card_bounds
                         .is_some_and(|bounds| bounds.contains(&event.position))
-                        && let Some(key) = state.pointer_link(event.position)
+                        && let Some(key) = state.pointer_link(event.position, window, cx)
                     {
                         state.hovered = Some(key.clone());
                         state.suppressed = Some(key);
@@ -637,9 +715,82 @@ pub(crate) fn prepaint_link_targets(
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
+    let regions = link_regions(layout, links, window.text_style().text_align);
+    let mut targets = Vec::new();
+    for (index, link) in links.iter().enumerate() {
+        let bounds = regions
+            .iter()
+            .filter(|region| region.index == index)
+            .map(|region| region.bounds)
+            .collect::<Vec<_>>();
+        if bounds.is_empty() {
+            continue;
+        }
+        if let Some(icon) = icon_bounds(layout, link)
+            && let Some(glyph) = decoration::prepare(
+                format!(
+                    "link-icon-{}-{}-{}",
+                    link.owner, link.occurrence, link.range.start
+                ),
+                vec![icon],
+                Some(classify_target(&link.target).map_or(LinkSiteKind::Web, |target| target.site)),
+                theme(cx).colors.accent,
+                window,
+                cx,
+            )
+        {
+            targets.push(glyph);
+        }
+        targets.extend(prepaint_measured_link_target(
+            link,
+            bounds,
+            icon_bounds(layout, link).into_iter().collect(),
+            None,
+            window,
+            cx,
+        ));
+    }
+    targets.extend(prepaint_link_decorations(layout, links, window, cx));
+    targets
+}
+
+pub(crate) fn prepaint_measured_link_target(
+    link: &LinkRange,
+    bounds: Vec<Bounds<Pixels>>,
+    icons: Vec<Bounds<Pixels>>,
+    validity: Option<LinkValidity>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    if validity.as_ref().is_some_and(|valid| !valid(window, cx)) {
+        return Vec::new();
+    }
     let Some(entity) = coordinator(window, cx) else {
         return Vec::new();
     };
+    let mask = window.content_mask().bounds;
+    let clip = |bounds: Vec<Bounds<Pixels>>| {
+        bounds
+            .into_iter()
+            .filter(|bounds| {
+                [
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
+                    f32::from(bounds.size.width),
+                    f32::from(bounds.size.height),
+                ]
+                .iter()
+                .all(|value| value.is_finite())
+            })
+            .map(|bounds| bounds.intersect(&mask))
+            .filter(|bounds| !bounds.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let bounds = clip(bounds);
+    if bounds.is_empty() {
+        return Vec::new();
+    }
+    let icons = clip(icons);
     let scopes = cx
         .try_global::<Registry>()
         .map(|registry| registry.stack.clone())
@@ -649,122 +800,159 @@ pub(crate) fn prepaint_link_targets(
         .map(|scope| scope.id.as_str())
         .collect::<Vec<_>>()
         .join("/");
-    let mask = window.content_mask().bounds;
-    let regions = link_regions(layout, links, window.text_style().text_align);
+    let key = format!(
+        "{scope_key}/{}:{}:{}:{}",
+        link.owner, link.occurrence, link.text_identity, link.target
+    );
     let mut targets = Vec::new();
-    for (index, link) in links.iter().enumerate() {
-        let bounds = regions
-            .iter()
-            .filter(|region| region.index == index)
-            .map(|region| region.bounds.intersect(&mask))
-            .filter(|bounds| !bounds.is_empty())
-            .collect::<Vec<_>>();
-        if bounds.is_empty() {
-            continue;
-        }
-        if let Some(icon) = icon_bounds(layout, link) {
-            let mut glyph = crate::icons::link_icon(
-                classify_target(&link.target).map_or(LinkSiteKind::Web, |target| target.site),
-                theme(cx).colors.accent,
-            );
-            glyph.prepaint_as_root(
-                icon.origin,
-                size(
-                    AvailableSpace::Definite(icon.size.width),
-                    AvailableSpace::Definite(icon.size.height),
-                ),
-                window,
-                cx,
-            );
-            targets.push(glyph);
-        }
-        let icons = icon_bounds(layout, link)
-            .filter(|bounds| !bounds.intersect(&mask).is_empty())
-            .into_iter()
-            .collect::<Vec<_>>();
-        let key = format!(
-            "{scope_key}/{}:{}:{}",
-            link.owner, link.occurrence, link.target
-        );
-        let proxy = entity.update(cx, |state, cx| {
-            if let Some(existing) = state.staged.iter_mut().find(|existing| existing.key == key) {
-                existing.text_bounds.extend(bounds.clone());
-                existing.icon_bounds.extend(icons.clone());
-                return None;
+    let proxy = entity.update(cx, |state, cx| {
+        if let Some(existing) = state.staged.iter_mut().find(|existing| existing.key == key) {
+            existing.text_bounds.extend(bounds.clone());
+            existing.icon_bounds.extend(icons.clone());
+            if let Some(validity) = validity.clone() {
+                let previous = existing.validity.take();
+                existing.validity = Some(Rc::new(move |window, cx| {
+                    previous.as_ref().is_none_or(|valid| valid(window, cx)) && validity(window, cx)
+                }));
             }
-            let focus = state
-                .visible
-                .iter()
-                .find(|existing| existing.key == key && existing.target == link.target)
-                .map(|existing| existing.focus.clone())
-                .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
-            state.staged.push(VisibleLink {
-                key: key.clone(),
-                target: link.target.clone(),
-                label: link.label.clone(),
-                owner: link.owner.clone(),
-                occurrence: link.occurrence,
-                role: Role::Link,
-                description: link.target.clone(),
-                text_bounds: bounds.clone(),
-                icon_bounds: icons,
-                focus: focus.clone(),
-                scroll: Vec::new(),
-                scopes: scopes.clone(),
-            });
-            state.staged.last().map(|link| {
-                (
-                    focus,
-                    link.role,
-                    link.label.clone(),
-                    link.description.clone(),
-                )
-            })
+            return None;
+        }
+        let focus = state
+            .visible
+            .iter()
+            .find(|existing| existing.key == key && existing.target == link.target)
+            .map(|existing| existing.focus.clone())
+            .unwrap_or_else(|| cx.focus_handle().tab_stop(true));
+        state.staged.push(VisibleLink {
+            key: key.clone(),
+            target: link.target.clone(),
+            label: link.label.clone(),
+            owner: link.owner.clone(),
+            occurrence: link.occurrence,
+            role: Role::Link,
+            description: link.target.clone(),
+            text_bounds: bounds.clone(),
+            icon_bounds: icons,
+            focus: focus.clone(),
+            scroll: Vec::new(),
+            scopes: scopes.clone(),
+            validity: validity.clone(),
         });
-        if let Some((focus, role, label, description)) = proxy {
-            let mut proxy = div()
-                .id(ElementId::Name(
-                    format!("markdown-link-target-{key}").into(),
-                ))
-                .track_focus(&focus)
-                .tab_index(0)
-                .role(role)
-                .aria_label(label)
-                .aria_description(description)
-                .w(bounds[0].size.width)
-                .h(bounds[0].size.height)
-                .into_any_element();
-            proxy.prepaint_as_root(
-                bounds[0].origin,
-                size(
-                    AvailableSpace::Definite(bounds[0].size.width),
-                    AvailableSpace::Definite(bounds[0].size.height),
-                ),
-                window,
-                cx,
-            );
-            targets.push(proxy);
+        state.staged.last().map(|link| {
+            (
+                focus,
+                link.role,
+                link.label.clone(),
+                link.description.clone(),
+            )
+        })
+    });
+    if let Some((focus, role, label, description)) = proxy {
+        let weak = entity.downgrade();
+        let action_key = key.clone();
+        let action_validity = validity.clone();
+        let mut proxy = div()
+            .id(ElementId::Name(
+                format!("markdown-link-target-{key}").into(),
+            ))
+            .track_focus(&focus)
+            .tab_index(0)
+            .role(role)
+            .aria_label(label)
+            .aria_description(description)
+            .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                if action_validity
+                    .as_ref()
+                    .is_some_and(|valid| !valid(window, cx))
+                {
+                    return;
+                }
+                let _ = weak.update(cx, |state, cx| {
+                    if let Some(link) = state
+                        .visible
+                        .iter()
+                        .find(|link| link.key == action_key && link.current(window, cx))
+                    {
+                        open_target(&link.target, cx);
+                    }
+                });
+            })
+            .w(bounds[0].size.width)
+            .h(bounds[0].size.height)
+            .into_any_element();
+        proxy.prepaint_as_root(
+            bounds[0].origin,
+            size(
+                AvailableSpace::Definite(bounds[0].size.width),
+                AvailableSpace::Definite(bounds[0].size.height),
+            ),
+            window,
+            cx,
+        );
+        targets.push(proxy);
+    }
+    let focused =
+        entity.read(cx).staged.iter().any(|link| {
+            link.key == key && link.focus.is_focused(window) && link.current(window, cx)
+        });
+    if focused {
+        let rectangles = bounds
+            .iter()
+            .flat_map(|bounds| decoration::focus_rectangles(*bounds, window.scale_factor()))
+            .collect();
+        if let Some(focus) = decoration::prepare(
+            format!("link-focus-{key}-{}", link.range.start),
+            rectangles,
+            None,
+            theme(cx).colors.accent,
+            window,
+            cx,
+        ) {
+            targets.push(focus);
         }
     }
     targets
 }
 
-pub(crate) fn paint_link_decorations(
+#[cfg(feature = "nsh-reading-integration")]
+fn measured_focus_rects(
+    links: &[VisibleLink],
+    owners: &[LinkRange],
+    window: &Window,
+    cx: &App,
+) -> Vec<Bounds<Pixels>> {
+    links
+        .iter()
+        .filter(|link| {
+            owners.iter().any(|owner| {
+                owner.owner == link.owner
+                    && owner.target == link.target
+                    && owner.occurrence == link.occurrence
+            }) && link.focus.is_focused(window)
+                && link.current(window, cx)
+        })
+        .flat_map(|link| link.text_bounds.iter().copied())
+        .collect()
+}
+
+pub(crate) fn prepaint_link_decorations(
     layout: &TextLayout,
     links: &[LinkRange],
     window: &mut Window,
     cx: &mut App,
-) {
+) -> Vec<AnyElement> {
     let regions = link_regions(layout, links, window.text_style().text_align);
     let color = theme(cx).colors.accent;
     let current = coordinator(window, cx);
+    let mut targets = Vec::new();
     for (index, link) in links.iter().enumerate() {
         let (focused, hovered) = current.as_ref().map_or((false, false), |entity| {
             let state = entity.read(cx);
-            let occurrence = state.visible.iter().find(|visible| {
+            let occurrence = state.staged.iter().find(|visible| {
                 visible.owner == link.owner
                     && visible.target == link.target
                     && visible.occurrence == link.occurrence
+                    && visible.current(window, cx)
             });
             occurrence.map_or((false, false), |visible| {
                 (
@@ -783,6 +971,7 @@ pub(crate) fn paint_link_decorations(
         if !focused && !hovered {
             continue;
         }
+        let mut rectangles = Vec::new();
         for region in regions.iter().filter(|region| region.index == index) {
             let scale = window.scale_factor();
             let baseline = px(
@@ -800,25 +989,43 @@ pub(crate) fn paint_link_decorations(
                 / scale);
             while x < right {
                 let width = dash.min(right - x);
-                window.paint_quad(fill(
-                    Bounds::new(point(x, baseline), size(width, thickness)),
-                    color,
-                ));
+                rectangles.push(Bounds::new(point(x, baseline), size(width, thickness)));
                 x += dash + gap;
             }
         }
+        if let Some(decoration) = decoration::prepare(
+            format!(
+                "link-dashes-{}-{}-{}",
+                link.owner, link.occurrence, link.range.start
+            ),
+            rectangles,
+            None,
+            color,
+            window,
+            cx,
+        ) {
+            targets.push(decoration);
+        }
     }
+    targets
 }
 
 fn arm(entity: &Entity<Coordinator>, key: String, window: &mut Window, cx: &mut App) {
     let token = entity.update(cx, |state, cx| {
-        if state.pointer_down
+        if !state
+            .visible
+            .iter()
+            .any(|link| link.key == key && link.current(window, cx))
+            || state.pointer_down
             || state.suppressed.as_ref() == Some(&key)
             || state
                 .active
                 .as_ref()
                 .is_some_and(|active| active.key == key)
-            || state.armed.as_ref().is_some_and(|(armed, _)| armed == &key)
+            || state
+                .armed
+                .as_ref()
+                .is_some_and(|(armed, _)| armed.key == key)
         {
             return None;
         }
@@ -832,10 +1039,13 @@ fn arm(entity: &Entity<Coordinator>, key: String, window: &mut Window, cx: &mut 
             state.suppressed = None;
         }
         let token = CancellationToken::new();
-        state.armed = Some((key.clone(), token.clone()));
-        Some(token)
+        let link = state.visible.iter().find(|link| link.key == key)?.clone();
+        state.armed = Some((link.clone(), token.clone()));
+        Some((token, link))
     });
-    let Some(token) = token else { return };
+    let Some((token, armed_link)) = token else {
+        return;
+    };
     let weak = entity.downgrade();
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
@@ -843,21 +1053,32 @@ fn arm(entity: &Entity<Coordinator>, key: String, window: &mut Window, cx: &mut 
         let _ = cx.update_window(handle, |_, window, cx| {
             let Some(entity) = weak.upgrade() else { return };
             let show = entity.update(cx, |state, cx| {
-                if token.is_cancelled() || !window.is_window_active() || state.suppressed.as_ref() == Some(&key) { return false; }
-                let Some(link) = state.visible.iter().find(|link| link.key == key).cloned() else { return false };
+                if token.is_cancelled() || !window.is_window_active() || state.suppressed.as_ref() == Some(&key) || !armed_link.current(window, cx) || armed_link.scopes.iter().map(|scope| scope.scroll.stamp()).collect::<Vec<_>>() != armed_link.scroll { return false; }
+                let Some(link) = state.visible.iter().find(|link| link.key == key && link.current(window, cx)).cloned() else { return false };
+                if link.text_bounds != armed_link.text_bounds || link.icon_bounds != armed_link.icon_bounds || link.scroll != armed_link.scroll { return false; }
                 if state.hovered.as_ref() != Some(&key) && state.focused.as_ref() != Some(&key) { return false; }
                 state.generation = state.generation.wrapping_add(1);
                 state.armed = None;
-                state.active = Some(ActivePreview { key, target: link.target, generation: state.generation, cancellation: CancellationToken::new(), data: None, image: None, open: cx.focus_handle().tab_stop(true), retry: cx.focus_handle().tab_stop(true), address: cx.focus_handle().tab_stop(true), expanded: false });
+                state.active = Some(ActivePreview { key, target: link.target, generation: state.generation, cancellation: CancellationToken::new(), data: None, open: cx.focus_handle().tab_stop(true), retry: cx.focus_handle().tab_stop(true), address: cx.focus_handle().tab_stop(true), expanded: false, validity: link.validity });
                 true
             });
             if show { load(&entity, false, window, cx); }
+            else if !token.is_cancelled() {
+                entity.update(cx, |state, _| {
+                    if state.armed.as_ref().is_some_and(|(armed, _)| armed.key == armed_link.key)
+                        && let Some((_, token)) = state.armed.take() { token.cancel(); }
+                });
+            }
         });
     }).detach();
 }
 
 fn load(entity: &Entity<Coordinator>, retry: bool, window: &mut Window, cx: &mut App) {
     let request = entity.update(cx, |state, cx| {
+        if !state.active_current(window, cx) {
+            state.dismiss(false, window, cx);
+            return None;
+        }
         state.generation = state.generation.wrapping_add(1);
         let active = state.active.as_mut()?;
         if active.retry.is_focused(window) {
@@ -867,7 +1088,6 @@ fn load(entity: &Entity<Coordinator>, retry: bool, window: &mut Window, cx: &mut
         active.cancellation = CancellationToken::new();
         active.generation = state.generation;
         active.data = None;
-        active.image = None;
         Some((
             state.dependencies.service.clone(),
             active.target.clone(),
@@ -879,28 +1099,33 @@ fn load(entity: &Entity<Coordinator>, retry: bool, window: &mut Window, cx: &mut
     let Some((service, target, cancellation, generation, key)) = request else {
         return;
     };
+    #[cfg(feature = "nsh-reading-integration")]
+    let external_request = registry(cx).request.clone();
     window.refresh();
     let weak = entity.downgrade();
     let handle = window.window_handle();
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
-            .spawn(async move { service.load(&target, retry, cancellation).await })
+            .spawn(async move {
+                #[cfg(feature = "nsh-reading-integration")]
+                if let Some(request) = external_request {
+                    return request(target, retry, cancellation).await;
+                }
+                service.load(&target, retry, cancellation).await
+            })
             .await;
         let _ = cx.update_window(handle, |_, window, cx| {
-            let _ = weak.update(cx, |state, _| {
+            let _ = weak.update(cx, |state, cx| {
+                if !state.active_current(window, cx) {
+                    state.dismiss(false, window, cx);
+                    return;
+                }
                 if let Some(active) = &mut state.active
                     && active.key == key
                     && active.generation == generation
                     && !active.cancellation.is_cancelled()
                 {
-                    active.image = result
-                        .as_ref()
-                        .ok()
-                        .and_then(|data| data.image.as_ref())
-                        .map(|image| {
-                            Arc::new(Image::from_bytes(ImageFormat::Png, image.png.clone()))
-                        });
                     active.data = Some(result);
                     window.refresh();
                 }
@@ -916,8 +1141,8 @@ fn pointer(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let (candidate, leave) = entity.update(cx, |state, _| {
-        let hovered = state.pointer_link(position);
+    let (candidate, leave) = entity.update(cx, |state, cx| {
+        let hovered = state.pointer_link(position, window, cx);
         if state.hovered != hovered {
             if !state.pointer_down
                 && (state.suppressed.as_ref() == state.hovered.as_ref()
@@ -930,7 +1155,7 @@ fn pointer(
         let card = state
             .card_bounds
             .is_some_and(|bounds| bounds.contains(&position));
-        if card || hovered.is_some() || state.focused.is_some() || state.card_focused(window) {
+        if card || hovered.is_some() || state.focused.is_some() || state.card_focused(window, cx) {
             if let Some(token) = state.leaving.take() {
                 token.cancel();
             }
@@ -977,7 +1202,7 @@ fn keyboard(
         if let Some(link) = state
             .visible
             .iter()
-            .find(|link| link.focus.is_focused(window))
+            .find(|link| link.focus.is_focused(window) && link.current(window, cx))
             .cloned()
         {
             if key == "enter" {
@@ -1007,7 +1232,11 @@ fn keyboard(
                 return true;
             }
         }
-        let card_focused = state.card_focused(window);
+        if state.active.is_some() && !state.active_current(window, cx) {
+            state.dismiss(false, window, cx);
+            return false;
+        }
+        let card_focused = state.card_focused(window, cx);
         if let Some(active) = &mut state.active {
             let can_retry = active.data.as_ref().is_some_and(|data| {
                 matches!(
@@ -1020,7 +1249,7 @@ fn keyboard(
                 )
             });
             let details = active.target.len() > 120;
-            if key == "enter" {
+            if matches!(key, "enter" | "space") {
                 if active.open.is_focused(window) {
                     open_target(&active.target, cx);
                     return true;
@@ -1036,6 +1265,22 @@ fn keyboard(
                 }
             }
             if key == "tab" && card_focused {
+                if !active.open.is_focused(window)
+                    && !active.retry.is_focused(window)
+                    && !active.address.is_focused(window)
+                {
+                    window.focus(
+                        if backwards && details {
+                            &active.address
+                        } else if backwards && can_retry {
+                            &active.retry
+                        } else {
+                            &active.open
+                        },
+                        cx,
+                    );
+                    return true;
+                }
                 if backwards {
                     if active.address.is_focused(window) && can_retry {
                         window.focus(&active.retry, cx);
@@ -1103,237 +1348,9 @@ fn build_card(
     window: &mut Window,
     cx: &mut App,
 ) -> Option<(Bounds<Pixels>, AnyElement)> {
-    let state = entity.read(cx);
-    let active = state.active.as_ref()?;
-    let link = state.visible.iter().find(|link| link.key == active.key)?;
-    let anchor = link
-        .text_bounds
-        .iter()
-        .find(|bounds| bounds.contains(&window.mouse_position()))
-        .or_else(|| link.text_bounds.first())
-        .copied()?;
-    let colors = theme(cx).colors;
-    let width = px(Layout::LINK_PREVIEW_WIDTH)
-        .min((window.viewport_size().width - px(2. * Layout::LINK_PREVIEW_MARGIN)).max(px(0.)));
-    let content_width = (width - px(2. * Layout::LINK_PREVIEW_PADDING)).max(px(0.));
-    let height = px(Layout::LINK_PREVIEW_MAX_HEIGHT)
-        .min((window.viewport_size().height - px(2. * Layout::LINK_PREVIEW_MARGIN)).max(px(0.)));
-    let target = active.target.clone();
-    let host = active
-        .data
-        .as_ref()
-        .and_then(|result| result.as_ref().ok())
-        .map(|data| data.host.clone())
-        .unwrap_or_else(|| display_host(&target));
-    let site = active
-        .data
-        .as_ref()
-        .and_then(|result| result.as_ref().ok())
-        .map(|data| data.site)
-        .unwrap_or_else(|| {
-            classify_target(&target).map_or(LinkSiteKind::Web, |target| target.site)
-        });
-    let weak = entity.downgrade();
-    let open_target_value = target.clone();
-    let open = control(
-        "link-preview-open",
-        vega_i18n::t("ui.open"),
-        &active.open,
-        colors,
-    )
-    .on_click(move |_, _, cx| open_target(&open_target_value, cx));
-    let card = div()
-        .id("markdown-link-preview")
-        .occlude()
-        .w(width)
-        .max_h(height)
-        .overflow_hidden()
-        .bg(colors.bg_elevated)
-        .border_1()
-        .border_color(colors.border_subtle)
-        .rounded(px(Layout::LINK_PREVIEW_RADIUS))
-        .p(px(Layout::LINK_PREVIEW_PADDING))
-        .text_size(px(Typography::SIDEBAR))
-        .line_height(relative(Typography::BODY_LINE_HEIGHT))
-        .text_color(colors.text_primary)
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .h(px(Layout::LINK_PREVIEW_ACTION_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(crate::icons::link_icon(site, colors.text_secondary))
-                .child(
-                    div()
-                        .id("link-preview-host")
-                        .role(Role::Label)
-                        .aria_label(host.clone())
-                        .min_w_0()
-                        .flex_1()
-                        .truncate()
-                        .child(host),
-                )
-                .child(open),
-        );
-    let line_height = window.pixel_snap(px(Typography::SIDEBAR * Typography::BODY_LINE_HEIGHT));
-    let mut body = div()
-        .id("link-preview-content")
-        .min_h_0()
-        .max_h(
-            (height
-                - px(2. * Layout::LINK_PREVIEW_PADDING
-                    + Layout::LINK_PREVIEW_ACTION_HEIGHT
-                    + 8.
-                    + 2.))
-            .max(px(0.)),
-        )
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .gap_2();
-    if let Some(image) = &active.image
-        && let Some(dimensions) = active
-            .data
-            .as_ref()
-            .and_then(|data| data.as_ref().ok())
-            .and_then(|data| data.image.as_ref())
-    {
-        let image_width = content_width.min(px(dimensions.width as f32));
-        let image_height = image_width * dimensions.height as f32 / dimensions.width.max(1) as f32;
-        body = body.child(
-            div()
-                .id("link-preview-image")
-                .flex_shrink_0()
-                .w(image_width)
-                .h(image_height)
-                .child(img(image.clone()).w(image_width).h(image_height)),
-        );
-    }
-    match &active.data {
-        None => body = body.child(div().child(vega_i18n::t("ui.loading_en"))),
-        Some(Ok(data)) if data.site != LinkSiteKind::Mail => {
-            let title = data.title.clone().unwrap_or_else(|| target.clone());
-            body = body.child(
-                div()
-                    .id("link-preview-title")
-                    .role(Role::Label)
-                    .aria_label(title.clone())
-                    .font_weight(FontWeight::MEDIUM)
-                    .line_clamp(2)
-                    .flex_shrink_0()
-                    .max_h(line_height * 2.)
-                    .overflow_hidden()
-                    .child(SelectableText::new("preview-selectable-title", title)),
-            );
-            if let Some(description) = &data.description {
-                body = body.child(
-                    div()
-                        .id("link-preview-description")
-                        .role(Role::Label)
-                        .aria_label(description.clone())
-                        .text_color(colors.text_secondary)
-                        .line_clamp(3)
-                        .flex_shrink_0()
-                        .max_h(line_height * 3.)
-                        .overflow_hidden()
-                        .child(SelectableText::new(
-                            "preview-selectable-description",
-                            description.clone(),
-                        )),
-                );
-            }
-            if data.effective_target != target.split('#').next().unwrap_or(&target) {
-                body = body.child(div().text_color(colors.text_secondary).child(
-                    SelectableText::new("preview-effective-address", data.effective_target.clone()),
-                ));
-            }
-        }
-        Some(Ok(_)) => {}
-        Some(Err(failure)) => {
-            let retryable = matches!(
-                failure,
-                LinkPreviewFailure::Network
-                    | LinkPreviewFailure::Timeout
-                    | LinkPreviewFailure::Malformed
-                    | LinkPreviewFailure::TooLarge
-                    | LinkPreviewFailure::Busy
-            );
-            body = body.child(div().text_color(colors.text_secondary).child(if retryable {
-                vega_i18n::t("ui.cannot_load_preview")
-            } else {
-                vega_i18n::t("ui.web_preview_is_currently_unavailable")
-            }));
-            if retryable {
-                body = body.child(
-                    control(
-                        "link-preview-retry",
-                        vega_i18n::t("ui.retry"),
-                        &active.retry,
-                        colors,
-                    )
-                    .on_click(move |_, window, cx| {
-                        if let Some(entity) = weak.upgrade() {
-                            load(&entity, true, window, cx);
-                        }
-                    }),
-                );
-            }
-        }
-    }
-    if target.len() > 120 {
-        let weak = entity.downgrade();
-        body = body.child(
-            control(
-                "link-preview-address-toggle",
-                if active.expanded {
-                    vega_i18n::t("ui.hide_address")
-                } else {
-                    vega_i18n::t("ui.show_address")
-                },
-                &active.address,
-                colors,
-            )
-            .on_click(move |_, window, cx| {
-                let _ = weak.update(cx, |state, _| {
-                    if let Some(active) = &mut state.active {
-                        active.expanded = !active.expanded;
-                        window.refresh();
-                    }
-                });
-            }),
-        );
-    }
-    if target.len() <= 120 || active.expanded {
-        body = body.child(
-            div()
-                .id("link-preview-address")
-                .role(Role::Label)
-                .aria_label(target.clone())
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_tertiary)
-                .child(SelectableText::new("preview-selectable-address", target)),
-        );
-    }
-    Some((anchor, card.child(body).into_any_element()))
+    native::card(entity, window, cx)
 }
 
-fn control(
-    id: &'static str,
-    label: &'static str,
-    focus: &FocusHandle,
-    colors: vega_theme::ThemeColors,
-) -> gpui_kit::base::Button {
-    gpui_kit::base::Button::new(id)
-        .track_focus(focus)
-        .tab_index(0)
-        .accessibility_label(label)
-        .text_color(colors.accent)
-        .h(px(Layout::LINK_PREVIEW_ACTION_HEIGHT))
-        .flex_shrink_0()
-        .px_2()
-        .child(label)
-}
+#[cfg(test)]
+#[path = "link_preview_tests.rs"]
+mod tests;

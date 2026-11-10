@@ -7,8 +7,9 @@ use vega_ui::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 pub(super) mod nsh_workspace;
 use nsh_workspace::Kind;
 
-const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
-const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
+use nsh_workspace::controller::{
+    Geometry, MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT, MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH, Panes,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TabKey {
@@ -50,15 +51,12 @@ pub(super) struct Workspace {
     nsh_visible: bool,
     artifact_scrolls: std::collections::HashMap<ArtifactCardId, gpui_kit::UniformListScrollHandle>,
     reveal_tabs: [bool; 2],
-    window_size: Option<Size<Pixels>>,
     hidden: [bool; 2],
     menu: bool,
     menu_bottom: bool,
     menu_focus: Option<FocusHandle>,
     maximized: [bool; 2],
-    width: Option<f32>,
-    height: Option<f32>,
-    dragging: Option<bool>,
+    geometry: Geometry,
     pub(super) composer_focus_pending: bool,
 }
 
@@ -139,6 +137,14 @@ impl VegaWindow {
 }
 
 impl Workspace {
+    fn panes(&self) -> Panes {
+        Panes {
+            selected: self.selected.each_ref().map(Option::is_some),
+            hidden: self.hidden,
+            maximized: self.maximized,
+        }
+    }
+
     pub(super) fn open(&mut self, key: TabKey) {
         self.invalidate_nsh();
         let bottom = self
@@ -223,8 +229,7 @@ impl VegaWindow {
                 selected,
                 reveal_tabs: [true; 2],
                 next_terminal: self.workspace.next_terminal,
-                width: self.workspace.width,
-                height: self.workspace.height,
+                geometry: self.workspace.geometry.for_route(),
                 hidden: if same_project {
                     self.workspace.hidden
                 } else {
@@ -931,9 +936,9 @@ impl VegaWindow {
     }
 
     pub(super) fn persistent_right_workspace_visible(&self, window: &Window, cx: &App) -> bool {
-        !self.workspace.hidden[0]
-            && self.workspace.selected[0].is_some()
-            && self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
+        self.workspace
+            .panes()
+            .dock_visible(0, self.workspace_available_width(window, cx))
     }
 
     pub(super) fn hidden_workspace_available(&self, index: usize) -> bool {
@@ -979,11 +984,7 @@ impl VegaWindow {
     }
 
     pub(super) fn workspace_fullscreen_index(&self) -> Option<usize> {
-        (0..2).find(|index| {
-            self.workspace.maximized[*index]
-                && !self.workspace.hidden[*index]
-                && self.workspace.selected[*index].is_some()
-        })
+        self.workspace.panes().fullscreen()
     }
 
     pub(super) fn workspace_pane_header_in_top_band(&self, bottom: bool) -> bool {
@@ -1130,40 +1131,42 @@ impl VegaWindow {
             self.workspace_focus_composer(window, cx);
             self.workspace.composer_focus_pending = false;
         }
-        let colors = theme(cx).colors;
         let size = window.bounds().size;
-        if self.workspace.window_size != Some(size) {
+        if self
+            .workspace
+            .geometry
+            .window_resized(size, &mut self.workspace.reveal_tabs)
+        {
             self.workspace.invalidate_nsh();
-            self.workspace.window_size = Some(size);
-            self.workspace.reveal_tabs = [true; 2];
         }
         let available = self.workspace_available_width(window, cx);
         let right = self.persistent_right_workspace_visible(window, cx);
         let environment_wide = self.environment_is_wide(window, cx);
-        let bottom = !self.workspace.hidden[1]
-            && self.workspace.selected[1].is_some()
-            && f32::from(size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT;
-        let width = if self.workspace.maximized[0] {
-            available - 300.
-        } else {
-            self.workspace.width.unwrap_or(available * 0.43)
-        }
-        .clamp(270., (available - 300.).max(270.));
-        let height = if self.workspace.maximized[1] {
-            f32::from(size.height) - 240.
-        } else {
-            self.workspace
-                .height
-                .unwrap_or(Layout::BOTTOM_WORKSPACE_HEIGHT)
-        }
-        .clamp(150., (f32::from(size.height) - 240.).max(150.));
+        let panes = self.workspace.panes();
+        let (width, height) = self.workspace.geometry.dimensions(
+            available,
+            f32::from(size.height),
+            Layout::BOTTOM_WORKSPACE_HEIGHT,
+            self.workspace.maximized,
+        );
 
         let fullscreen = self.workspace_fullscreen_index();
+        if fullscreen.is_some()
+            && let Some((_, stream)) = &self.stream_view
+        {
+            stream.update(cx, ConversationStream::suspend_ui_presentations);
+        }
         let subagent_pane = (0..2).find(|index| {
             self.workspace.selected[*index] == Some(TabKey::Subagents)
                 && !self.workspace.hidden[*index]
-                && (fullscreen == Some(*index)
-                    || (fullscreen.is_none() && if *index == 0 { right } else { bottom }))
+                && panes.visible(
+                    *index,
+                    if *index == 0 {
+                        available
+                    } else {
+                        f32::from(size.height)
+                    },
+                )
         });
         self.set_subagent_preview_visible(
             subagent_pane.is_some(),
@@ -1212,24 +1215,19 @@ impl VegaWindow {
                 .overflow_hidden()
                 .child(conversation),
         );
-        if right && fullscreen.is_none() {
+        if panes.separator_visible(0, available) {
+            let on_down = cx.listener(|this, _, _, cx| {
+                this.workspace.geometry.begin_drag(false);
+                cx.notify();
+            });
             row = row
-                .child(
-                    div()
-                        .w(px(5.))
-                        .h_full()
-                        .cursor_col_resize()
-                        .flex()
-                        .justify_center()
-                        .child(div().w(px(1.)).h_full().bg(colors.border_subtle))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.workspace.dragging = Some(false);
-                                cx.notify();
-                            }),
-                        ),
-                )
+                .child(nsh_workspace::drag_region(
+                    "nsh-workspace-right-separator",
+                    true,
+                    window,
+                    cx,
+                    on_down,
+                ))
                 .child(
                     div()
                         .w(px(width))
@@ -1249,24 +1247,19 @@ impl VegaWindow {
         if let Some(index) = fullscreen {
             layout = layout.child(self.render_workspace_pane(index == 1, window, cx));
         }
-        if bottom && fullscreen.is_none() {
+        if panes.separator_visible(1, f32::from(size.height)) {
+            let on_down = cx.listener(|this, _, _, cx| {
+                this.workspace.geometry.begin_drag(true);
+                cx.notify();
+            });
             layout = layout
-                .child(
-                    div()
-                        .h(px(5.))
-                        .w_full()
-                        .cursor_row_resize()
-                        .flex()
-                        .items_center()
-                        .child(div().h(px(1.)).w_full().bg(colors.border_subtle))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.workspace.dragging = Some(true);
-                                cx.notify();
-                            }),
-                        ),
-                )
+                .child(nsh_workspace::drag_region(
+                    "nsh-workspace-bottom-separator",
+                    false,
+                    window,
+                    cx,
+                    on_down,
+                ))
                 .child(
                     div()
                         .h(px(height))
@@ -1347,28 +1340,18 @@ impl VegaWindow {
         }
         layout
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                if let Some(bottom) = this.workspace.dragging {
-                    if !event
-                        .pressed_button
-                        .is_some_and(|button| button == MouseButton::Left)
-                    {
-                        this.workspace.dragging = None;
-                        return;
-                    }
-                    let size = window.bounds().size;
-                    this.workspace.reveal_tabs = [true; 2];
-                    if bottom {
-                        this.workspace.height = Some(f32::from(size.height - event.position.y));
-                    } else {
-                        this.workspace.width = Some(f32::from(size.width - event.position.x));
-                    }
+                if this.workspace.geometry.move_pointer(
+                    event,
+                    window.bounds().size,
+                    &mut this.workspace.reveal_tabs,
+                ) {
                     cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| {
-                    this.workspace.dragging = None;
+                    this.workspace.geometry.end_drag();
                 }),
             )
             .into_any_element()

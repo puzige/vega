@@ -1,7 +1,10 @@
 use super::{Duration, HashMap, Instant, StreamModel, StreamSpan};
+#[cfg(test)]
+use gpui_kit::TextRun;
+use gpui_kit::Window;
 use gpui_kit::base::animation::cubic_bezier;
-use gpui_kit::{TextRun, Window};
 use std::ops::Range;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TextPart {
@@ -38,7 +41,7 @@ impl Fade {
 
 #[derive(Default)]
 pub(super) struct StreamFade {
-    previous_text: HashMap<PartKey, String>,
+    previous_text: HashMap<PartKey, Arc<str>>,
     active: HashMap<u64, Fade>,
     next_segment_id: u64,
     cursor: Option<Instant>,
@@ -49,12 +52,12 @@ pub(super) struct StreamFade {
 impl StreamFade {
     fn register(&mut self, part: PartKey, text: String, now: Instant) {
         let previous = self.previous_text.entry(part).or_default();
-        if *previous == text {
+        if previous.as_ref() == text {
             return;
         }
         let start_byte = previous.len();
-        let appended = text.starts_with(previous.as_str());
-        *previous = text;
+        let appended = text.starts_with(previous.as_ref());
+        *previous = text.into();
         if !appended {
             self.active.retain(|_, fade| fade.part != part);
             return;
@@ -143,10 +146,13 @@ impl StreamFade {
     }
 
     pub(super) fn finish(&mut self) {
+        self.finish_at(Instant::now());
+    }
+
+    fn finish_at(&mut self, now: Instant) {
         if self.finished {
             return;
         }
-        let now = Instant::now();
         for fade in self.active.values_mut() {
             fade.initial = fade.opacity(now);
             fade.start = now;
@@ -156,30 +162,49 @@ impl StreamFade {
         self.finished = true;
     }
 
+    pub(super) fn hide(&mut self) {
+        self.active.clear();
+        self.cursor = None;
+    }
+
     pub(super) fn frame(&mut self, window: &Window, reduced: bool) -> FadeFrame {
-        if reduced || !window.is_window_active() {
+        let frame = self.frame_at(Instant::now(), reduced || !window.is_window_active());
+        if !frame.parts.is_empty() {
+            window.request_animation_frame();
+        }
+        frame
+    }
+
+    fn frame_at(&mut self, now: Instant, disabled: bool) -> FadeFrame {
+        if disabled {
             self.active.clear();
             self.cursor = None;
             return FadeFrame::default();
         }
-        let now = Instant::now();
-        let mut parts: HashMap<PartKey, Vec<RunOpacity>> = HashMap::new();
+        let mut parts: HashMap<PartKey, PartOpacity> = HashMap::new();
         self.active.retain(|_, fade| {
             let opacity = fade.opacity(now);
             if opacity >= 1. {
                 return false;
             }
-            parts.entry(fade.part).or_default().push(RunOpacity {
-                range: fade.range.clone(),
-                opacity,
-            });
+            let Some(text) = self.previous_text.get(&fade.part) else {
+                return false;
+            };
+            parts
+                .entry(fade.part)
+                .or_insert_with(|| PartOpacity {
+                    text: text.clone(),
+                    ranges: Vec::new(),
+                })
+                .ranges
+                .push(RunOpacity {
+                    range: fade.range.clone(),
+                    opacity,
+                });
             true
         });
-        for fades in parts.values_mut() {
-            fades.sort_unstable_by_key(|fade| fade.range.start);
-        }
-        if !parts.is_empty() {
-            window.request_animation_frame();
+        for part in parts.values_mut() {
+            part.ranges.sort_unstable_by_key(|fade| fade.range.start);
         }
         FadeFrame { parts }
     }
@@ -189,17 +214,35 @@ fn span_text(spans: &[StreamSpan]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }
 
-struct RunOpacity {
-    range: Range<usize>,
-    opacity: f32,
+pub(super) struct RunOpacity {
+    pub(super) range: Range<usize>,
+    pub(super) opacity: f32,
+}
+
+struct PartOpacity {
+    text: Arc<str>,
+    ranges: Vec<RunOpacity>,
 }
 
 #[derive(Default)]
 pub(super) struct FadeFrame {
-    parts: HashMap<PartKey, Vec<RunOpacity>>,
+    parts: HashMap<PartKey, PartOpacity>,
 }
 
 impl FadeFrame {
+    pub(super) fn ranges(
+        &self,
+        block: u64,
+        line: usize,
+        row: usize,
+        part: TextPart,
+        expected_text: &str,
+    ) -> Option<&[RunOpacity]> {
+        let current = self.parts.get(&(block, line, row, part))?;
+        (current.text.as_ref() == expected_text).then_some(current.ranges.as_slice())
+    }
+
+    #[cfg(test)]
     pub(super) fn line(&self, block: u64, line: usize) -> LineFade<'_> {
         LineFade {
             frame: self,
@@ -209,17 +252,20 @@ impl FadeFrame {
     }
 }
 
+#[cfg(test)]
 pub(super) struct LineFade<'a> {
     frame: &'a FadeFrame,
     block: u64,
     line: usize,
 }
 
+#[cfg(test)]
 impl LineFade<'_> {
     pub(super) fn runs(&self, row: usize, part: TextPart, runs: Vec<TextRun>) -> Vec<TextRun> {
-        let Some(fades) = self.frame.parts.get(&(self.block, self.line, row, part)) else {
+        let Some(part) = self.frame.parts.get(&(self.block, self.line, row, part)) else {
             return runs;
         };
+        let fades = &part.ranges;
         let mut output = Vec::new();
         let mut offset = 0;
         for run in runs {
@@ -256,3 +302,6 @@ impl LineFade<'_> {
         output
     }
 }
+
+#[cfg(test)]
+mod tests;

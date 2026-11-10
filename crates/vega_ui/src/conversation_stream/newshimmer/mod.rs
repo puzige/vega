@@ -61,8 +61,42 @@ pub(super) fn element(
 #[derive(gpui_kit::IntoElement)]
 struct NativeRenderOnce(Input);
 
+#[derive(Default)]
+struct FrameClock {
+    sampled: Option<Instant>,
+    pending: bool,
+}
+
+impl FrameClock {
+    fn phase(&self, epoch: Option<Instant>) -> f32 {
+        self.sampled.zip(epoch).map_or(0., |(now, epoch)| {
+            now.saturating_duration_since(epoch).as_secs_f32() * 1000.
+                / vega_theme::Motion::THINKING_SHIMMER_MS as f32
+        })
+    }
+
+    fn request(&mut self) -> bool {
+        if self.pending {
+            false
+        } else {
+            self.pending = true;
+            true
+        }
+    }
+
+    fn delivered(&mut self, now: Instant) -> bool {
+        if !self.pending {
+            return false;
+        }
+        self.pending = false;
+        self.sampled = Some(now);
+        true
+    }
+}
+
 struct Host {
     input: Input,
+    clock: FrameClock,
     surface: Option<Surface<Snapshot, ()>>,
     published: Option<Snapshot>,
     _subscriptions: Vec<Subscription>,
@@ -72,6 +106,7 @@ impl RenderOnce for NativeRenderOnce {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let host = window.use_keyed_state("nsh-stage-shimmer", cx, |window, cx| Host {
             input: self.0.clone(),
+            clock: FrameClock::default(),
             surface: None,
             published: None,
             _subscriptions: vec![
@@ -142,6 +177,7 @@ impl Render for Host {
                 .into_any_element(),
             host: cx.weak_entity(),
             input: self.input.clone(),
+            phase: self.clock.phase(self.input.epoch),
             full,
         }
         .into_any_element()
@@ -152,6 +188,7 @@ struct Measured {
     child: AnyElement,
     host: WeakEntity<Host>,
     input: Input,
+    phase: f32,
     full: Arc<LineLayout>,
 }
 
@@ -211,15 +248,11 @@ impl Element for Measured {
             );
         let mut snapshot = Snapshot::empty(&self.input);
         if let Some((shown, layout)) = display {
-            let phase = self.input.epoch.map_or(0., |epoch| {
-                epoch.elapsed().as_secs_f32() * 1000.
-                    / vega_theme::Motion::THINKING_SHIMMER_MS as f32
-            });
             snapshot.colors = frame_colors(
                 &shown,
                 &layout,
                 self.full.width,
-                phase,
+                self.phase,
                 self.input.base,
                 self.input.highlight,
                 moving,
@@ -261,8 +294,20 @@ impl Element for Measured {
         window.with_content_mask(Some(ContentMask { bounds: clipped }), |window| {
             self.child.paint(window, cx);
         });
-        if *moving {
-            window.request_animation_frame();
+        if *moving
+            && self
+                .host
+                .update(cx, |host, _| host.clock.request())
+                .unwrap_or(false)
+        {
+            let host = self.host.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = host.update(cx, |host, cx| {
+                    if host.clock.delivered(Instant::now()) {
+                        cx.notify();
+                    }
+                });
+            });
         }
     }
 }

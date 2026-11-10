@@ -1,6 +1,9 @@
 use super::timestamp_format::{TimestampDisplay, format_timestamp};
 use super::*;
-use gpui_kit::Role;
+mod presentation;
+
+#[cfg(feature = "nsh-reading-integration")]
+pub use presentation::mounted_regressions;
 
 #[derive(Default)]
 pub(super) struct TimestampState {
@@ -326,24 +329,14 @@ impl ConversationStream {
             .unwrap_or(&display.time)
             .to_owned();
         Some(
-            div()
-                .id(("timestamp-separator", index))
-                .role(Role::Label)
-                .aria_label(display.accessible)
-                .w_full()
-                .flex()
-                .justify_center()
-                .items_center()
-                .py(px(Layout::CONVERSATION_STAGE_TOP))
-                .text_size(px(Typography::BODY))
-                .text_color(colors.text_tertiary)
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(display.day.clone()),
-                )
-                .child(suffix)
-                .into_any_element(),
+            presentation::Separator {
+                key: format!("nsh-timestamp-separator-{key}"),
+                day: display.day,
+                suffix,
+                accessible: display.accessible,
+                color: colors.text_tertiary,
+            }
+            .into_any_element(),
         )
     }
 }

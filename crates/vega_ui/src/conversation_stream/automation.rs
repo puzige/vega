@@ -1,10 +1,8 @@
+use super::automation_permission::native::{Intent, control};
 use super::*;
 use crate::automation_editor::format_elapsed;
-use crate::icons::{Icon, sized_icon, tooltip};
-use crate::interaction::InteractionExt;
-use gpui_kit::Role;
 use vega_conversation::types::{
-    AutomationCommand, AutomationControl, AutomationKind, AutomationProjection, AutomationStatus,
+    AutomationCommand, AutomationKind, AutomationProjection, AutomationStatus,
 };
 
 #[derive(Clone)]
@@ -20,7 +18,6 @@ pub(crate) struct AutomationUi {
     pub error: Option<crate::localized_copy::LocalizedCopy>,
     pub editor_dirty: bool,
     pub timings: HashMap<String, AutomationTiming>,
-    clocks: HashMap<String, Entity<AutomationClock>>,
     pub focus: HashMap<String, [FocusHandle; 4]>,
     pub wakeup_labels: HashMap<String, String>,
 }
@@ -37,17 +34,6 @@ pub struct AutomationTiming {
     pub running: bool,
 }
 
-struct AutomationClock(String);
-impl Render for AutomationClock {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .whitespace_nowrap()
-            .text_size(px(Typography::METADATA))
-            .text_color(theme(cx).colors.text_tertiary)
-            .child(self.0.clone())
-    }
-}
-
 impl ConversationStream {
     pub fn set_automation_editor_dirty(&mut self, dirty: bool, cx: &mut Context<Self>) {
         if self.automation.editor_dirty != dirty {
@@ -60,31 +46,8 @@ impl ConversationStream {
         timings: HashMap<String, AutomationTiming>,
         cx: &mut Context<Self>,
     ) {
-        let running_changed = self.automation.projection.tasks.iter().any(|task| {
-            self.automation
-                .timings
-                .get(&task.identity)
-                .is_some_and(|time| time.running)
-                != timings.get(&task.identity).is_some_and(|time| time.running)
-        });
-        self.automation.timings = timings;
-        for task in &self.automation.projection.tasks {
-            let elapsed = self
-                .automation
-                .timings
-                .get(&task.identity)
-                .map_or(task.elapsed_ms, |time| time.elapsed_ms);
-            let label = format_elapsed(elapsed);
-            if let Some(clock) = self.automation.clocks.get(&task.identity) {
-                clock.update(cx, |clock, cx| {
-                    if clock.0 != label {
-                        clock.0 = label;
-                        cx.notify();
-                    }
-                });
-            }
-        }
-        if running_changed {
+        if self.automation.timings != timings {
+            self.automation.timings = timings;
             cx.notify();
         }
     }
@@ -117,19 +80,12 @@ impl ConversationStream {
         self.automation.error = error;
         for task in &projection.tasks {
             self.automation
-                .clocks
-                .entry(task.identity.clone())
-                .or_insert_with(|| cx.new(|_| AutomationClock(format_elapsed(task.elapsed_ms))));
-            self.automation
                 .focus
                 .entry(task.identity.clone())
                 .or_insert_with(|| std::array::from_fn(|_| cx.focus_handle().tab_stop(true)));
         }
         self.automation
             .focus
-            .retain(|id, _| projection.tasks.iter().any(|task| task.identity == *id));
-        self.automation
-            .clocks
             .retain(|id, _| projection.tasks.iter().any(|task| task.identity == *id));
         let now = vega_conversation::automation::now_ms();
         let wakeup_labels: HashMap<_, _> = projection
@@ -225,66 +181,6 @@ impl ConversationStream {
             })
             .collect()
     }
-    fn automation_button(
-        &self,
-        id: String,
-        action: (String, Icon),
-        focus: &FocusHandle,
-        enabled: bool,
-        cx: &mut Context<Self>,
-        activate: impl Fn(&mut Self, &mut Context<Self>) + 'static,
-    ) -> AnyElement {
-        let (label, glyph) = action;
-        let colors = theme(cx).colors;
-        let hint = label.clone();
-        let activate = std::rc::Rc::new(activate);
-        let keyboard = activate.clone();
-        div()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(label.clone())
-            .track_focus(focus)
-            .tab_stop(enabled)
-            .size(px(Layout::AUTOMATION_ACTION_SIZE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-            .text_size(px(Typography::BODY))
-            .text_color(colors.text_secondary)
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .interaction_surface(
-                colors.bg_elevated,
-                colors.bg_hover,
-                colors.bg_active,
-                enabled,
-            )
-            .focus_visible(move |style| style.border_1().border_color(colors.accent))
-            .when(enabled, |button| button.cursor_pointer())
-            .on_click(cx.listener(move |this, _: &gpui_kit::ClickEvent, _, cx| {
-                if enabled {
-                    cx.stop_propagation();
-                    activate(this, cx);
-                }
-            }))
-            .on_key_down(
-                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        cx.stop_propagation();
-                        keyboard(this, cx);
-                    }
-                }),
-            )
-            .tooltip(move |_, cx| tooltip(hint.clone(), cx))
-            .child(sized_icon(
-                glyph,
-                colors.text_secondary,
-                Layout::AUTOMATION_ICON_SIZE,
-            ))
-            .into_any_element()
-    }
     pub(crate) fn automation_compact(&self) -> bool {
         self.workspace_width.is_some_and(|width| {
             width - 2. * Layout::CONVERSATION_PADDING < Layout::AUTOMATION_COMPACT_WIDTH
@@ -298,18 +194,19 @@ impl ConversationStream {
             .max_w(px(Layout::COMPOSER_MAX_WIDTH))
             .mx_auto()
             .flex()
-            .flex_col()
-            .key_context("Composer")
-            .on_action(cx.listener(Self::next_composer_control))
-            .on_action(cx.listener(Self::previous_composer_control));
+            .flex_col();
         if let Some(error) = &self.automation.error {
-            view = view.child(
-                div()
-                    .mb_2()
-                    .text_size(px(Typography::BODY))
-                    .text_color(colors.danger)
-                    .child(error.render()),
+            let mut error = control(
+                self,
+                "automation-error".to_owned(),
+                error.render(),
+                Intent::Read,
+                None,
+                None,
+                cx,
             );
+            error.foreground = colors.danger;
+            view = view.child(error);
         }
         if self.thread.backend != TaskBackend::Native {
             return view.into_any_element();
@@ -321,238 +218,137 @@ impl ConversationStream {
             ) && let Some(reason) = task.reason_message()
                 && !(task.status == AutomationStatus::Paused && task.is_user_paused())
             {
-                view = view.child(
-                    div()
-                        .px(px(Layout::AUTOMATION_INSET))
-                        .mb_2()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
-                        .child(reason.to_owned()),
-                );
+                view = view.child(control(
+                    self,
+                    format!("automation-{}-reason", task.identity),
+                    reason.to_owned(),
+                    Intent::Read,
+                    Some(task),
+                    None,
+                    cx,
+                ));
             }
-        }
-        for task in &self.automation.projection.tasks {
             let Some(focus) = self.automation.focus.get(&task.identity) else {
                 continue;
             };
             let kind = task.kind;
-            let identity = task.identity.clone();
-            let expand = identity.clone();
+            let label = if compact {
+                if task.status == AutomationStatus::BudgetLimited {
+                    vega_i18n::t("ui.budget_exhausted").to_owned()
+                } else {
+                    task.status.label().to_owned()
+                }
+            } else if task.status == AutomationStatus::Active {
+                kind.label().to_owned()
+            } else {
+                vega_i18n::t_args(
+                    "ui.automation_status",
+                    &[("kind", kind.label()), ("status", task.status.label())],
+                )
+            };
             let summary = task
                 .instruction
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            let label = if compact {
-                if task.status == AutomationStatus::BudgetLimited {
-                    vega_i18n::t("ui.budget_exhausted").to_string()
-                } else {
-                    task.status.label().to_string()
-                }
-            } else if task.status == AutomationStatus::Active {
-                kind.label().to_string()
-            } else {
-                vega_i18n::t_args(
-                    "ui.automation_status",
-                    &[
-                        (
-                            "kind",
-                            if kind == AutomationKind::Goal {
-                                vega_i18n::t("ui.goal")
-                            } else {
-                                vega_i18n::t("ui.loop")
-                            },
-                        ),
-                        ("status", task.status.label()),
-                    ],
-                )
-            };
             let mut row = div()
-                .id(format!("automation-{}-strip", kind.key()))
-                .h(px(Layout::AUTOMATION_HEIGHT))
-                .role(Role::Group)
-                .aria_label(kind.label())
-                .mx(px(if compact {
-                    Layout::AUTOMATION_COMPACT_INSET
-                } else {
-                    Layout::AUTOMATION_INSET
-                }))
-                .px(px(if compact {
-                    Layout::AUTOMATION_COMPACT_PADDING
-                } else {
-                    Layout::AUTOMATION_PADDING
-                }))
+                .w_full()
                 .flex()
+                .flex_wrap()
                 .items_center()
-                .gap(px(Layout::AUTOMATION_GAP))
-                .min_w_0()
-                .bg(colors.bg_elevated)
-                .border_t_1()
-                .border_l_1()
-                .border_r_1()
-                .border_color(colors.border_subtle)
-                .rounded_t(px(Layout::AUTOMATION_RADIUS))
-                .child(sized_icon(
-                    if kind == AutomationKind::Goal {
-                        Icon::Goal
-                    } else {
-                        Icon::Refresh
-                    },
-                    colors.text_secondary,
-                    Layout::AUTOMATION_ICON_SIZE,
-                ))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_primary)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .id(format!("automation-{}-summary", kind.key()))
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _: &gpui_kit::ClickEvent, _, cx| {
-                            cx.emit(AutomationEditorRequested {
-                                thread_id: this.thread.id.clone(),
-                                identity: identity.clone(),
-                            });
-                        }))
-                        .child(summary),
+                .gap(px(Layout::AUTOMATION_GAP));
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(Layout::AUTOMATION_ACTION_SIZE))
+                    .child(control(
+                        self,
+                        format!("automation-{}-summary", task.identity),
+                        format!("{label} · {summary}"),
+                        Intent::Edit,
+                        Some(task),
+                        Some(focus[0].clone()),
+                        cx,
+                    )),
+            );
+            if !compact {
+                let time = if kind == AutomationKind::Loop
+                    && !self.actions.running
+                    && !self
+                        .automation
+                        .timings
+                        .get(&task.identity)
+                        .is_some_and(|time| time.running)
+                {
+                    self.automation.wakeup_labels.get(&task.identity).cloned()
+                } else {
+                    None
+                };
+                let time = time.unwrap_or_else(|| {
+                    format_elapsed(
+                        self.automation
+                            .timings
+                            .get(&task.identity)
+                            .map_or(task.elapsed_ms, |time| time.elapsed_ms),
+                    )
+                });
+                let mut clock = control(
+                    self,
+                    format!("automation-{}-clock", task.identity),
+                    time,
+                    Intent::Read,
+                    Some(task),
+                    None,
+                    cx,
                 );
-            if !compact
-                && kind == AutomationKind::Loop
-                && !self.actions.running
-                && !self
-                    .automation
-                    .timings
-                    .get(&task.identity)
-                    .is_some_and(|time| time.running)
-                && let Some(wait) = self.automation.wakeup_labels.get(&task.identity)
-            {
+                clock.foreground = colors.text_tertiary;
                 row = row.child(
                     div()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_tertiary)
-                        .child(wait.clone()),
+                        .w(px(Layout::AUTOMATION_ACTION_SIZE * 2.))
+                        .flex_shrink_0()
+                        .child(clock),
                 );
-            } else if !compact && let Some(clock) = self.automation.clocks.get(&task.identity) {
-                row = row.child(clock.clone());
             }
+            let mut actions = div().flex().flex_wrap().gap(px(Layout::AUTOMATION_GAP));
             if self.thread.permission_mode == PermissionMode::FullAccess
                 && self.thread.mode == ThreadMode::Execute
                 && !task.status.replaceable()
             {
-                row = row.child(self.render_automation_permission_trigger(task, &focus[3], cx));
+                actions = actions.child(
+                    div()
+                        .w(px(Layout::AUTOMATION_ACTION_SIZE * 6.))
+                        .child(self.render_automation_permission_trigger(task, &focus[3], cx)),
+                );
             }
-            row = row.child(self.automation_button(
-                format!("automation-{}-clear", kind.key()),
-                (
-                    vega_i18n::t_args(
-                        "ui.clear_kind",
-                        &[(
-                            "kind",
-                            if kind == AutomationKind::Goal {
-                                vega_i18n::t("ui.goal")
-                            } else {
-                                vega_i18n::t("ui.loop")
-                            },
-                        )],
-                    ),
-                    Icon::Trash,
-                ),
-                &focus[2],
-                !self.automation.projection.busy && !self.permission_change_pending(),
+            actions = actions.child(div().w(px(Layout::AUTOMATION_ACTION_SIZE)).child(control(
+                self,
+                format!("automation-{}-clear", task.identity),
+                vega_i18n::t_args("ui.clear_kind", &[("kind", kind.label())]),
+                Intent::Clear,
+                Some(task),
+                Some(focus[2].clone()),
                 cx,
-                move |this, cx| {
-                    cx.emit(AutomationRequested {
-                        thread_id: this.thread.id.clone(),
-                        command: AutomationCommand::Control(kind, AutomationControl::Clear),
-                    });
-                },
-            ));
+            )));
             if task.can_control() {
-                let active = task.status == AutomationStatus::Active;
-                row = row.child(self.automation_button(
-                    format!("automation-{}-control", kind.key()),
-                    (
+                actions =
+                    actions.child(div().w(px(Layout::AUTOMATION_ACTION_SIZE)).child(control(
+                        self,
+                        format!("automation-{}-control", task.identity),
                         vega_i18n::t_args(
-                            if active {
+                            if task.status == AutomationStatus::Active {
                                 "ui.pause_kind"
                             } else {
                                 "ui.resume_kind"
                             },
-                            &[(
-                                "kind",
-                                if kind == AutomationKind::Goal {
-                                    vega_i18n::t("ui.goal")
-                                } else {
-                                    vega_i18n::t("ui.loop")
-                                },
-                            )],
+                            &[("kind", kind.label())],
                         ),
-                        if active { Icon::Pause } else { Icon::Play },
-                    ),
-                    &focus[1],
-                    !self.automation.projection.busy && !self.permission_change_pending(),
-                    cx,
-                    move |this, cx| {
-                        cx.emit(AutomationRequested {
-                            thread_id: this.thread.id.clone(),
-                            command: AutomationCommand::Control(
-                                kind,
-                                if active {
-                                    AutomationControl::Pause
-                                } else {
-                                    AutomationControl::Resume
-                                },
-                            ),
-                        });
-                    },
-                ));
-            } else {
-                row = row.child(
-                    div()
-                        .size(px(Layout::AUTOMATION_ACTION_SIZE))
-                        .flex_shrink_0(),
-                );
+                        Intent::Control,
+                        Some(task),
+                        Some(focus[1].clone()),
+                        cx,
+                    )));
             }
-            row = row.child(
-                self.automation_button(
-                    format!("automation-{}-details", kind.key()),
-                    (
-                        if kind == AutomationKind::Goal {
-                            vega_i18n::t("ui.edit_goal")
-                        } else {
-                            vega_i18n::t("ui.edit_loop")
-                        }
-                        .into(),
-                        Icon::Maximize,
-                    ),
-                    &focus[0],
-                    true,
-                    cx,
-                    move |this, cx| {
-                        cx.emit(AutomationEditorRequested {
-                            thread_id: this.thread.id.clone(),
-                            identity: expand.clone(),
-                        });
-                    },
-                ),
-            );
-            view = view.child(row);
+            view = view.child(row.child(actions));
         }
         view.into_any_element()
     }

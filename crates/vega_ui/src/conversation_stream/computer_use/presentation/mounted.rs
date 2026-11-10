@@ -18,7 +18,7 @@ impl IntoElement for Mounted {
 
 impl Element for Mounted {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = (Bounds<Pixels>, Bounds<Pixels>, Size<Pixels>);
 
     fn id(&self) -> Option<ElementId> {
         Some("nsh-cua-notice-mounted".into())
@@ -46,40 +46,45 @@ impl Element for Mounted {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         self.lease.geometry.set(None);
+        let mask = window.content_mask().bounds;
+        let viewport = window.viewport_size();
         if let Some(id) = id {
             window.with_element_state::<Rc<Mount>, _>(id, |_, _| ((), self.lease.clone()));
-            if let Some(owner) = self.owner.upgrade() {
-                let stream = owner.read(cx);
-                let viewport = window.viewport_size();
-                let visible = bounds
-                    .intersect(&window.content_mask().bounds)
-                    .intersect(&Bounds::new(point(px(0.), px(0.)), viewport));
-                if !visible.is_empty() {
-                    self.lease.geometry.set(Some(Geometry {
-                        visible,
-                        bounds,
-                        viewport,
-                        list: stream.list.viewport_bounds(),
-                        foreground: stream.foreground_height,
-                    }));
-                }
-            }
         }
         self.child.prepaint(window, cx);
+        (bounds, mask, viewport)
     }
 
     fn paint(
         &mut self,
-        _: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        state: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let (bounds, mask, viewport) = *state;
+        if id.is_some()
+            && let Some(owner) = self.owner.upgrade()
+        {
+            let stream = owner.read(cx);
+            let visible = bounds
+                .intersect(&mask)
+                .intersect(&Bounds::new(point(px(0.), px(0.)), viewport));
+            if !visible.is_empty() {
+                self.lease.geometry.set(Some(Geometry {
+                    visible,
+                    bounds,
+                    viewport,
+                    list: stream.list.viewport_bounds(),
+                    foreground: stream.foreground_height,
+                }));
+            }
+        }
         self.child.paint(window, cx);
     }
 }

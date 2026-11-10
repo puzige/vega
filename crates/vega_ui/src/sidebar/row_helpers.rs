@@ -3,7 +3,7 @@ use super::*;
 pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
-    colors: ThemeColors,
+    _colors: ThemeColors,
 ) -> AnyElement {
     let observed = thread.clone();
     let thread_id = thread.id.clone();
@@ -17,7 +17,7 @@ pub fn render_delete_confirm_overlay(
         .flex()
         .items_center()
         .justify_center()
-        .bg(colors.text_primary.opacity(0.4))
+        .child(nsh_leaf::chrome::dimmer())
         .child(
             div()
                 .w(px(320.))

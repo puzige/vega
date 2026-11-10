@@ -1,4 +1,4 @@
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+use nsh_leaf::chrome::ScrollFadeExt;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -671,8 +671,9 @@ impl Render for Sidebar {
             .w(px(width(cx)))
             .h_full()
             .flex_shrink_0()
-            .bg(colors.bg_sidebar)
+            .relative()
             .overflow_hidden()
+            .child(nsh_leaf::chrome::background())
             .child(
                 div()
                     .flex()
@@ -737,10 +738,10 @@ impl Render for Sidebar {
                                 }
                             })
                             .child(self.sessions_block.clone())
-                            .tracked_scroll_edge_fade(
+                            .sidebar_scroll_fade(
+                                "sidebar-scroll-fade-nsh",
                                 self.sidebar_scroll.clone(),
-                                colors.bg_sidebar,
-                                ScrollFade::compact(),
+                                false,
                             ),
                     ),
             )
@@ -757,4 +758,6 @@ mod threads_block;
 
 pub use projects_block::{ProjectsBlock, ProjectsBlockEvent};
 pub use row_helpers::*;
+#[cfg(feature = "nsh-reading-integration")]
+pub use threads_block::mounted_rename_native_ack_ime_cancel_rebind_and_persistence;
 pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};

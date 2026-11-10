@@ -301,7 +301,19 @@ impl ConversationStream {
     }
 
     pub(crate) fn prepare_fork_menu(&self, index: usize, cx: &mut Context<Self>) {
-        use gpui_kit::component::menu::PopupMenuItem;
+        let reading = super::selection_menu::ReadingOwner::message(
+            self,
+            cx.weak_entity(),
+            self.entry_identities.get(index).cloned(),
+        );
+        if let Some(StreamEntry::User { copy, .. } | StreamEntry::Assistant { copy, .. }) =
+            self.entries.get(index)
+        {
+            *copy.reading_owner.borrow_mut() = Some(reading.clone());
+        }
+        if let Some(copy) = self.copy_source_for_entry(index) {
+            *copy.reading_owner.borrow_mut() = Some(reading);
+        }
         let Some(StreamEntry::Assistant { copy, .. }) = self.entries.get(index) else {
             return;
         };
@@ -309,34 +321,19 @@ impl ConversationStream {
         let Some(request) = self.fork_request_for_entry(index) else {
             return;
         };
-        let weak = cx.entity().downgrade();
-        let pending = self.fork_pending.is_some();
-        let disabled = !self.fork_is_idle(cx);
-        *copy.fork_menu.borrow_mut() = Some(std::rc::Rc::new(move |menu, _, _| {
-            let weak = weak.clone();
-            let request = request.clone();
-            menu.item(
-                PopupMenuItem::new(vega_i18n::t(if pending {
-                    "ui.fork_creating"
-                } else {
-                    "ui.branch_in_new_chat"
-                }))
-                .disabled(disabled)
-                .on_click(move |_, _, cx| {
-                    let _ = weak.update(cx, |stream, cx| stream.request_fork(&request, cx));
-                }),
-            )
-        }));
+        *copy.fork_menu.borrow_mut() = Some(super::selection_menu::ForkCommand {
+            request,
+            pending: self.fork_pending.is_some(),
+            enabled: self.fork_is_idle(cx),
+        });
     }
 
     pub(crate) fn message_actions_enabled(&self) -> bool {
         !self.actions.running && self.active_agent_message.is_none()
     }
 
-    pub(crate) fn message_interaction(&self) -> render_rows::MessageInteraction<'_> {
+    pub(crate) fn message_interaction(&self) -> render_rows::MessageInteraction {
         render_rows::MessageInteraction {
-            focus: &self.selection_focus,
-            actions_enabled: self.message_actions_enabled(),
             user_top: Layout::USER_MESSAGE_PADDING_TOP,
             stream: None,
             text_width: self
