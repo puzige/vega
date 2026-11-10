@@ -239,3 +239,6 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (era * 400 + yoe + i64::from(month <= 2), month, day)
 }
+
+#[cfg(test)]
+mod clock_regressions;
