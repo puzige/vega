@@ -52,6 +52,9 @@ pub use rusqlite::{Connection, Transaction};
 pub use thread_admission::DatabaseIdentity;
 use write_coordination::{WriteCategory, WriteTransaction};
 
+#[cfg(test)]
+mod migration_tests;
+
 /// Ordered, compile-time-embedded schema migrations.
 ///
 /// `MIGRATIONS[i]` migrates the schema from `user_version == i` to
@@ -119,9 +122,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0060_configuration_lock_diagnostics.sql"),
     include_str!("../migrations/0061_preparation_revisions.sql"),
     include_str!("../migrations/0062_shell_operations.sql"),
-    include_str!("../migrations/0063_persistence_receipts.sql"),
-    include_str!("../migrations/0064_configuration_intents.sql"),
-    include_str!("../migrations/0065_source_validation.sql"),
+    include_str!("../migrations/0063_shell_concurrency.sql"),
+    include_str!("../migrations/0064_persistence_receipts.sql"),
+    include_str!("../migrations/0065_configuration_intents.sql"),
+    include_str!("../migrations/0066_source_validation.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -313,7 +317,8 @@ impl Store {
                 (&mut moved as *mut std::ffi::c_int).cast(),
             )
         };
-        if result != rusqlite::ffi::SQLITE_OK || moved != 0
+        if result != rusqlite::ffi::SQLITE_OK
+            || moved != 0
             || DatabaseIdentity::for_connection(&self.conn)? != expected
         {
             return Err(rusqlite::Error::InvalidQuery);

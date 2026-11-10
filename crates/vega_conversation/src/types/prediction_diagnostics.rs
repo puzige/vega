@@ -80,7 +80,8 @@ impl crate::database_writer::DatabaseCommand for PendingPredictionEvent {
             self.event.as_str(),
             self.attempt,
             self.occurred_at,
-        ).map_err(|_| "prediction diagnostic persistence failed".to_owned())
+        )
+        .map_err(|_| "prediction diagnostic persistence failed".to_owned())
     }
 }
 
@@ -96,14 +97,24 @@ pub fn record_prediction_event(
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         });
-    let event = PendingPredictionEvent { database: database.to_path_buf(), thread_id: thread_id.to_owned(), message_id: message_id.to_owned(), event, attempt, occurred_at };
+    let event = PendingPredictionEvent {
+        database: database.to_path_buf(),
+        thread_id: thread_id.to_owned(),
+        message_id: message_id.to_owned(),
+        event,
+        attempt,
+        occurred_at,
+    };
     if let Err(error) = crate::submission_diagnostics::background::submit(move || {
-        let succeeded = vega_store::Store::open_read_only(&event.database).ok().is_some_and(|store| {
-            let path = event.database.clone();
-            crate::database_writer::commit(&path, store.database_identity(), event).is_ok_and(|result| result.is_ok())
-        });
+        let succeeded = vega_store::Store::open_read_only(&event.database)
+            .ok()
+            .is_some_and(|store| {
+                let path = event.database.clone();
+                crate::database_writer::commit(&path, store.database_identity(), event)
+                    .is_ok_and(|result| result.is_ok())
+            });
         if !succeeded {
-            tracing::warn!(outcome="prediction_diagnostic_not_confirmed");
+            tracing::warn!(outcome = "prediction_diagnostic_not_confirmed");
             return Err("prediction diagnostic persistence not confirmed".into());
         }
         Ok(())

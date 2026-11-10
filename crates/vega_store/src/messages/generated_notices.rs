@@ -54,13 +54,13 @@ pub fn record_generated_notice_in_transaction(
     if notice.message_id != message_id || !notice.is_valid_for(content) {
         return Ok(false);
     }
-    let Some(owner) = find(&tx, message_id)? else {
+    let Some(owner) = find(tx, message_id)? else {
         return Ok(false);
     };
     if owner.role != "assistant" || owner.content != content {
         return Ok(false);
     }
-    let existing = read_for_message(&tx, message_id)?;
+    let existing = read_for_message(tx, message_id)?;
     validate_notices(&owner, &existing)?;
     if let Some(previous) = existing
         .iter()

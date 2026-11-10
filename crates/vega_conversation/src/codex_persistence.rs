@@ -420,10 +420,10 @@ impl DatabaseCommand for CodexCommand {
                     return Err("Codex proposal message source changed".into());
                 }
             }
-            CodexWrite::Tool { source, .. } => {
-                if self.source.message_id.as_ref() != Some(&source.message_id) {
-                    return Err("Codex tool message source changed".into());
-                }
+            CodexWrite::Tool { source, .. }
+                if self.source.message_id.as_ref() != Some(&source.message_id) =>
+            {
+                return Err("Codex tool message source changed".into());
             }
             _ => {}
         }

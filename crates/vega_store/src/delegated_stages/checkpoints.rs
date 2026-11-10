@@ -40,8 +40,10 @@ impl PreparedStageCheckpoint {
             child,
             message,
             "declared",
-            manifest,
-            self.effects,
+            StageCheckpointPayload {
+                manifest,
+                effects: self.effects,
+            },
             now,
             self.source.source(),
         )
@@ -205,8 +207,10 @@ impl PreparedTerminal {
             } else {
                 "declared"
             },
-            manifest,
-            self.effects.clone(),
+            StageCheckpointPayload {
+                manifest,
+                effects: self.effects.clone(),
+            },
             self.now,
             &self.source,
         )

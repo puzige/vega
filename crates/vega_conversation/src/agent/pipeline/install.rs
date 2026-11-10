@@ -171,7 +171,7 @@ pub(super) struct InstallPreparation {
     pub uses_existing_user: bool,
     pub expected: authority::RunAuthority,
     pub install: vega_store::preparation::OwnedDelegatedInstall,
-    pub redaction_authority: Option<Arc<crate::privacy::PreparedRedactionAuthority>>,
+    pub redaction_authority: Option<crate::privacy::RedactionCommitToken>,
     pub skill_run: Option<vega_runtime::skills::SkillRun>,
     pub audits: Vec<vega_runtime::skills::ActivationAudit>,
     pub context_policy: Option<vega_store::context_compaction::ModelContextPolicy>,
@@ -537,7 +537,8 @@ impl DatabaseCommand for InstallPreparation {
                     && continuation.is_none()
                     && title_eligible_payload
                 {
-                    match config.automatic_title.clone() {
+                    matches!(
+                        config.automatic_title.clone(),
                         Some(request)
                             if vega_store::threads::claim_auto_title(
                                 &transaction,
@@ -545,12 +546,8 @@ impl DatabaseCommand for InstallPreparation {
                                 &user_message_id,
                                 &request,
                             )
-                            .map_err(runtime_store_error)? =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    }
+                            .map_err(runtime_store_error)?
+                    )
                 } else {
                     false
                 };

@@ -145,36 +145,40 @@ impl Journal {
         let state = self.state.clone();
         let status = self.status.clone();
         let worker = background::submit(move || {
-                let mut failed = false;
-                loop {
-                    let request = {
-                        let mut journal = state.lock().unwrap_or_else(|error| error.into_inner());
-                        if journal.next_write == journal.events.len() {
-                            journal.scheduled = false;
-                            return if failed { Err("submission diagnostic persistence failed".into()) } else { Ok(()) };
-                        }
-                        let Some((path, database)) = journal.target.clone() else {
-                            journal.scheduled = false;
-                            return Err("submission diagnostic target unavailable".into());
+            let mut failed = false;
+            loop {
+                let request = {
+                    let mut journal = state.lock().unwrap_or_else(|error| error.into_inner());
+                    if journal.next_write == journal.events.len() {
+                        journal.scheduled = false;
+                        return if failed {
+                            Err("submission diagnostic persistence failed".into())
+                        } else {
+                            Ok(())
                         };
-                        let event = journal.events[journal.next_write].clone();
-                        journal.next_write += 1;
-                        (path, database, event)
-                    };
-                    let succeeded = crate::database_writer::commit(
-                        &request.0,
-                        request.1,
-                        AppendPreparationEvent { event: request.2 },
-                    )
-                    .is_ok_and(|result| result.is_ok());
-                    if !succeeded {
-                        failed = true;
-                        status.failed.store(true, Ordering::Release);
-                        tracing::warn!("submission diagnostic persistence failed");
                     }
-                    status.pending.fetch_sub(1, Ordering::AcqRel);
+                    let Some((path, database)) = journal.target.clone() else {
+                        journal.scheduled = false;
+                        return Err("submission diagnostic target unavailable".into());
+                    };
+                    let event = journal.events[journal.next_write].clone();
+                    journal.next_write += 1;
+                    (path, database, event)
+                };
+                let succeeded = crate::database_writer::commit(
+                    &request.0,
+                    request.1,
+                    AppendPreparationEvent { event: request.2 },
+                )
+                .is_ok_and(|result| result.is_ok());
+                if !succeeded {
+                    failed = true;
+                    status.failed.store(true, Ordering::Release);
+                    tracing::warn!("submission diagnostic persistence failed");
                 }
-            });
+                status.pending.fetch_sub(1, Ordering::AcqRel);
+            }
+        });
         if worker.is_err() {
             self.state
                 .lock()

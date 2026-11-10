@@ -1,6 +1,6 @@
-mod writer;
 #[cfg(test)]
 mod protocol_tests;
+mod writer;
 
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
@@ -401,13 +401,12 @@ impl McpServerSettingsService {
         let operation = self.configuration_operation();
         let running = self.reconciliation_running.clone();
         if let Err(error) = crate::submission_diagnostics::background::submit(move || {
-                let result = operation.reconcile_declarations();
-                operation
-                    .reconciliation_running
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                result.map_err(|_| "MCP configuration reconciliation not confirmed".into())
-            })
-        {
+            let result = operation.reconcile_declarations();
+            operation
+                .reconciliation_running
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            result.map_err(|_| "MCP configuration reconciliation not confirmed".into())
+        }) {
             running.store(false, std::sync::atomic::Ordering::SeqCst);
             tracing::warn!(%error, outcome = "mcp_configuration_reconciliation_not_accepted");
         }

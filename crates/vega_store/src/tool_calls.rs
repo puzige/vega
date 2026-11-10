@@ -256,7 +256,7 @@ pub fn approve_in_transaction(
     ensure_one(updated)?;
     if let Some(rule) = remember {
         permissions::insert_exact(
-            &transaction,
+            transaction,
             InsertExactRule {
                 project_id: rule.project_id,
                 tool: rule.tool,

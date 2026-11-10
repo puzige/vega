@@ -1,5 +1,7 @@
 # #919 prepare_run 生产写入迁移检查点
 
+> 当前整合状态见末节。此前 READY、未完成／NOT RUN、源码 hash 均保留为各自历史阶段记录，不作为当前未接线清单或最终版本验证。
+
 ## 状态与范围
 
 **READY：本授权范围停止写入，供主 Agent 统一编译、补齐接口和回归；不是完整验收或可合并声明。**
@@ -118,4 +120,34 @@ NOT RUN：Cargo check/build/test/nextest、Clippy、核心并发回归及计时�
 3. 分别累加初始化队列等待 + FIFO/外部 BEGIN busy + 安装队列等待 + 两次 conflict BEGIN，合计受同一 10 秒约束；长锁外暂停不耗预算。长事务体本身不触发队列超时假回执。
 4. 同库 alias 共 actor、异库独立、普通 service commit 兼容、NecessaryLease 128 容量耗尽与 Drop/drain、丢弃回执仍 drain、旧事件回执不退水位及 physical DB 替换拒绝。
 5. 继续运行原全部权限/owner/source/Skill/凭据/输入变化回归及零部分写入断言，保留 #918 父+两子真实消息和完整工具终态先提交再恢复锁外准备的完整断言；不以新队列取消替代安全检查。
+
+## 当前整合状态（有限源码核对，非最终独审）
+
+基线由主会话提供：HEAD `7c3ee7c97db83fbec4ce099313661f9cb7325cb3` + 未提交，MERGE_HEAD `2a29adf9b2ea78eaf59d591838531b45adc7373e`；本轮 fetch 已完成，origin/master 与上游相同。本次仅写授权文档，未运行 Git/Cargo、未修改 Rust 或用户库；旧阶段 hash 不重新解释为当前源码身份。
+
+### 已接线，不再作为当前接口缺口
+
+- `privacy.rs::RedactionCommitToken` 已从 `PreparedRedactionAuthority.policy` 分离。token 为 owned identity/schema/root/database/thread/revisions/epoch/exceptions/rule/storage 数据，不含 Fn/policy。`pipeline.rs` 提交前调用 `commit_token(&store)`；`pipeline/install.rs::InstallPreparation.redaction_authority` 现为 `Option<RedactionCommitToken>`，actor 安装前后两次 validate 保留。上方两处“等待 privacy token／携带完整 authority”仅描述旧阶段。
+- privacy 永久清理经 `credential_privacy::prepare_clean` 锁外计算，提交 `PreparedCleanup` + token，由 `PermanentlyCleanPrivacy` 的事务安装；pending 提交端 `verify_commit_fence` 已用 `capture_fence_for_commit`，SQL 重建已注册 workspace/permission fence，不进行目录探测。更完整的有限核对见 [auxiliary.md 当前整合状态](auxiliary.md#当前整合状态源码核对非独审最终验收)。这些接线不删除来源安全校验，也不将“SQL-only pending”扩展为整个 actor 没有数据库 I/O。
+- 正式来源迁移已为 `crates/vega_store/migrations/0066_source_validation.sql`，registry 和 `context_compaction/source_version.rs` 使用正式 0066；旧 `docs/919/0065_source_validation.sql` 仅历史 draft，不是待注册迁移。
+
+### 来源末检与慢文件系统边界
+
+`pipeline/install.rs::InstallPreparation::apply_with_admission` 先取得 `permission_contracts::coordinate()`，开启 budgeted SQL 写事务，再执行安装前后两组校验：
+
+| 链路 | 实际同步文件操作 | actor／permission lock／SQL 事务 |
+| --- | --- | --- |
+| `SkillRun::validate_prepared_sources`（runtime `skills/catalog.rs`）→ `SkillSource::validate_prepared_candidate`（`skills/source.rs`） | canonicalize、目录/文件 open/openat、fd metadata；链接来源还含 symlink_metadata、目标路径解析与目录遍历。校验文件身份/状态和目录身份，不读取或解析文件 body、不取得文件锁 | 三者均在 |
+| `privacy.rs::RedactionCommitToken::validate` → `CredentialStorageVersion::capture` | canonicalize(root)，对 root、credentials、credentials.toml 做 symlink_metadata；拒绝 symlink 并比较 device/inode/len/mtime/ctime。不读取/解析凭据 body、不取得 keystore 文件锁；revision 为内存检查 | 三者均在；privacy cleanup 的安装前后 token 校验同样如此 |
+| `Store::verify_database_identity` → `DatabaseIdentity::for_connection` | SQLite `SQLITE_FCNTL_HAS_MOVED` 与连接路径 metadata，保留物理库替换拒绝；本次未核对 VFS 内部实现 | 公共命令执行入口在 actor、业务 apply/锁/事务前；token 等事务内调用仍位于锁及事务内 |
+
+操作数量、`O_NONBLOCK` 或只做 metadata 均不保证 syscall 耗时。停顿会占住同库 actor；安装内末检还延长 permission lock 和 SQL 写事务。queue/BEGIN admission budget 不抢占已开始的同步文件调用或事务体；不得称其为“有界 metadata”或伪称 timeout 能释放被卡调用。
+
+本卡承诺为**慢锁外准备不阻塞父／两子运行**，不是任意慢盘无阻塞。文件 body 读取/解析、脱敏 policy、模型/工具/用户回调仍须在 actor 外；来源末检和数据库自身 I/O／身份安全检查保留，不以提前缓存或删除校验消除风险。此前风险评估中“若要求任意慢来源末检也不阻塞则当前不满足”是条件判断，不作为本次新增验收。若其他文字要求一切文件 syscall 都在 actor 外，应交主会话裁决文字冲突，不擅改验收。
+
+### 验证层级与必要回归
+
+主会话本次报告中央 conversation **78/78**、store **27/27**、app **7/7** 通过，含 privacy/pending/diagnostics；store **14** 项 lint 已修且编译通过，conversation **9 项生产 + 1 项 test lint** 修复中。本文档整合者未重跑这些结果，精确命令、日志、工具链及版本关联由主会话在 `validation.md` 维护。Clippy、最终冻结审查、CI 尚待完成，不称完全验收。
+
+最终版本仍须核对任务相关回归及原断言：锁外暂停时父+两子真实消息/完整工具终态先提交；排队后权限/owner/输入/Skill/凭据变化拒绝及零部分安装；credential 文件替换而内存 revision 不变仍拒绝；同库共享、异库隔离及数据库路径替换拒绝；队列/BEGIN 取消、累计预算和真实回执。现有锁外暂停回归不证明 metadata 停顿时 actor 可推进，也不把真实慢文件系统保证写成已验证。完整 required CI、独立审查、开发测试留痕及合并前清理、用户手测仍分开记录。
 

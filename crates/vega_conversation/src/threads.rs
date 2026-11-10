@@ -671,29 +671,25 @@ pub fn persist_thread_update(
             title: None,
             pinned: None,
             unread: None,
-        } => {
-            return submit_thread_write(
-                &store,
-                ThreadWrite::Status {
-                    thread: thread_id.into(),
-                    status: *status,
-                },
-            );
-        }
+        } => submit_thread_write(
+            &store,
+            ThreadWrite::Status {
+                thread: thread_id.into(),
+                status: *status,
+            },
+        ),
         ThreadUpdate {
             pinned: Some(pinned),
             title: None,
             status: None,
             unread: None,
-        } => {
-            return submit_thread_write(
-                &store,
-                ThreadWrite::Pin {
-                    thread: thread_id.into(),
-                    pinned: *pinned,
-                },
-            );
-        }
+        } => submit_thread_write(
+            &store,
+            ThreadWrite::Pin {
+                thread: thread_id.into(),
+                pinned: *pinned,
+            },
+        ),
         _ => submit_thread_write(
             &store,
             ThreadWrite::Update {

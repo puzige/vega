@@ -158,8 +158,19 @@ pub fn append(
     )?;
     let source = crate::context_compaction::load_source_version_in_transaction(conn, child)?;
     append_with_source(
-        conn, child, message, origin, manifest, effects, now, &source,
+        conn,
+        child,
+        message,
+        origin,
+        StageCheckpointPayload { manifest, effects },
+        now,
+        &source,
     )
+}
+
+struct StageCheckpointPayload {
+    manifest: Value,
+    effects: Value,
 }
 
 fn append_with_source(
@@ -167,11 +178,11 @@ fn append_with_source(
     child: &str,
     message: &str,
     origin: &str,
-    manifest: Value,
-    effects: Value,
+    payload: StageCheckpointPayload,
     now: i64,
     source: &crate::context_compaction::ContextSourceVersion,
 ) -> rusqlite::Result<Value> {
+    let StageCheckpointPayload { manifest, effects } = payload;
     let id = ulid::Ulid::generate().to_string();
     let previous = latest(conn, child, message)?.map(|value| value["id"].clone());
     let permission_fence: Option<String> = conn.query_row(

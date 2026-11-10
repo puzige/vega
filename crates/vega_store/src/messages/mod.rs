@@ -272,7 +272,7 @@ pub fn complete_plan_in_transaction(
     }
     // Validate every plan or plan-metadata candidate before an UPDATE can
     // silently skip a semantically corrupt pending row.
-    let _ = validated_plans(&tx, thread_id)?;
+    let _ = validated_plans(tx, thread_id)?;
     tx.execute(
         "UPDATE messages SET plan_status = 'abandoned', \
          plan_review_note = 'superseded', plan_reviewed_at = ?1 \
@@ -307,7 +307,7 @@ pub fn complete_plan_in_transaction(
     if touched != 1 {
         return Err(PlanTransitionError::CorruptState);
     }
-    crate::credential_continuation::complete(&tx, message_id)?;
+    crate::credential_continuation::complete(tx, message_id)?;
     Ok(())
 }
 

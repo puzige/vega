@@ -1,5 +1,7 @@
 # #919 辅助写入迁移
 
+> 当前整合状态见末节；下文原实施记录、未迁移清单及验证限制属于历史阶段，不代表当前缺口。历史内容与 hash 保留。
+
 ## 范围与验收
 
 仅修改用户指定的 automation/、automatic_titles.rs、composer_predictions.rs、session_reasoning.rs、submission_diagnostics.rs、types/prediction_diagnostics.rs、privacy.rs、plans.rs 及本文档。共享基线由主 Agent 管理；本执行不 fetch/rebase、修改 index、提交或运行 cargo。
@@ -46,3 +48,24 @@
 已执行 `rustfmt --edition 2024 --config skip_children=true`，仅指定本范围已修改的 Rust 文件；工具报告 rustfmt 1.9.0-stable (88d9e12ae1 2026-08-18)。对同一文件列表执行 `rustfmt --check`，并对授权路径执行 `git diff --check`；结果及文件 hash 以最终停写回报为准。rustfmt 只证明解析/格式，不冒充编译或业务回归。
 
 实际修改：automation/mod.rs、automation/permission.rs、automation/runtime.rs、新增 automation/writes.rs、automatic_titles.rs、composer_predictions.rs、session_reasoning.rs、submission_diagnostics.rs、types/prediction_diagnostics.rs、privacy.rs、plans.rs、本文档。无 Git/index/基础接口修改。本实现是明确未完成的整合检查点，不可单独合并；以上未迁移项不作为旁路例外缩小一次性全库验收。
+
+## 当前整合状态（源码核对，非独审／最终验收）
+
+本次仅整合文档。主会话提供的基线为 HEAD `7c3ee7c97db83fbec4ce099313661f9cb7325cb3` + 未提交整合，MERGE_HEAD `2a29adf9b2ea78eaf59d591838531b45adc7373e`；本轮 fetch 已由主会话完成，origin/master 与该上游相同。本次未执行 Git/Cargo、未改 Rust 或用户库；以下是相关接口的有限源码核对，不是全库新调查。
+
+- **privacy cleanup 已接线**：`privacy.rs::permanently_clean_with_replay` 释放 permission coordination 后进行 review、投影、脱敏和 `credential_privacy::prepare_clean`；提交 `PermanentlyCleanPrivacy { prepared, token, admission, precompute }`。store `credential_privacy/prepared.rs::PreparedCleanup::install_in_transaction` 在 actor 的事务内验证来源 fence、revisions、permission、epoch、exceptions 和 idle，并以行原值 CAS 安装。脱敏回调留在准备侧，不再将旧 clean(FnMut) 搬入 actor；这不是 SQL 安装耗时恒定的声明。
+- **无回调 token 已接线**：`privacy.rs::PreparedRedactionAuthority` 将 policy 与 `RedactionCommitToken` 分离；token 只有 owned 校验数据。`pipeline.rs` 提取 `commit_token`，`pipeline/install.rs::InstallPreparation` 携带 `Option<RedactionCommitToken>`，两次提交端 validate 保留。历史“完整 authority 携带回调入队”缺口不再是当前状态。
+- **automation draft owned 协议已接线**：`permission_contracts.rs::DraftCreationGuard` 名称保留，但字段仅为 owned draft/operation/epoch/generation/source，不持 MutexGuard 或 ConfigEdit。`begin/under_coordination` 的配置锁和权限锁在等待 `intents::PrepareDraft` 前释放；配置读取及前后快照检查在 actor 外。`PrepareDraft` 记录 durable intent；`automation/mod.rs::DraftAutomation::apply` 在 permission → SQL 事务内调用 `materialize`，按 operation/thread/authority epoch/configuration generation/source/state/pending 复核并原子创建任务。未据静态接线宣称所有配置竞态已完全验收。
+- **pending 提交端已改为 SQL-only 来源／权限复核**：`pending_messages.rs::verify_commit_fence` 使用 `capture_fence_for_commit` 从已注册 thread/project/permission SQL 构造 fence，不再探测 workspace 目录。锁外来源准备仍保留 workspace 检查；“SQL-only”不表示数据库自身 I/O 或公共数据库身份检查消失。
+- **预测、MCP 与提交诊断共用有界后台池**：`submission_diagnostics/background.rs` 为 2 workers、最多 1024 个待执行 job，另有至多 2 个 active；不是无限线程或无界 job 队列。`types/prediction_diagnostics.rs::record_prediction_event`、`mcp_settings.rs::schedule_reconciliation` 及 journal worker 使用该池，闭包只在 actor 外协调，数据库提交仍为具名命令。满容量／closing 为接受前显式拒绝并记录 not_accepted，不宣称所有被拒绝事件已保存；已接受 job 的 SQL/actor 失败或 panic 计入 failures，继续排空后 shutdown 返回错误，超时报 queued/active/failed。journal 保留 failed_memory_retained 语义，不自动重放未知结果。
+- **关闭已接线**：`vega/src/app_agent.rs` 后台退出路径先处理 precompute/Shell，再 `shutdown_background_writes`、`shutdown_database_writers`、failure sidecar；各阶段失败有真实错误，不冒充 drain 成功。
+
+### 保留风险与文字冲突
+
+`InstallPreparation` 的 Skill 来源末检，以及 privacy token 的 `CredentialStorageVersion::capture`，仍同步发生在 actor 的 permission lock／SQL 写事务内。它们执行路径解析、open/openat 和 metadata（credential 为 canonicalize + symlink_metadata），不读取／解析文件 body、不取得文件锁；调用数或文件大小限制不提供耗时保证。`Store::verify_database_identity` 的数据库自身 metadata／SQLite 身份安全检查与 SQL I/O 保留，不为性能删除。
+
+本卡原承诺是慢**锁外准备**不阻塞父／两子运行，不承诺任意慢盘上的 actor 完全无阻塞。上方历史范围段“文件操作……留在 actor 外”若按所有文件 syscall 理解，比该承诺更强，且与现有安全末检冲突；此处显式交主会话确认措辞／契约归属，不擅自删安全检查或修改验收。
+
+### 已报告验证与仍待门禁
+
+主会话本次提供：中央 conversation **78/78**、store **27/27**、app **7/7** 通过，包含 privacy/pending/diagnostics；store **14** 项 lint 已修且编译通过；conversation **9 项生产 + 1 项 test lint** 修复中。此为中央报告，不是本文档整合者重新执行或独立复验；命令、工具链、日志与版本对应由主会话维护 `validation.md`。Clippy、最终冻结审查、CI 仍待完成；开发测试留痕／合并前清理、最终 head required CI 和用户手测仍为独立门禁。当前不能宣称完整验收或可合并。

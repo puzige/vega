@@ -360,6 +360,7 @@ impl crate::database_writer::DatabaseCommand for ShellRecord {
             call_id: &record.call_id,
             generation: &record.generation,
             workspace: &record.workspace,
+            concurrent: record.concurrent,
             state: &record.state,
             exit_code: record.exit_code,
             error: record.error.as_deref(),

@@ -50,13 +50,13 @@ pub fn record_assistant_response_in_transaction(
     if response.message_id != message_id || !response.valid_for(content) {
         return Ok(false);
     }
-    let owner = find(&tx, message_id)?;
+    let owner = find(tx, message_id)?;
     if !owner.is_some_and(|owner| {
         owner.role == "assistant" && owner.status == "streaming" && owner.content == content
     }) {
         return Ok(false);
     }
-    let existing = read_for_message(&tx, message_id)?;
+    let existing = read_for_message(tx, message_id)?;
     if let Some(previous) = existing
         .iter()
         .find(|row| row.response_id == response.response_id)

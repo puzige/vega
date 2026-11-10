@@ -6,6 +6,9 @@ use vega_runtime::{CredentialConfidence, CredentialExceptionFilter};
 use vega_runtime::{CredentialReadError, CredentialReadStage};
 use vega_store::Store;
 
+#[cfg(test)]
+mod tests;
+
 const KEY_REF: &str = "vega-privacy-fingerprint-v1";
 const RULE_VERSION: &str = "credential-rules-v1";
 static ROOTS: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> = OnceLock::new();
@@ -290,6 +293,14 @@ pub(crate) fn prepare_redaction_storage(
 }
 
 pub(crate) struct PreparedRedactionAuthority {
+    token: RedactionCommitToken,
+    policy: CredentialExceptionFilter,
+}
+
+#[derive(Clone)]
+pub(crate) struct RedactionCommitToken {
+    identity: vega_store::DatabaseIdentity,
+    schema: i64,
     root: PathBuf,
     database: PathBuf,
     thread: String,
@@ -299,7 +310,6 @@ pub(crate) struct PreparedRedactionAuthority {
     exceptions: Vec<(String, String)>,
     rule_version: &'static str,
     storage: CredentialStorageVersion,
-    policy: CredentialExceptionFilter,
 }
 
 impl PreparedRedactionAuthority {
@@ -323,6 +333,9 @@ impl PreparedRedactionAuthority {
             .conn()
             .unchecked_transaction()
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        let schema = transaction
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
         let mut exceptions = vega_store::credential_privacy::exceptions(&transaction, thread)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
         exceptions.sort();
@@ -342,15 +355,19 @@ impl PreparedRedactionAuthority {
             })
         });
         let authority = Self {
-            root: root.to_owned(),
-            database: database.clone(),
-            thread: thread.to_owned(),
-            credential_revision,
-            exception_revision: revision,
-            epoch,
-            exceptions,
-            rule_version: RULE_VERSION,
-            storage,
+            token: RedactionCommitToken {
+                identity: store.database_identity(),
+                schema,
+                root: root.to_owned(),
+                database: database.clone(),
+                thread: thread.to_owned(),
+                credential_revision,
+                exception_revision: revision,
+                epoch,
+                exceptions,
+                rule_version: RULE_VERSION,
+                storage,
+            },
             policy,
         };
         authority.validate(store)?;
@@ -361,8 +378,30 @@ impl PreparedRedactionAuthority {
         &self.policy
     }
 
+    pub(crate) fn commit_token(
+        &self,
+        store: &Store,
+    ) -> Result<RedactionCommitToken, CredentialReadError> {
+        self.validate(store)?;
+        Ok(self.token.clone())
+    }
+
     pub(crate) fn validate(&self, store: &Store) -> Result<(), CredentialReadError> {
-        if self.rule_version != RULE_VERSION
+        self.token.validate(store)
+    }
+}
+
+impl RedactionCommitToken {
+    pub(crate) fn validate(&self, store: &Store) -> Result<(), CredentialReadError> {
+        store
+            .verify_database_identity(self.identity)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        let schema: i64 = store
+            .conn()
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        if schema != self.schema
+            || self.rule_version != RULE_VERSION
             || store.database_path() != Some(self.database.as_path())
             || self.credential_revision == u64::MAX
             || vega_store::keystore::revision(&self.root) != self.credential_revision
@@ -689,7 +728,7 @@ pub fn permanently_clean_with_replay(
     snapshot: &PrivacyReview,
     replay: Option<&crate::agent::ReplaySessionRegistry>,
 ) -> Result<(), ConversationError> {
-    let _coordination = crate::permission_contracts::coordinate().map_err(|_| unavailable())?;
+    let coordination = crate::permission_contracts::coordinate().map_err(|_| unavailable())?;
     let admission = vega_store::thread_admission::try_pause_database(store.database_identity())
         .map_err(|_| unavailable())?
         .ok_or(ConversationError::ContextCleanupPending)?;
@@ -705,6 +744,7 @@ pub fn permanently_clean_with_replay(
     {
         return Err(ConversationError::ContextCleanupPending);
     }
+    drop(coordination);
     let current = review(store, thread)?;
     if !current.findings.iter().any(|finding| finding.cleanable) {
         return Err(ConversationError::Store(
@@ -716,17 +756,104 @@ pub fn permanently_clean_with_replay(
             vega_i18n::t("domain.privacy.findings_changed").into(),
         ));
     }
+    let root = registered_root(store).ok_or_else(unavailable)?;
+    let credential_revision = vega_store::keystore::revision(&root);
+    let storage = prepare_redaction_storage(&root)?;
     let projection = DisplayProjection::load(store, thread)?;
     if let Some(replay) = replay {
         replay
             .invalidate_all_acknowledged()
             .map_err(|_| unavailable())?;
     }
-    vega_store::credential_privacy::clean(
+    let authority = PreparedRedactionAuthority::capture(
+        store,
+        thread,
+        &root,
+        credential_revision,
+        &projection.known,
+        storage,
+        true,
+    )?;
+    if review(store, thread)? != *snapshot {
+        return Err(ConversationError::Store(
+            vega_i18n::t("domain.privacy.findings_changed").into(),
+        ));
+    }
+    authority.validate(store)?;
+    let prepared = vega_store::credential_privacy::prepare_clean(
         store.conn(),
         thread,
         &snapshot.source_fingerprint,
-        |text, offsets| projection.offsets(text, offsets),
+        |text, offsets| {
+            vega_runtime::redact_sensitive_credential_text_with_offsets_and_policy(
+                text,
+                &projection.known,
+                offsets,
+                Some(authority.policy()),
+            )
+        },
     )
-    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into()))
+    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into()))?;
+    let token = authority.commit_token(store)?;
+    crate::database_writer::commit(
+        store.database_path().ok_or_else(unavailable)?,
+        store.database_identity(),
+        PermanentlyCleanPrivacy {
+            prepared,
+            token,
+            admission,
+            precompute,
+        },
+    )
+    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into()))?
+}
+
+struct PermanentlyCleanPrivacy {
+    prepared: vega_store::credential_privacy::PreparedCleanup,
+    token: RedactionCommitToken,
+    admission: vega_store::thread_admission::DatabaseAdmissionPause,
+    precompute: crate::types::ContextPrecomputePause,
+}
+
+impl crate::database_writer::Sealed for PermanentlyCleanPrivacy {}
+
+impl crate::database_writer::DatabaseCommand for PermanentlyCleanPrivacy {
+    type Output = Result<(), ConversationError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate().map_err(|_| unavailable())?;
+        if !self
+            .admission
+            .verifies(store.database_identity())
+            .map_err(|_| unavailable())?
+        {
+            return Err(ConversationError::ContextCleanupPending);
+        }
+        crate::ordinary_submissions::require_database_settled(
+            store.database_identity(),
+            &self.admission,
+        )
+        .map_err(|_| ConversationError::ContextCleanupPending)?;
+        if !self
+            .precompute
+            .drain()
+            .is_finished()
+            .map_err(|error| ConversationError::Runtime(Arc::new(error)))?
+        {
+            return Err(ConversationError::ContextCleanupPending);
+        }
+        let mut transaction = store.immediate_transaction().map_err(|_| {
+            ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into())
+        })?;
+        self.token.validate(store)?;
+        self.prepared
+            .install_in_transaction(&mut transaction)
+            .map_err(|_| {
+                ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into())
+            })?;
+        self.token.validate(store)?;
+        transaction.commit().map_err(|_| {
+            ConversationError::Store(vega_i18n::t("domain.privacy.cleanup_failed").into())
+        })
+    }
 }

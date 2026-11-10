@@ -173,7 +173,12 @@ struct Request<C: DatabaseCommand> {
 
 impl<C: DatabaseCommand> WriteRequest for Request<C> {
     fn execute(self: Box<Self>, store: &Store) {
-        let Self { identity, command, reply, admission } = *self;
+        let Self {
+            identity,
+            command,
+            reply,
+            admission,
+        } = *self;
         let remaining = admission
             .as_ref()
             .map(|admission| admission.begin())

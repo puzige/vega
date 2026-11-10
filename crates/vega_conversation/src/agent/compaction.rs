@@ -853,26 +853,26 @@ async fn compact_thread_manually_owned(
         run_id: run_id.clone(),
         root_attempt_id: root_attempt_id.clone(),
     };
-    let hook = ConversationCompactionHook::new(
-        provider,
-        database_path,
-        thread_id_owned,
-        model,
-        reasoning,
-        pricing_catalog,
-    )
-    .with_thread_admission(admission)
-    .with_credential_reader(credential_reader)
-    .with_credential_exceptions(exceptions)
-    .with_diagnostics(diagnostics_context)
-    .with_summary_requirements(summary_requirements)?;
-    let hook = if let Some(selection) = selection {
-        hook.with_partial_selection(selection)
-    } else {
-        hook
-    };
-    let result = hook
-        .compact_with_replay(
+    let result = async {
+        let hook = ConversationCompactionHook::new(
+            provider,
+            database_path,
+            thread_id_owned,
+            model,
+            reasoning,
+            pricing_catalog,
+        )
+        .with_thread_admission(admission.clone())
+        .with_credential_reader(credential_reader)
+        .with_credential_exceptions(exceptions)
+        .with_diagnostics(diagnostics_context)
+        .with_summary_requirements(summary_requirements)?;
+        let hook = if let Some(selection) = selection {
+            hook.with_partial_selection(selection)
+        } else {
+            hook
+        };
+        hook.compact_with_replay(
             ContextCompactionRequest {
                 trigger: ContextCompactionTrigger::Manual,
                 system_prompt: system_prompt.to_string(),
@@ -889,7 +889,9 @@ async fn compact_thread_manually_owned(
             wire_messages[0].replay_frame().cloned(),
             cancel,
         )
-        .await;
+        .await
+    }
+    .await;
     let (state, failure_code) = match &result {
         Ok(_) => (
             vega_store::run_diagnostics::DiagnosticState::Succeeded,
@@ -919,8 +921,35 @@ async fn compact_thread_manually_owned(
         ),
         run_started_at,
     );
-    diagnostics.flush_to(store);
-    result
+    let flushed = diagnostics
+        .flush_to(store, admission, thread_id, &run_id)
+        .await;
+    finish_manual_diagnostics(result, flushed)
+}
+
+#[cfg(test)]
+#[path = "compaction_diagnostics_tests.rs"]
+mod diagnostics_tests;
+
+fn finish_manual_diagnostics(
+    result: Result<ContextCompactionResult, ContextCompactionFailure>,
+    flushed: Result<(), super::diagnostics::DiagnosticsFlushError>,
+) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+    match (result, flushed) {
+        (result, Ok(())) => result,
+        (Ok(result), Err(error)) => {
+            tracing::error!(error = %error, "manual compaction diagnostics persistence failed after compaction succeeded");
+            Err(ContextCompactionFailure::with_usages(
+                error.into_runtime_error(),
+                result.usages,
+                result.usage_complete,
+            ))
+        }
+        (Err(original), Err(error)) => {
+            tracing::error!(error = %error, "manual compaction diagnostics persistence failed; preserving original compaction failure");
+            Err(original)
+        }
+    }
 }
 
 /// Runs a manual compaction through the conversation service boundary used by

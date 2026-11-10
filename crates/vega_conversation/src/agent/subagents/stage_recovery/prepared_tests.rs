@@ -1,6 +1,5 @@
 use super::*;
 use crate::database_writer::{DatabaseCommand, Sealed};
-use rusqlite::params;
 use std::sync::mpsc;
 use std::time::Duration;
 use vega_store::context_compaction::{
@@ -35,12 +34,12 @@ impl Fixture {
         let child = ulid::Ulid::generate().to_string();
         let message = ulid::Ulid::generate().to_string();
         let project = ulid::Ulid::generate().to_string();
-        store.conn().execute("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES(?1,?2,'fixture',1,1)", params![project,root.to_string_lossy()])?;
+        store.conn().execute("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES(?1,?2,'fixture',1,1)", [project.as_str(),root.to_string_lossy().as_ref()])?;
         for id in [&parent, &child] {
-            store.conn().execute("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES(?1,?2,'model',1,1)", params![id,project])?;
+            store.conn().execute("INSERT INTO threads(id,project_id,model,created_at,updated_at) VALUES(?1,?2,'model',1,1)", [id.as_str(),project.as_str()])?;
         }
-        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES(?1,?2,1,'assistant','','streaming',1)", params![parent_message,parent])?;
-        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('instruction',?1,1,'user','Task','done',1),(?2,?1,2,'assistant','Recovered','interrupted',2)", params![child,message])?;
+        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES(?1,?2,1,'assistant','','streaming',1)", [parent_message.as_str(),parent.as_str()])?;
+        store.conn().execute("INSERT INTO messages(id,thread_id,seq,role,content,status,created_at) VALUES('instruction',?1,1,'user','Task','done',1),(?2,?1,2,'assistant','Recovered','interrupted',2)", [child.as_str(),message.as_str()])?;
         vega_store::subagents::insert(
             store.conn(),
             &vega_store::subagents::DelegationRow {
@@ -86,7 +85,7 @@ impl Fixture {
         )?;
         vega_store::subagents::finish(&tx, &child, &message, "interrupted", "Interrupted", false)?;
         stages::register(&tx, &child, &message, None, &json!([]))?;
-        tx.execute("INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,output_text,created_at) VALUES('effect',?1,?2,3,'bash','{}','cancelled','Interrupted',3),('evidence',?1,?2,4,'read','{}','success','Verified',4)", params![child,message])?;
+        tx.execute("INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,status,output_text,created_at) VALUES('effect',?1,?2,3,'bash','{}','cancelled','Interrupted',3),('evidence',?1,?2,4,'read','{}','success','Verified',4)", [child.as_str(),message.as_str()])?;
         tx.commit()?;
         let prepared = stages::PreparedStageCheckpoint::prepare(store.conn(), &child, &message)?;
         let tx = store.immediate_transaction()?;
@@ -241,13 +240,16 @@ struct TouchThread {
 
 impl Sealed for TouchThread {}
 impl DatabaseCommand for TouchThread {
-    type Output = rusqlite::Result<usize>;
+    type Output = Result<usize, String>;
 
     fn apply(self, store: &Store) -> Self::Output {
-        store.conn().execute(
-            "UPDATE threads SET updated_at=updated_at+1 WHERE id=?1",
-            [self.thread],
-        )
+        store
+            .conn()
+            .execute(
+                "UPDATE threads SET updated_at=updated_at+1 WHERE id=?1",
+                [self.thread],
+            )
+            .map_err(|error| error.to_string())
     }
 }
 

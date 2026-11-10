@@ -499,39 +499,73 @@ impl crate::database_writer::DatabaseCommand for AdmissionGate {
 
 #[test]
 fn queued_service_cancellation_prevents_execution_after_capacity_acceptance() -> TestResult {
-    use crate::database_writer::{commit, commit_with_admission, CommitCancellation, CommitError};
+    use crate::database_writer::{CommitCancellation, CommitError, commit, commit_with_admission};
     let fixture = Fixture::new()?;
     let path = fixture.root.join("fixture.db");
     let identity = fixture.store.database_identity();
     let (started, observed) = std::sync::mpsc::channel();
     let (release, gate) = std::sync::mpsc::channel();
     let held_path = path.clone();
-    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    let held = std::thread::spawn(move || {
+        commit(
+            &held_path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
     observed.recv_timeout(Duration::from_secs(2))?;
     let cancel = CancellationToken::new();
     let cancellation = cancel.clone();
     let queued_path = path.clone();
-    let pending = std::thread::spawn(move || commit_with_admission(&queued_path, identity, NecessaryInsert, CommitCancellation { token: Some(cancellation), submission: None }, Duration::from_secs(2)));
+    let pending = std::thread::spawn(move || {
+        commit_with_admission(
+            &queued_path,
+            identity,
+            NecessaryInsert,
+            CommitCancellation {
+                token: Some(cancellation),
+                submission: None,
+            },
+            Duration::from_secs(2),
+        )
+    });
     let writer = DatabaseWriter::open_blocking(path)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while writer.commands.state.lock().map_err(|_| "queue poisoned")?.commands.is_empty() {
+    while writer
+        .commands
+        .state
+        .lock()
+        .map_err(|_| "queue poisoned")?
+        .commands
+        .is_empty()
+    {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
     cancel.cancel();
-    assert!(matches!(pending.join().map_err(|_| "submit panicked")?, Err(CommitError::CancelledBeforeStart)));
+    assert!(matches!(
+        pending.join().map_err(|_| "submit panicked")?,
+        Err(CommitError::CancelledBeforeStart)
+    ));
     release.send(())?;
     held.join().map_err(|_| "gate panicked")???;
     writer.begin_close()?;
     writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
-    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'", [], |row| row.get(0))?;
+    let count: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'",
+        [],
+        |row| row.get(0),
+    )?;
     assert_eq!(count, 0);
     Ok(())
 }
 
 #[test]
 fn started_service_waits_for_real_result_despite_cancelled_caller() -> TestResult {
-    use crate::database_writer::{commit_with_admission, CommitCancellation};
+    use crate::database_writer::{CommitCancellation, commit_with_admission};
     let fixture = Fixture::new()?;
     let path = fixture.root.join("fixture.db");
     let identity = fixture.store.database_identity();
@@ -541,12 +575,27 @@ fn started_service_waits_for_real_result_despite_cancelled_caller() -> TestResul
     let (release, gate) = std::sync::mpsc::channel();
     let (completed, receipt) = std::sync::mpsc::channel();
     let pending = std::thread::spawn(move || {
-        let result = commit_with_admission(&path, identity, AdmissionGate { started, release: gate }, CommitCancellation { token: Some(cancellation), submission: None }, Duration::from_secs(2));
+        let result = commit_with_admission(
+            &path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+            CommitCancellation {
+                token: Some(cancellation),
+                submission: None,
+            },
+            Duration::from_secs(2),
+        );
         completed.send(result).unwrap();
     });
     observed.recv_timeout(Duration::from_secs(2))?;
     cancel.cancel();
-    assert!(matches!(receipt.recv_timeout(Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+    assert!(matches!(
+        receipt.recv_timeout(Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
     release.send(())?;
     receipt.recv_timeout(Duration::from_secs(2))???;
     pending.join().map_err(|_| "submit panicked")?;
@@ -555,23 +604,42 @@ fn started_service_waits_for_real_result_despite_cancelled_caller() -> TestResul
 
 #[test]
 fn queued_service_budget_expiration_does_not_execute_business_command() -> TestResult {
-    use crate::database_writer::{commit, commit_with_admission, CommitCancellation, CommitError};
+    use crate::database_writer::{CommitCancellation, CommitError, commit, commit_with_admission};
     let fixture = Fixture::new()?;
     let path = fixture.root.join("fixture.db");
     let identity = fixture.store.database_identity();
     let (started, observed) = std::sync::mpsc::channel();
     let (release, gate) = std::sync::mpsc::channel();
     let held_path = path.clone();
-    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    let held = std::thread::spawn(move || {
+        commit(
+            &held_path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
     observed.recv_timeout(Duration::from_secs(2))?;
-    let result = commit_with_admission(&path, identity, NecessaryInsert, CommitCancellation::default(), Duration::from_millis(30));
+    let result = commit_with_admission(
+        &path,
+        identity,
+        NecessaryInsert,
+        CommitCancellation::default(),
+        Duration::from_millis(30),
+    );
     assert!(matches!(result, Err(CommitError::BudgetBeforeStart)));
     release.send(())?;
     held.join().map_err(|_| "gate panicked")???;
     let writer = DatabaseWriter::open_blocking(path)?;
     writer.begin_close()?;
     writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
-    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'", [], |row| row.get(0))?;
+    let count: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'",
+        [],
+        |row| row.get(0),
+    )?;
     assert_eq!(count, 0);
     Ok(())
 }
@@ -580,15 +648,24 @@ struct BudgetedBegin;
 impl crate::database_writer::Sealed for BudgetedBegin {}
 impl crate::database_writer::DatabaseCommand for BudgetedBegin {
     type Output = (Duration, Result<(), String>);
-    fn apply(self, _: &Store) -> Self::Output { panic!("admission budget was not passed") }
+    fn apply(self, _: &Store) -> Self::Output {
+        panic!("admission budget was not passed")
+    }
     fn apply_with_admission(self, store: &Store, remaining: Duration) -> Self::Output {
         let result = (|| {
-            store.conn().busy_timeout(Duration::ZERO).map_err(|error| error.to_string())?;
+            store
+                .conn()
+                .busy_timeout(Duration::ZERO)
+                .map_err(|error| error.to_string())?;
             let tx = vega_store::write_coordination::WriteTransaction::new_with_budget(
-                store.conn(), vega_store::write_coordination::WriteCategory::RuntimeEvent,
-                || false, remaining,
-            ).map_err(|error| error.to_string())?;
-            tx.execute_batch("CREATE TABLE budget_probe(value INTEGER);").map_err(|error| error.to_string())?;
+                store.conn(),
+                vega_store::write_coordination::WriteCategory::RuntimeEvent,
+                || false,
+                remaining,
+            )
+            .map_err(|error| error.to_string())?;
+            tx.execute_batch("CREATE TABLE budget_probe(value INTEGER);")
+                .map_err(|error| error.to_string())?;
             tx.commit().map_err(|error| error.to_string())
         })();
         (remaining, result)
@@ -597,19 +674,43 @@ impl crate::database_writer::DatabaseCommand for BudgetedBegin {
 
 #[test]
 fn service_queue_wait_and_engine_busy_share_one_remaining_budget() -> TestResult {
-    use crate::database_writer::{commit, commit_with_admission, CommitCancellation};
+    use crate::database_writer::{CommitCancellation, commit, commit_with_admission};
     let fixture = Fixture::new()?;
     let path = fixture.root.join("fixture.db");
     let identity = fixture.store.database_identity();
     let (started, observed) = std::sync::mpsc::channel();
     let (release, gate) = std::sync::mpsc::channel();
     let held_path = path.clone();
-    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    let held = std::thread::spawn(move || {
+        commit(
+            &held_path,
+            identity,
+            AdmissionGate {
+                started,
+                release: gate,
+            },
+        )
+    });
     observed.recv_timeout(Duration::from_secs(2))?;
     let writer = DatabaseWriter::open_blocking(path.clone())?;
-    let pending = std::thread::spawn(move || commit_with_admission(&path, identity, BudgetedBegin, CommitCancellation::default(), Duration::from_millis(500)));
+    let pending = std::thread::spawn(move || {
+        commit_with_admission(
+            &path,
+            identity,
+            BudgetedBegin,
+            CommitCancellation::default(),
+            Duration::from_millis(500),
+        )
+    });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while writer.commands.state.lock().map_err(|_| "queue poisoned")?.commands.is_empty() {
+    while writer
+        .commands
+        .state
+        .lock()
+        .map_err(|_| "queue poisoned")?
+        .commands
+        .is_empty()
+    {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -622,7 +723,11 @@ fn service_queue_wait_and_engine_busy_share_one_remaining_budget() -> TestResult
     assert!(remaining <= Duration::from_millis(350));
     assert!(!remaining.is_zero());
     assert!(result.is_err());
-    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='budget_probe'", [], |row| row.get(0))?;
+    let count: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE name='budget_probe'",
+        [],
+        |row| row.get(0),
+    )?;
     assert_eq!(count, 0);
     Ok(())
 }
@@ -632,9 +737,13 @@ impl crate::database_writer::Sealed for NecessaryInsert {}
 impl crate::database_writer::DatabaseCommand for NecessaryInsert {
     type Output = Result<(), String>;
     fn apply(self, store: &Store) -> Self::Output {
-        let tx = store.immediate_transaction().map_err(|error| error.to_string())?;
-        tx.execute_batch("CREATE TABLE necessary_drain(value INTEGER); INSERT INTO necessary_drain VALUES(1);")
+        let tx = store
+            .immediate_transaction()
             .map_err(|error| error.to_string())?;
+        tx.execute_batch(
+            "CREATE TABLE necessary_drain(value INTEGER); INSERT INTO necessary_drain VALUES(1);",
+        )
+        .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())
     }
 }
@@ -646,7 +755,12 @@ fn reopening_after_last_producer_release_reuses_live_database_actor() -> TestRes
     let original = Arc::downgrade(&writer);
     drop(writer);
     let reopened = DatabaseWriter::open_blocking(fixture.root.join("fixture.db"))?;
-    assert!(Arc::ptr_eq(&original.upgrade().ok_or("writer disappeared before shutdown")?, &reopened));
+    assert!(Arc::ptr_eq(
+        &original
+            .upgrade()
+            .ok_or("writer disappeared before shutdown")?,
+        &reopened
+    ));
     reopened.begin_close()?;
     reopened.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
     Ok(())
@@ -660,14 +774,28 @@ async fn shutdown_waits_for_active_run_and_reserved_terminal_even_without_receip
     let terminal = writer.reserve_necessary()?;
     writer.begin_close()?;
     assert!(writer.reserve_necessary().is_err());
-    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_millis(10)).is_err());
-    actor.snapshot("accepted run settles during close".into()).await?;
+    assert!(
+        writer
+            .wait_stopped(std::time::Instant::now() + Duration::from_millis(10))
+            .is_err()
+    );
+    actor
+        .snapshot("accepted run settles during close".into())
+        .await?;
     actor.close().await?;
-    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_millis(10)).is_err());
+    assert!(
+        writer
+            .wait_stopped(std::time::Instant::now() + Duration::from_millis(10))
+            .is_err()
+    );
     let receipt = terminal.submit(fixture.store.database_identity(), NecessaryInsert)?;
     drop(receipt);
     writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
-    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
+    let count: i64 =
+        fixture
+            .store
+            .conn()
+            .query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
     assert_eq!(count, 1);
     Ok(())
 }
@@ -675,14 +803,25 @@ async fn shutdown_waits_for_active_run_and_reserved_terminal_even_without_receip
 #[test]
 fn necessary_terminal_failure_is_not_reported_as_successful_shutdown() -> TestResult {
     let fixture = Fixture::new()?;
-    fixture.store.conn().execute_batch("CREATE TABLE necessary_drain(value INTEGER);")?;
+    fixture
+        .store
+        .conn()
+        .execute_batch("CREATE TABLE necessary_drain(value INTEGER);")?;
     let writer = DatabaseWriter::open_blocking(fixture.root.join("fixture.db"))?;
     let terminal = writer.reserve_necessary()?;
     writer.begin_close()?;
     let receipt = terminal.submit(fixture.store.database_identity(), NecessaryInsert)?;
     assert!(receipt.recv_timeout(Duration::from_secs(2))?.is_err());
-    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2)).is_err());
-    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
+    assert!(
+        writer
+            .wait_stopped(std::time::Instant::now() + Duration::from_secs(2))
+            .is_err()
+    );
+    let count: i64 =
+        fixture
+            .store
+            .conn()
+            .query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
     assert_eq!(count, 0);
     Ok(())
 }

@@ -1541,7 +1541,11 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 uses_existing_user,
                 expected: credential_authority.clone(),
                 install: prepared.into_owned().map_err(runtime_store_error)?,
-                redaction_authority: redaction_authority.clone(),
+                redaction_authority: redaction_authority
+                    .as_ref()
+                    .map(|authority| authority.commit_token(&store))
+                    .transpose()
+                    .map_err(|error| ConversationError::Runtime(Arc::new(error.into())))?,
                 skill_run: skill_launch.as_ref().map(|launch| launch.run.clone()),
                 audits,
                 context_policy,

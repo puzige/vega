@@ -41,10 +41,11 @@ fn revision(conn: &Connection, thread: &str) -> rusqlite::Result<i64> {
 }
 
 fn verify_schema(conn: &Connection) -> rusqlite::Result<()> {
-    for (sql, table) in [(
-        include_str!("../../migrations/0061_preparation_revisions.sql"),
-        "preparation_revisions",
-    )] {
+    {
+        let (sql, table) = (
+            include_str!("../../migrations/0061_preparation_revisions.sql"),
+            "preparation_revisions",
+        );
         let end = sql.find(';').ok_or(rusqlite::Error::InvalidQuery)?;
         let actual: String = conn.query_row(
             "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
@@ -57,7 +58,7 @@ fn verify_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
     for sql in [
         include_str!("../../migrations/0061_preparation_revisions.sql"),
-        include_str!("../../migrations/0065_source_validation.sql"),
+        include_str!("../../migrations/0066_source_validation.sql"),
     ] {
         for section in sql.split("CREATE TRIGGER ").skip(1) {
             let name = section

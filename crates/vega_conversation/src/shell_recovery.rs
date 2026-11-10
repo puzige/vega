@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use crate::types::Thread;
 use vega_store::Store;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub struct ShellRecoveryRow {
     pub operation_id: String,
@@ -17,6 +20,10 @@ pub struct ShellRecoveryRow {
 
 #[derive(Clone, Debug)]
 pub struct ShellCommandProjection {
+    pub concurrent: bool,
+    pub cleanup_unresolved: bool,
+    pub can_cancel: bool,
+    pub can_retry: bool,
     pub operation_id: String,
     pub call_id: String,
     pub thread_id: String,
@@ -142,6 +149,21 @@ impl ShellRecoveryService {
                         _ => String::new(),
                     };
                     ShellCommandProjection {
+                        concurrent: command.concurrent,
+                        cleanup_unresolved: command.cleanup_unresolved,
+                        can_cancel: command.concurrent
+                            && command.thread_id == source.id
+                            && active
+                                .iter()
+                                .any(|item| item.operation_id == command.operation_id),
+                        can_retry: command.concurrent
+                            && command.thread_id == source.id
+                            && vega_runtime::concurrent_shell_cleanup_available(
+                                &source.id,
+                                std::path::Path::new(&workspace),
+                                &command.operation_id,
+                            )
+                            .unwrap_or(false),
                         operation_id: command.operation_id,
                         call_id: command.call_id,
                         thread_id: command.thread_id,
@@ -154,7 +176,7 @@ impl ShellRecoveryService {
                 })
                 .collect::<Vec<_>>();
         Ok(ShellRecoveryProjection {
-            active,
+            active: active.into_iter().filter(|item| !item.concurrent).collect(),
             workspace,
             epoch: recovery.epoch,
             rows: recovery
@@ -202,15 +224,67 @@ impl ShellRecoveryService {
         source: &Thread,
         operation_id: &str,
     ) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
+        let projection = self.read(source)?;
+        if projection.commands.iter().any(|command| {
+            command.operation_id == operation_id
+                && command.thread_id == source.id
+                && command.concurrent
+                && !command.can_cancel
+                && !command.can_retry
+        }) {
+            return Ok(projection);
+        }
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
         let workspace = self.workspace(&store, source)?;
-        vega_runtime::cancel_shell_session(
+        if vega_runtime::concurrent_shell_cleanup_available(
             &source.id,
             std::path::Path::new(&workspace),
             operation_id,
         )
-        .await
-        .map_err(unavailable)?;
+        .map_err(unavailable)?
+        {
+            let snapshot = vega_runtime::retry_concurrent_shell_cleanup(
+                &source.id,
+                std::path::Path::new(&workspace),
+                operation_id,
+            )
+            .await
+            .map_err(unavailable)?;
+            let facts = vega_store::shell_operations::ShellFacts {
+                command_result: snapshot.command_result,
+                exit_signal: snapshot.exit_signal,
+                cleanup_state: if snapshot.cleanup_safe {
+                    "best_effort_completed"
+                } else {
+                    "unresolved"
+                }
+                .into(),
+                output_incomplete: snapshot.output_incomplete,
+                resources_closed: snapshot.resources_closed,
+                process_resolved: snapshot.process_resolved,
+                cleanup_reasons: snapshot.cleanup_reasons,
+            };
+            commit(
+                &store,
+                CleanupObservation {
+                    operation: operation_id.into(),
+                    observation: ulid::Ulid::generate().to_string(),
+                    facts,
+                },
+            )?;
+            if snapshot.cleanup_safe {
+                reconcile_commits(&store, &workspace)?;
+                vega_runtime::release_shell_recovery(operation_id).map_err(unavailable)?;
+            }
+        } else {
+            vega_runtime::cancel_shell_session(
+                &source.id,
+                std::path::Path::new(&workspace),
+                operation_id,
+            )
+            .await
+            .map_err(unavailable)?;
+        }
         self.read(source)
     }
 
@@ -626,6 +700,7 @@ impl crate::database_writer::DatabaseCommand for ShellRecord {
             call_id: &pending.call_id,
             generation: &pending.generation,
             workspace: &pending.workspace,
+            concurrent: pending.concurrent,
             state: &pending.state,
             exit_code: pending.exit_code,
             error: pending.error.as_deref(),

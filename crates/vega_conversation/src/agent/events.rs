@@ -730,8 +730,13 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::ScreenshotDelivered { call_id, image, .. } => {
             vega_store::computer_use_delivery::insert_screenshot_in_transaction(
-                tx, thread_id, message_id, call_id, image.bytes(),
-            ).map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))?;
+                tx,
+                thread_id,
+                message_id,
+                call_id,
+                image.bytes(),
+            )
+            .map_err(|error| storage_or_audit_error(error, "ComputerScreenshot"))?;
         }
         RuntimeEvent::ToolRoundCompleted {
             response_id,

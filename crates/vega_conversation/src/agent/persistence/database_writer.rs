@@ -6,12 +6,13 @@ use vega_store::Connection;
 #[cfg(test)]
 mod tests;
 
+type NecessaryReceiver = std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>;
+
 pub(crate) struct DatabaseWriter {
     pub(super) registrations: std::sync::mpsc::SyncSender<RunRegistration>,
     commands: Arc<CommandQueue>,
     wakeup: std::sync::mpsc::SyncSender<()>,
-    necessary:
-        Arc<Mutex<Vec<std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>>>>,
+    necessary: Arc<Mutex<Vec<NecessaryReceiver>>>,
     necessary_capacity: Arc<tokio::sync::Semaphore>,
     lifecycle: Arc<WriterLifecycle>,
 }
@@ -151,28 +152,45 @@ impl DatabaseWriter {
 
     pub(super) fn register_run(&self, mut registration: RunRegistration) -> Result<(), VegaError> {
         loop {
-            let state = self.lifecycle.state.lock()
+            let state = self
+                .lifecycle
+                .state
+                .lock()
                 .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
             if state.closing || state.stopped {
                 return Err(persistence_actor_error("writer registration closed"));
             }
             match self.registrations.try_send(registration) {
-                Ok(()) => { self.wake(); return Ok(()); }
+                Ok(()) => {
+                    self.wake();
+                    return Ok(());
+                }
                 Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                     return Err(persistence_actor_error("writer registration closed"));
                 }
                 Err(std::sync::mpsc::TrySendError::Full(pending)) => registration = pending,
             }
-            let _ = self.lifecycle.changed.wait_timeout(state, Duration::from_millis(25))
+            let _ = self
+                .lifecycle
+                .changed
+                .wait_timeout(state, Duration::from_millis(25))
                 .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
         }
     }
 
     fn begin_close(&self) -> Result<(), String> {
-        let mut state = self.lifecycle.state.lock().map_err(|_| "writer lifecycle unavailable")?;
+        let mut state = self
+            .lifecycle
+            .state
+            .lock()
+            .map_err(|_| "writer lifecycle unavailable")?;
         state.closing = true;
         self.necessary_capacity.close();
-        let mut commands = self.commands.state.lock().map_err(|_| "writer queue unavailable")?;
+        let mut commands = self
+            .commands
+            .state
+            .lock()
+            .map_err(|_| "writer queue unavailable")?;
         commands.closed = true;
         self.commands.changed.notify_all();
         self.wake();
@@ -180,33 +198,56 @@ impl DatabaseWriter {
     }
 
     fn wait_stopped(&self, deadline: std::time::Instant) -> Result<(), String> {
-        let mut state = self.lifecycle.state.lock().map_err(|_| "writer lifecycle unavailable")?;
+        let mut state = self
+            .lifecycle
+            .state
+            .lock()
+            .map_err(|_| "writer lifecycle unavailable")?;
         while !state.stopped {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                return Err("database writer unsettled: active runs or necessary terminal leases remain".into());
+                return Err(
+                    "database writer unsettled: active runs or necessary terminal leases remain"
+                        .into(),
+                );
             }
-            state = self.lifecycle.changed.wait_timeout(state, remaining)
-                .map_err(|_| "writer lifecycle unavailable")?.0;
+            state = self
+                .lifecycle
+                .changed
+                .wait_timeout(state, remaining)
+                .map_err(|_| "writer lifecycle unavailable")?
+                .0;
         }
-        if !state.settled { return Err("database writer stopped without confirmed drain".into()); }
+        if !state.settled {
+            return Err("database writer stopped without confirmed drain".into());
+        }
         Ok(())
     }
 
     pub(crate) fn shutdown_all() -> Result<(), String> {
         let writers = {
-            let mut registry = WRITERS.get_or_init(Default::default).lock()
+            let mut registry = WRITERS
+                .get_or_init(Default::default)
+                .lock()
                 .map_err(|_| "writer registry unavailable")?;
             registry.closing = true;
             registry.writers.values().cloned().collect::<Vec<_>>()
         };
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        for writer in &writers { writer.begin_close()?; }
+        for writer in &writers {
+            writer.begin_close()?;
+        }
         let mut unsettled = 0;
         for writer in &writers {
-            if writer.wait_stopped(deadline).is_err() { unsettled += 1; }
+            if writer.wait_stopped(deadline).is_err() {
+                unsettled += 1;
+            }
         }
-        if unsettled != 0 { return Err(format!("{unsettled} database writers have unconfirmed settlement")); }
+        if unsettled != 0 {
+            return Err(format!(
+                "{unsettled} database writers have unconfirmed settlement"
+            ));
+        }
         Ok(())
     }
 
@@ -237,7 +278,11 @@ impl DatabaseWriter {
     pub(crate) fn reserve_necessary(
         self: &Arc<Self>,
     ) -> Result<crate::database_writer::NecessaryLease, String> {
-        let lifecycle = self.lifecycle.state.lock().map_err(|_| "writer lifecycle unavailable")?;
+        let lifecycle = self
+            .lifecycle
+            .state
+            .lock()
+            .map_err(|_| "writer lifecycle unavailable")?;
         if lifecycle.closing || lifecycle.stopped {
             return Err("necessary terminal registration closed".into());
         }
@@ -270,7 +315,10 @@ impl DatabaseWriter {
             return Err(persistence_actor_error("database writers closing"));
         }
         if let Some(writer) = registry.writers.get(&identity) {
-            let state = writer.lifecycle.state.lock()
+            let state = writer
+                .lifecycle
+                .state
+                .lock()
                 .map_err(|_| persistence_actor_error("writer lifecycle unavailable"))?;
             if state.closing || state.stopped {
                 return Err(persistence_actor_error("database writer closed"));
@@ -309,12 +357,13 @@ impl DatabaseWriter {
         registrations: std::sync::mpsc::Receiver<RunRegistration>,
         commands: Arc<CommandQueue>,
         awakened: std::sync::mpsc::Receiver<()>,
-        necessary: Arc<
-            Mutex<Vec<std::sync::mpsc::Receiver<Box<dyn crate::database_writer::WriteRequest>>>>,
-        >,
+        necessary: Arc<Mutex<Vec<NecessaryReceiver>>>,
         lifecycle: Arc<WriterLifecycle>,
     ) {
-        let mut lifetime = WriterLifetime { lifecycle: lifecycle.clone(), settled: false };
+        let mut lifetime = WriterLifetime {
+            lifecycle: lifecycle.clone(),
+            settled: false,
+        };
         let _commands_lifetime = CommandQueueLifetime(commands.clone());
         let mut runs = VecDeque::<ActiveRun>::new();
         let mut terminal_failed = false;
@@ -330,9 +379,14 @@ impl DatabaseWriter {
                 .map(|mut receivers| {
                     let mut ready = Vec::new();
                     receivers.retain(|receiver| {
-                        if !ready.is_empty() { return true; }
+                        if !ready.is_empty() {
+                            return true;
+                        }
                         match receiver.try_recv() {
-                            Ok(command) => { ready.push(command); false }
+                            Ok(command) => {
+                                ready.push(command);
+                                false
+                            }
                             Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
                             Err(std::sync::mpsc::TryRecvError::Empty) => true,
                         }
@@ -369,8 +423,15 @@ impl DatabaseWriter {
                 runs.push_back(run);
             }
             if !progressed {
-                let closing = lifecycle.state.lock().map(|state| state.closing).unwrap_or(true);
-                let no_terminals = necessary.lock().map(|receivers| receivers.is_empty()).unwrap_or(false);
+                let closing = lifecycle
+                    .state
+                    .lock()
+                    .map(|state| state.closing)
+                    .unwrap_or(true);
+                let no_terminals = necessary
+                    .lock()
+                    .map(|receivers| receivers.is_empty())
+                    .unwrap_or(false);
                 if closing && runs.is_empty() && no_terminals {
                     match registrations.try_recv() {
                         Ok(run) => {
@@ -378,7 +439,10 @@ impl DatabaseWriter {
                             Self::register(&store, run, &mut runs);
                             continue;
                         }
-                        Err(std::sync::mpsc::TryRecvError::Empty | std::sync::mpsc::TryRecvError::Disconnected) => {}
+                        Err(
+                            std::sync::mpsc::TryRecvError::Empty
+                            | std::sync::mpsc::TryRecvError::Disconnected,
+                        ) => {}
                     }
                     if let Some(command) = commands.pop() {
                         command.execute(&store);
@@ -387,7 +451,9 @@ impl DatabaseWriter {
                     lifetime.settled = !terminal_failed;
                     break;
                 }
-                if awakened.recv().is_err() { break; }
+                if awakened.recv().is_err() {
+                    break;
+                }
             }
         }
     }

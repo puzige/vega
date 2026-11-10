@@ -8,6 +8,7 @@ pub struct ShellOperationRecord<'a> {
     pub call_id: &'a str,
     pub generation: &'a str,
     pub workspace: &'a str,
+    pub concurrent: bool,
     pub state: &'a str,
     pub exit_code: Option<i32>,
     pub error: Option<&'a str>,
@@ -90,9 +91,11 @@ fn record_content(
     record: &ShellOperationRecord<'_>,
     facts: &ShellFacts,
 ) -> rusqlite::Result<String> {
-    json(
-        &serde_json::json!({"operation_id":record.operation_id,"thread_id":record.thread_id,"run_id":record.run_id,"call_id":record.call_id,"generation":record.generation,"workspace":record.workspace,"state":record.state,"exit_code":record.exit_code,"error":record.error,"duration_ms":record.duration_ms,"facts":facts}),
-    )
+    let mut content = serde_json::json!({"operation_id":record.operation_id,"thread_id":record.thread_id,"run_id":record.run_id,"call_id":record.call_id,"generation":record.generation,"workspace":record.workspace,"state":record.state,"exit_code":record.exit_code,"error":record.error,"duration_ms":record.duration_ms,"facts":facts});
+    if record.concurrent {
+        content["concurrent"] = true.into();
+    }
+    json(&content)
 }
 
 pub fn record(
@@ -150,6 +153,14 @@ pub fn record_with_facts(
     )?;
     let prior: Option<(String,String,String,String,String,String)> = tx.query_row("SELECT thread_id,run_id,call_id,generation,workspace,state FROM shell_operations WHERE operation_id=?1",[record.operation_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?;
     if let Some((thread, run, call, generation, workspace, state)) = prior {
+        let concurrent: bool = tx.query_row(
+            "SELECT concurrent FROM shell_operations WHERE operation_id=?1",
+            [record.operation_id],
+            |row| row.get(0),
+        )?;
+        if concurrent != record.concurrent {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         if (
             thread.as_str(),
             run.as_str(),
@@ -202,7 +213,7 @@ pub fn record_with_facts(
         {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        let inserted = tx.execute("INSERT INTO shell_operations(operation_id,thread_id,run_id,call_id,generation,workspace,state,created_at,updated_at) SELECT ?1,?2,?3,?4,?5,?6,'prepared',?7,?7 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND thread_id=?2 AND role='assistant' AND status='streaming') AND EXISTS(SELECT 1 FROM tool_calls WHERE id=?4 AND thread_id=?2 AND message_id=?3 AND tool='bash' AND status='running')",params![record.operation_id,record.thread_id,record.run_id,record.call_id,record.generation,record.workspace,now])?;
+        let inserted = tx.execute("INSERT INTO shell_operations(operation_id,thread_id,run_id,call_id,generation,workspace,state,created_at,updated_at,concurrent) SELECT ?1,?2,?3,?4,?5,?6,'prepared',?7,?7,?8 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND thread_id=?2 AND role='assistant' AND status='streaming') AND EXISTS(SELECT 1 FROM tool_calls WHERE id=?4 AND thread_id=?2 AND message_id=?3 AND tool='bash' AND status='running')",params![record.operation_id,record.thread_id,record.run_id,record.call_id,record.generation,record.workspace,now,record.concurrent])?;
         if inserted != 1 {
             return Err(rusqlite::Error::InvalidQuery);
         }
@@ -215,13 +226,17 @@ pub fn record_with_facts(
     tx.execute("UPDATE shell_operations SET state=?2,exit_code=?3,error=?4,duration_ms=?5,command_result=?6,exit_signal=?7,cleanup_state=?8,output_incomplete=?9,resources_closed=?10,process_resolved=?11,cleanup_reasons=?12,updated_at=?13 WHERE operation_id=?1",params![record.operation_id,record.state,record.exit_code,record.error,duration,facts.command_result,facts.exit_signal,facts.cleanup_state,facts.output_incomplete,facts.resources_closed,facts.process_resolved,json(&facts.cleanup_reasons)?,now])?;
     if terminal(record.state) {
         let before = epoch(&tx, record.workspace)?;
-        let after = advance(&tx, record.workspace)?;
+        let after = if record.concurrent {
+            before
+        } else {
+            advance(&tx, record.workspace)?
+        };
         if facts.cleanup_state == "best_effort_completed" {
             tx.execute(
                 "DELETE FROM shell_blockers WHERE operation_id=?1",
                 [record.operation_id],
             )?;
-        } else {
+        } else if !record.concurrent {
             tx.execute("INSERT INTO shell_blockers(operation_id,workspace,epoch,reason,created_at) VALUES(?1,?2,?3,?4,?5)",params![record.operation_id,record.workspace,after,record.error.unwrap_or("cleanup_unresolved"),now])?;
         }
         tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'automatic',?6,?7)",params![disposition,record.workspace,json(&[record.operation_id])?,before,after,content,now])?;
@@ -288,6 +303,8 @@ pub fn list_blockers(conn: &Connection) -> rusqlite::Result<Vec<ShellRecoveryIte
 }
 
 pub struct ShellCommandPresentation {
+    pub concurrent: bool,
+    pub cleanup_unresolved: bool,
     pub operation_id: String,
     pub call_id: String,
     pub thread_id: String,
@@ -302,11 +319,13 @@ pub fn command_presentations(
     conn: &Connection,
     workspace: &str,
 ) -> rusqlite::Result<Vec<ShellCommandPresentation>> {
-    let mut statement = conn.prepare("SELECT o.workspace,o.operation_id,o.call_id,o.thread_id,t.input_json,o.state,o.exit_code,o.duration_ms,o.output_incomplete FROM shell_operations o JOIN tool_calls t ON t.id=o.call_id AND t.thread_id=o.thread_id ORDER BY o.created_at,o.operation_id")?;
+    let mut statement = conn.prepare("SELECT o.workspace,o.operation_id,o.call_id,o.thread_id,t.input_json,o.state,o.exit_code,o.duration_ms,o.output_incomplete,o.concurrent,o.cleanup_state FROM shell_operations o JOIN tool_calls t ON t.id=o.call_id AND t.thread_id=o.thread_id ORDER BY o.created_at,o.operation_id")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             ShellCommandPresentation {
+                concurrent: row.get(9)?,
+                cleanup_unresolved: row.get::<_, String>(10)? == "unresolved",
                 operation_id: row.get(1)?,
                 call_id: row.get(2)?,
                 thread_id: row.get(3)?,
@@ -325,8 +344,15 @@ pub fn command_presentations(
     })?;
     let mut commands = Vec::new();
     for row in rows {
-        let (path, command) = row?;
+        let (path, mut command) = row?;
         if overlap(&path, workspace) {
+            let latest: Option<String> = conn.query_row("SELECT facts FROM shell_cleanup_observations WHERE operation_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT 1", [&command.operation_id], |row| row.get(0)).optional()?;
+            if let Some(latest) = latest {
+                let facts: ShellFacts =
+                    serde_json::from_str(&latest).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                command.output_incomplete |= facts.output_incomplete;
+                command.cleanup_unresolved = facts.cleanup_state == "unresolved";
+            }
             commands.push(command);
         }
     }
@@ -373,15 +399,21 @@ fn recover_where(
     value: &str,
     now: i64,
 ) -> rusqlite::Result<usize> {
-    let pending: Vec<(String, String)> = {
-        let mut stmt = tx.prepare(&format!("SELECT operation_id,workspace FROM shell_operations WHERE {predicate} AND state IN ('prepared','running','finishing','stopping')"))?;
-        stmt.query_map([value], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let pending: Vec<(String, String, bool)> = {
+        let mut stmt = tx.prepare(&format!("SELECT operation_id,workspace,concurrent FROM shell_operations WHERE {predicate} AND state IN ('prepared','running','finishing','stopping')"))?;
+        stmt.query_map([value], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (operation, workspace) in &pending {
-        let next = advance(tx, workspace)?;
+    for (operation, workspace, concurrent) in &pending {
+        let next = if *concurrent {
+            epoch(tx, workspace)?
+        } else {
+            advance(tx, workspace)?
+        };
         tx.execute("UPDATE shell_operations SET state='outcome_unknown',command_result='outcome_unknown',cleanup_state='unresolved',cleanup_reasons='[\"control_continuity_lost\"]',error='session_expired',updated_at=?2 WHERE operation_id=?1",params![operation,now])?;
-        tx.execute("INSERT INTO shell_blockers(operation_id,workspace,epoch,reason,created_at) VALUES(?1,?2,?3,'session_expired',?4)",params![operation,workspace,next,now])?;
+        if !concurrent {
+            tx.execute("INSERT INTO shell_blockers(operation_id,workspace,epoch,reason,created_at) VALUES(?1,?2,?3,'session_expired',?4)",params![operation,workspace,next,now])?;
+        }
     }
     Ok(pending.len())
 }
@@ -469,11 +501,20 @@ pub fn append_cleanup_observation(
         };
     }
     let workspace: String = tx.query_row(
-        "SELECT workspace FROM shell_blockers WHERE operation_id=?1",
+        "SELECT workspace FROM shell_operations WHERE operation_id=?1 AND (concurrent=1 OR EXISTS(SELECT 1 FROM shell_blockers b WHERE b.operation_id=shell_operations.operation_id))",
         [operation],
         |row| row.get(0),
     )?;
-    let next = advance(&tx, &workspace)?;
+    let concurrent: bool = tx.query_row(
+        "SELECT concurrent FROM shell_operations WHERE operation_id=?1",
+        [operation],
+        |row| row.get(0),
+    )?;
+    let next = if concurrent {
+        epoch(&tx, &workspace)?
+    } else {
+        advance(&tx, &workspace)?
+    };
     tx.execute("INSERT INTO shell_cleanup_observations(observation_id,operation_id,workspace,epoch,facts,created_at) VALUES(?1,?2,?3,?4,?5,?6)",params![observation,operation,workspace,next,content,now])?;
     if facts.cleanup_state == "best_effort_completed"
         && facts.resources_closed
@@ -561,10 +602,10 @@ pub fn resume_writes_in_transaction(
             Err(rusqlite::Error::InvalidQuery)
         };
     }
-    if &recovery_epoch(&tx, workspace)? != expected_epoch {
+    if &recovery_epoch(tx, workspace)? != expected_epoch {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    let current = recovery(&tx, workspace)?;
+    let current = recovery(tx, workspace)?;
     for operation in &selected {
         let item = current
             .items
@@ -601,9 +642,9 @@ pub fn resume_writes_in_transaction(
         }
     }
     for path in affected {
-        advance(&tx, &path)?;
+        advance(tx, &path)?;
     }
-    let next = recovery_epoch(&tx, workspace)?;
+    let next = recovery_epoch(tx, workspace)?;
     tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch.epoch,next.epoch,content,now])?;
     Ok(())
 }

@@ -40,36 +40,38 @@ pub(crate) fn install_context_precompute_shutdown(cx: &mut App) {
     cx.set_global(AppContextPrecompute);
     cx.on_app_quit(move |cx| {
         cx.background_executor().spawn(async move {
-        let result = ContextPrecomputeRegistry::global()
-            .close()
-            .and_then(|drain| drain.wait_blocking());
-        if result.is_err() {
-            tracing::error!("context precompute shutdown could not confirm settlement");
-        }
-        let shell_cleanup = std::thread::spawn(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
-            match runtime {
-                Ok(runtime) => runtime
-                    .block_on(vega_runtime::shutdown_shell_sessions())
-                    .map_err(|_| ()),
-                Err(_) => Err(()),
+            let result = ContextPrecomputeRegistry::global()
+                .close()
+                .and_then(|drain| drain.wait_blocking());
+            if result.is_err() {
+                tracing::error!("context precompute shutdown could not confirm settlement");
             }
-        })
-        .join();
-        if !matches!(shell_cleanup, Ok(Ok(()))) {
-            tracing::error!("shell session shutdown could not confirm settlement");
-        }
-        if let Err(error) = vega_conversation::submission_diagnostics::shutdown_background_writes() {
-            tracing::error!(%error, "background write shutdown could not confirm settlement");
-        }
-        if let Err(error) = vega_conversation::shutdown_database_writers() {
-            tracing::error!(%error, "database writer shutdown could not confirm settlement");
-        }
-        if let Err(error) = vega_store::persistence_failures::shutdown() {
-            tracing::error!(%error, "failure sidecar shutdown could not confirm settlement");
-        }
+            let shell_cleanup = std::thread::spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match runtime {
+                    Ok(runtime) => runtime
+                        .block_on(vega_runtime::shutdown_shell_sessions())
+                        .map_err(|_| ()),
+                    Err(_) => Err(()),
+                }
+            })
+            .join();
+            if !matches!(shell_cleanup, Ok(Ok(()))) {
+                tracing::error!("shell session shutdown could not confirm settlement");
+            }
+            if let Err(error) =
+                vega_conversation::submission_diagnostics::shutdown_background_writes()
+            {
+                tracing::error!(%error, "background write shutdown could not confirm settlement");
+            }
+            if let Err(error) = vega_conversation::shutdown_database_writers() {
+                tracing::error!(%error, "database writer shutdown could not confirm settlement");
+            }
+            if let Err(error) = vega_store::persistence_failures::shutdown() {
+                tracing::error!(%error, "failure sidecar shutdown could not confirm settlement");
+            }
         })
     })
     .detach();

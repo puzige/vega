@@ -1,5 +1,7 @@
 # Delegation / background writer migration
 
+> 当前整合状态见文末。下方各 stage 的 current/未完成/NOT RUN、0065 编号和 hash 均为当时的历史记录，不代表当前注册号或最终源码验证；不批量改写历史。
+
 ## Prior stage contract and frozen scope (historical)
 
 The statements in this section and the former gap/verification sections describe the preceding stage, not the newly authorized store implementation below.
@@ -233,3 +235,26 @@ Unchanged entries retain their preceding hashes except `source_version.rs`, whos
 | `crates/vega_conversation/src/agent/compaction/precompute.rs` | `2d50695b75c6f6e8249fc6c072dba4fbc7ec20834a6aaddfcd4e3b1be060c3bd` |
 
 Stop writing after final static/identity verification; hand back the scope for central execution and development-test cleanup. Implemented tests are not executed results, and this is not the final whole-repository merge.
+
+## 当前整合状态（文档整合，非全卡独审）
+
+本次基线由主会话提供：HEAD `7c3ee7c97db83fbec4ce099313661f9cb7325cb3` + 未提交整合，MERGE_HEAD `2a29adf9b2ea78eaf59d591838531b45adc7373e`；本轮 fetch 已由主会话完成，origin/master 与该上游相同。本次只核对已接收工作的相关源码并写授权文档，不执行 Cargo/Git，不改 Rust、migration 或用户库；未重新调查其他迁移或 compaction 诊断。
+
+### 正式迁移与来源协议
+
+- 正式来源迁移已为 **`crates/vega_store/migrations/0066_source_validation.sql`**。`vega_store/src/lib.rs` 的 migration registry 依序注册 0064 receipts、0065 configuration intents、0066 source validation；`context_compaction/source_version.rs::verify_schema` include 正式 0061 + **0066**。因此上方“等待注册 0065／include docs SQL／正式 0065”均为历史阶段，不是当前待办。
+- `docs/919/0065_source_validation.sql` 保留为历史 draft；本次只读核对它与正式 0066 的 SHA-256 同为 `3534ae18be93bb634286e06ad168f4e189f90f2a9d50dc21a5d78105dfba760a`。字节相同不赋予 draft 当前注册号，不改旧证据编号。
+- `SourceFence::capture/validate` 仍比较数据库身份、schema、单线程 monotonic revision，并逐个比较 preparation_revisions 表和正式触发器 SQL；不是 maxseq、data_version 或仅 schema cookie 的替代校验。该检查不加载历史投影；数据库身份 metadata 与 SQL I/O 仍存在，不能称整个验证严格有耗时上界。
+- 已核对 online 接线保留：`agent/subagents/stage_recovery.rs` 的 `PreparedStageCheckpoint`、`agent/subagents/writer.rs` 的 `PreparedTerminal/PreparedSourceVersion`、`agent/compaction/writer.rs` 的 prepared install/`ConsumptionCommit`/`PreparedMicro` 和 `agent/compaction/precompute/writer.rs` 的 `PreparedPublication`。来源/投影准备与最终 fence 安装分离，不将原先“待 owned source 协议”继续列为未实现；未据此宣称所有 owner/registry/恢复变体已完全验收。
+
+### 跨模块当前边界
+
+privacy prepared cleanup 和无回调 `RedactionCommitToken` 已接线，pending 提交端已用 SQL-only `capture_fence_for_commit`；automation draft 使用只含 owned 字段的 `DraftCreationGuard` + durable intent，配置文件检查/锁在 actor 外，materialize 在 SQL 内复核 epoch/generation/source。预测、MCP reconciliation 与提交诊断共用 2-worker／1024 queued-job 有界后台池；已接受 job 的失败/panic 计入 drain 错误，接受前容量/关闭拒绝有真实反馈，不能把“未接受”冒充已保存。app 后台退出先排空协调池，再关闭 database actors 和 sidecar。细节见 [auxiliary.md](auxiliary.md#当前整合状态源码核对非独审最终验收)。
+
+Skill/credential 来源末检仍在 actor 的 permission lock 和 SQL 写事务内同步执行路径 open/解析及 metadata；这里的路径解析不是文件 body 解析，不读 body、不取得文件锁，但没有耗时保证。数据库自身 I/O／物理身份安全检查保留。本卡承诺是暂停慢锁外准备时父/两子继续提交，不是任意慢盘无阻塞；旧文“file/credentials work remains outside commands”不得被用来隐藏这些末检。更强文字与现状的冲突交主会话确认，不在本次更改验收，见 [preparation.md](preparation.md#来源末检与慢文件系统边界)。
+
+### 中央验证报告与未决门禁
+
+主会话本次报告中央 conversation **78/78**、store **27/27**、app **7/7** 通过，含 privacy/pending/diagnostics；store **14** 项 lint 已修且编译通过，conversation **9 项生产 + 1 项 test lint** 修复中。这是中央报告，不是本文档整合者重跑／独立复验；精确命令、工具链、日志和源码版本归主会话维护的 `validation.md`。此前“19 项未执行”等记录仅属于相应阶段，不据历史 hash 推断当前覆盖，也不由总数推断每条旧建议已执行。
+
+Clippy、最终冻结审查、CI 均待完成。任务相关 stale/source/authority、原子回滚、必要终态/drain 和锁外准备可推进回归仍按最终源码与日志核对，完整来源触发器及文件/数据库身份替换拒绝不能删除。开发 Rust 测试固定源码/结果并在合并前清理、最终 head required CI、独立审查、用户手测仍是分立要求；当前不宣称完整全卡验收或可合并。

@@ -505,23 +505,21 @@ impl crate::database_writer::DatabaseCommand for PrepareSubmissionPermission {
             (true, None, _) => None,
             _ => return Err(ConversationError::InvalidTaskIdentity),
         };
-        if created.is_none() && accepted.is_none() {
-            if let Some(pending) = vega_store::threads::pending_model(&transaction, &expected.id)
+        if created.is_none()
+            && accepted.is_none()
+            && let Some(pending) = vega_store::threads::pending_model(&transaction, &expected.id)
                 .map_err(storage_error)?
-            {
-                if pending != submission.raw().model()
-                    || vega_store::threads::promote_pending_model(
-                        &transaction,
-                        &expected.id,
-                        &pending,
-                        crate::threads::now_ms(),
-                    )
-                    .map_err(storage_error)?
-                        != 1
-                {
-                    return Err(ConversationError::InvalidTaskIdentity);
-                }
-            }
+            && (pending != submission.raw().model()
+                || vega_store::threads::promote_pending_model(
+                    &transaction,
+                    &expected.id,
+                    &pending,
+                    crate::threads::now_ms(),
+                )
+                .map_err(storage_error)?
+                    != 1)
+        {
+            return Err(ConversationError::InvalidTaskIdentity);
         }
         let row = vega_store::threads::open_thread_in_transaction(
             &transaction,
@@ -549,18 +547,18 @@ impl crate::database_writer::DatabaseCommand for PrepareSubmissionPermission {
         {
             return Err(ConversationError::InvalidTaskIdentity);
         }
-        if created.is_some() && thread.title.is_empty() {
-            if !fallback.is_empty()
-                && vega_store::threads::seed_auto_title(
-                    &transaction,
-                    &thread.id,
-                    submission.user_message_id(),
-                    &fallback,
-                )
-                .map_err(storage_error)?
-            {
-                thread.title = fallback;
-            }
+        if created.is_some()
+            && thread.title.is_empty()
+            && !fallback.is_empty()
+            && vega_store::threads::seed_auto_title(
+                &transaction,
+                &thread.id,
+                submission.user_message_id(),
+                &fallback,
+            )
+            .map_err(storage_error)?
+        {
+            thread.title = fallback;
         }
         let pending = worker
             .stage_permission_fence(fence)

@@ -52,10 +52,10 @@ fn lost_message_receipt_commits_once_and_stale_source_does_not_replay()
             additional_directories: Vec::new(),
         },
     };
+    let startup = crate::codex_tasks::prepare_codex_startup(&path, draft, snapshot)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as i64;
-    let startup = crate::codex_tasks::prepare_codex_startup(&path, draft, snapshot)?;
     startup.persistence.session_outcome(
         CodexSessionOutcome::Confirmed {
             session_id: "session".into(),
@@ -69,7 +69,7 @@ fn lost_message_receipt_commits_once_and_stale_source_does_not_replay()
             prompt: "question".into(),
             user_id: "user".into(),
             assistant_id: "assistant".into(),
-            now: now,
+            now,
         },
     };
     let (reply, lost_receipt) = std::sync::mpsc::sync_channel(1);

@@ -35,7 +35,7 @@ pub fn record(
     ) {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    let result = (|| -> rusqlite::Result<()> {
+    (|| -> rusqlite::Result<()> {
         let _permit = crate::write_coordination::acquire(
             conn,
             crate::write_coordination::WriteCategory::Diagnostics,
@@ -48,6 +48,5 @@ pub fn record(
             params![thread_id, completed_message_id, event, attempt, occurred_at],
         )?;
         Ok(())
-    })();
-    result
+    })()
 }

@@ -394,34 +394,45 @@ struct Recorder {
 static RECORDER: OnceLock<Result<Arc<Recorder>, DiagnosticFault>> = OnceLock::new();
 
 fn queue_fault(io_kind: &'static str) -> DiagnosticFault {
-    DiagnosticFault { stage: FailureStage::QueueAdmission, io_kind, os_code: None }
+    DiagnosticFault {
+        stage: FailureStage::QueueAdmission,
+        io_kind,
+        os_code: None,
+    }
 }
 
 impl Recorder {
     fn start() -> Result<Arc<Self>, DiagnosticFault> {
         let (sender, receiver) = mpsc::sync_channel::<QueuedFailure>(CAPACITY);
         let recorder = Arc::new(Self {
-            state: Mutex::new(RecorderState { sender: Some(sender), pending: 0, failed: 0 }),
+            state: Mutex::new(RecorderState {
+                sender: Some(sender),
+                pending: 0,
+                failed: 0,
+            }),
             settled: Condvar::new(),
         });
         let worker = recorder.clone();
-        at(FailureStage::QueueAdmission, std::thread::Builder::new()
-            .name("vega-failure-recorder".into())
-            .spawn(move || {
-                while let Ok(queued) = receiver.recv() {
-                    let result = record_inner(&queued.path, queued.database, &queued.failure);
-                    if let Err(fault) = result {
-                        retain_failure(queued.database, fault, queued.failure);
-                        tracing::warn!(stage = ?fault.stage, io_kind = fault.io_kind,
+        at(
+            FailureStage::QueueAdmission,
+            std::thread::Builder::new()
+                .name("vega-failure-recorder".into())
+                .spawn(move || {
+                    while let Ok(queued) = receiver.recv() {
+                        let result = record_inner(&queued.path, queued.database, &queued.failure);
+                        if let Err(fault) = result {
+                            retain_failure(queued.database, fault, queued.failure);
+                            tracing::warn!(stage = ?fault.stage, io_kind = fault.io_kind,
                             os_code = fault.os_code, outcome = "failure_diagnostic_unavailable");
+                        }
+                        if let Ok(mut state) = worker.state.lock() {
+                            state.pending -= 1;
+                            state.failed += usize::from(result.is_err());
+                            worker.settled.notify_all();
+                        }
                     }
-                    if let Ok(mut state) = worker.state.lock() {
-                        state.pending -= 1;
-                        state.failed += usize::from(result.is_err());
-                        worker.settled.notify_all();
-                    }
-                }
-            }))?;
+                }),
+        )?;
         Ok(recorder)
     }
 
@@ -441,13 +452,17 @@ impl Recorder {
             return Err(fault);
         };
         match sender.try_send(queued) {
-            Ok(()) => { state.pending += 1; Ok(()) }
+            Ok(()) => {
+                state.pending += 1;
+                Ok(())
+            }
             Err(error) => {
                 let fault = queue_fault(match &error {
                     mpsc::TrySendError::Full(_) => "would_block",
                     mpsc::TrySendError::Disconnected(_) => "broken_pipe",
                 });
-                let (mpsc::TrySendError::Full(queued) | mpsc::TrySendError::Disconnected(queued)) = error;
+                let (mpsc::TrySendError::Full(queued) | mpsc::TrySendError::Disconnected(queued)) =
+                    error;
                 retain_failure(database, fault, queued.failure);
                 Err(fault)
             }
@@ -455,26 +470,42 @@ impl Recorder {
     }
 
     fn shutdown(&self, timeout: Duration) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|_| "failure recorder unavailable")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "failure recorder unavailable")?;
         state.sender.take();
         let deadline = Instant::now() + timeout;
         while state.pending != 0 {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(format!("failure sidecar unsettled: {} pending", state.pending));
+                return Err(format!(
+                    "failure sidecar unsettled: {} pending",
+                    state.pending
+                ));
             }
-            state = self.settled.wait_timeout(state, remaining)
-                .map_err(|_| "failure recorder unavailable")?.0;
+            state = self
+                .settled
+                .wait_timeout(state, remaining)
+                .map_err(|_| "failure recorder unavailable")?
+                .0;
         }
         if state.failed != 0 {
-            return Err(format!("{} failure sidecar records not persisted", state.failed));
+            return Err(format!(
+                "{} failure sidecar records not persisted",
+                state.failed
+            ));
         }
         Ok(())
     }
 }
 
 pub fn shutdown() -> Result<(), String> {
-    RECORDER.get_or_init(Recorder::start).as_ref().map_err(ToString::to_string)?.shutdown(Duration::from_secs(15))
+    RECORDER
+        .get_or_init(Recorder::start)
+        .as_ref()
+        .map_err(ToString::to_string)?
+        .shutdown(Duration::from_secs(15))
 }
 
 fn retain_failure(
@@ -663,7 +694,8 @@ mod tests {
     #[test]
     fn recorder_shutdown_reports_pending_then_drains_and_rejects_new_records()
     -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::env::temp_dir().join(format!("vega-sidecar-drain-{}", ulid::Ulid::generate()));
+        let root =
+            std::env::temp_dir().join(format!("vega-sidecar-drain-{}", ulid::Ulid::generate()));
         std::fs::create_dir(&root)?;
         std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         let path = root.join("database.db");
@@ -681,12 +713,34 @@ mod tests {
         };
         let recorder = Recorder::start()?;
         let guard = FILE_ACCESS.lock().map_err(|_| invalid())?;
-        recorder.enqueue(QueuedFailure { path: path.clone(), database: store.database_identity(), failure: failure.clone() })?;
-        assert!(recorder.shutdown(Duration::from_millis(10)).unwrap_err().contains("pending"));
-        assert_eq!(recorder.enqueue(QueuedFailure { path, database: store.database_identity(), failure: failure.clone() }).unwrap_err().io_kind, "closed");
+        recorder.enqueue(QueuedFailure {
+            path: path.clone(),
+            database: store.database_identity(),
+            failure: failure.clone(),
+        })?;
+        assert!(
+            recorder
+                .shutdown(Duration::from_millis(10))
+                .unwrap_err()
+                .contains("pending")
+        );
+        assert_eq!(
+            recorder
+                .enqueue(QueuedFailure {
+                    path,
+                    database: store.database_identity(),
+                    failure: failure.clone()
+                })
+                .unwrap_err()
+                .io_kind,
+            "closed"
+        );
         drop(guard);
         recorder.shutdown(Duration::from_secs(2))?;
-        assert_eq!(read_by_run(store.conn(), &failure.thread_id, &failure.run_id)?.len(), 1);
+        assert_eq!(
+            read_by_run(store.conn(), &failure.thread_id, &failure.run_id)?.len(),
+            1
+        );
         drop(store);
         std::fs::remove_dir_all(root)?;
         Ok(())

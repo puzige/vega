@@ -13,6 +13,70 @@ use vega_store::run_diagnostics::{
 
 const DIAGNOSTIC_CHANNEL_CAPACITY: usize = 64;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DiagnosticsFlushError {
+    #[error("diagnostics buffer unavailable")]
+    BufferUnavailable,
+    #[error("diagnostics thread/run ownership changed")]
+    OwnershipChanged,
+    #[error("diagnostics database path unavailable")]
+    DatabaseUnavailable,
+    #[error("diagnostics commit failed: {0}")]
+    Commit(String),
+    #[error("diagnostics worker failed: {0}")]
+    Worker(tokio::task::JoinError),
+    #[error(transparent)]
+    Diagnostic(#[from] vega_store::run_diagnostics::DiagnosticError),
+}
+
+impl DiagnosticsFlushError {
+    pub(crate) fn into_runtime_error(self) -> vega_runtime::VegaError {
+        match self {
+            Self::Diagnostic(vega_store::run_diagnostics::DiagnosticError::Sql(error)) => {
+                vega_runtime::VegaError::Store(error)
+            }
+            error => vega_runtime::VegaError::Io(std::io::Error::other(error)),
+        }
+    }
+}
+
+pub(crate) struct RecordDiagnostics {
+    pub(crate) admission: vega_store::thread_admission::ThreadAdmission,
+    pub(crate) thread_id: String,
+    pub(crate) run_id: String,
+    pub(crate) events: Vec<NewDiagnosticEvent>,
+}
+
+impl crate::database_writer::Sealed for RecordDiagnostics {}
+
+impl crate::database_writer::DatabaseCommand for RecordDiagnostics {
+    type Output = Result<(), DiagnosticsFlushError>;
+
+    fn apply(self, store: &vega_store::Store) -> Self::Output {
+        crate::thread_access::verify(store, &self.thread_id, &self.admission)
+            .map_err(|_| DiagnosticsFlushError::OwnershipChanged)?;
+        if self
+            .events
+            .iter()
+            .any(|event| event.thread_id != self.thread_id || event.run_id != self.run_id)
+        {
+            return Err(DiagnosticsFlushError::OwnershipChanged);
+        }
+        let transaction = vega_store::write_coordination::WriteTransaction::new(
+            store.conn(),
+            vega_store::write_coordination::WriteCategory::Diagnostics,
+        )
+        .map_err(vega_store::run_diagnostics::DiagnosticError::from)?;
+        for event in self.events {
+            vega_store::run_diagnostics::insert(&transaction, &event)?;
+        }
+        transaction
+            .commit()
+            .map_err(vega_store::run_diagnostics::DiagnosticError::from)?;
+        Ok(())
+    }
+}
+
 enum DiagnosticsSink {
     Persistence(super::persistence::PersistenceSender),
     Buffered(VecDeque<NewDiagnosticEvent>),
@@ -122,13 +186,48 @@ impl DiagnosticsWriter {
         }
     }
 
-    pub(crate) fn flush_to(&self, store: &vega_store::Store) {
-        let sink = self.sender.lock().ok().and_then(|mut sender| sender.take());
-        if let Some(DiagnosticsSink::Buffered(mut events)) = sink {
-            while let Some(event) = events.pop_front() {
-                let _ = vega_store::run_diagnostics::insert(store.conn(), &event);
+    fn take_buffered_events(&self) -> Result<Vec<NewDiagnosticEvent>, DiagnosticsFlushError> {
+        let sink = {
+            let mut sender = self
+                .sender
+                .lock()
+                .map_err(|_| DiagnosticsFlushError::BufferUnavailable)?;
+            if !matches!(sender.as_ref(), Some(DiagnosticsSink::Buffered(_))) {
+                return Err(DiagnosticsFlushError::BufferUnavailable);
             }
+            sender.take()
+        };
+        match sink {
+            Some(DiagnosticsSink::Buffered(events)) => Ok(events.into_iter().collect()),
+            _ => Err(DiagnosticsFlushError::BufferUnavailable),
         }
+    }
+
+    pub(crate) async fn flush_to(
+        &self,
+        store: &vega_store::Store,
+        admission: vega_store::thread_admission::ThreadAdmission,
+        thread_id: &str,
+        run_id: &str,
+    ) -> Result<(), DiagnosticsFlushError> {
+        let events = self.take_buffered_events()?;
+        let path = store
+            .database_path()
+            .ok_or(DiagnosticsFlushError::DatabaseUnavailable)?
+            .to_path_buf();
+        let identity = store.database_identity();
+        let command = RecordDiagnostics {
+            admission,
+            thread_id: thread_id.to_owned(),
+            run_id: run_id.to_owned(),
+            events,
+        };
+        tokio::task::spawn_blocking(move || {
+            crate::database_writer::commit(&path, identity, command)
+                .map_err(DiagnosticsFlushError::Commit)?
+        })
+        .await
+        .map_err(DiagnosticsFlushError::Worker)?
     }
 
     pub(crate) fn take_background_compaction_events(
@@ -502,6 +601,10 @@ pub(crate) fn safe_tool_call_id(value: &str) -> Option<&str> {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)))
     .then_some(value)
 }
+
+#[cfg(test)]
+#[path = "diagnostics_tests.rs"]
+mod tests;
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()

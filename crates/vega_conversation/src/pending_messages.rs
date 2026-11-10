@@ -291,6 +291,19 @@ pub(crate) fn require_authority(
     Ok(saved.clone())
 }
 
+fn require_authority_for_commit(
+    store: &Store,
+    message: &PendingMessage,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    let fence = message
+        .permission_fence
+        .as_ref()
+        .filter(|fence| fence.is_valid() && fence.thread_id == message.thread_id)
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    verify_commit_fence(store, &message.thread_id, fence)?;
+    Ok(fence.clone())
+}
+
 pub fn validate_authority(
     store: &Store,
     message: &PendingMessage,
@@ -342,7 +355,7 @@ pub(crate) fn verify_dispatch(
     if message != accepted.message {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    require_authority(store, &message)
+    require_authority_for_commit(store, &message)
 }
 
 #[derive(Clone)]
@@ -667,7 +680,7 @@ pub(crate) fn verify_steering_acceptance(
     if message.content != input.original_content || message.images != input.message.images {
         return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
     }
-    require_authority(store, &message)
+    require_authority_for_commit(store, &message)
         .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
     Ok(())
 }
@@ -864,6 +877,9 @@ fn verify_commit_fence(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
 
 fn commit_pending(store: &Store, command: PendingWrite) -> Result<(), ConversationError> {
     crate::database_writer::commit(

@@ -104,7 +104,9 @@ impl Pool {
             if remaining.is_zero() {
                 return Err(format!(
                     "background writes unsettled: {} queued, {} active, {} failed",
-                    state.jobs.len(), state.active, state.failures
+                    state.jobs.len(),
+                    state.active,
+                    state.failures
                 ));
             }
             state = self
@@ -133,7 +135,8 @@ pub(crate) fn submit(
 }
 
 pub fn shutdown() -> Result<(), String> {
-    POOL.get_or_init(|| Pool::start(2, 1024)).as_ref()
+    POOL.get_or_init(|| Pool::start(2, 1024))
+        .as_ref()
         .map_err(Clone::clone)?
         .shutdown(Duration::from_secs(15))
 }
@@ -152,16 +155,29 @@ mod tests {
             started.send(()).unwrap();
             gate.recv().unwrap();
             Ok(())
-        })).unwrap();
+        }))
+        .unwrap();
         observed.recv_timeout(Duration::from_secs(2)).unwrap();
         let (committed, receipt) = mpsc::channel();
         pool.submit(Box::new(move || {
             committed.send(()).unwrap();
             Ok(())
-        })).unwrap();
-        assert!(pool.submit(Box::new(|| panic!("rejected job executed"))).is_err());
-        assert!(pool.shutdown(Duration::from_millis(10)).unwrap_err().contains("unsettled"));
-        assert!(pool.submit(Box::new(|| Ok(()))).unwrap_err().contains("closing"));
+        }))
+        .unwrap();
+        assert!(
+            pool.submit(Box::new(|| panic!("rejected job executed")))
+                .is_err()
+        );
+        assert!(
+            pool.shutdown(Duration::from_millis(10))
+                .unwrap_err()
+                .contains("unsettled")
+        );
+        assert!(
+            pool.submit(Box::new(|| Ok(())))
+                .unwrap_err()
+                .contains("closing")
+        );
         release.send(()).unwrap();
         pool.shutdown(Duration::from_secs(2)).unwrap();
         receipt.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -176,15 +192,21 @@ mod tests {
             started.send(()).unwrap();
             gate.recv().unwrap();
             Err("injected persistence failure".into())
-        })).unwrap();
+        }))
+        .unwrap();
         observed.recv_timeout(Duration::from_secs(2)).unwrap();
         let (committed, receipt) = mpsc::channel();
         pool.submit(Box::new(move || {
             committed.send(()).unwrap();
             Ok(())
-        })).unwrap();
+        }))
+        .unwrap();
         release.send(()).unwrap();
-        assert!(pool.shutdown(Duration::from_secs(2)).unwrap_err().contains("1 accepted background writes failed"));
+        assert!(
+            pool.shutdown(Duration::from_secs(2))
+                .unwrap_err()
+                .contains("1 accepted background writes failed")
+        );
         receipt.recv_timeout(Duration::from_secs(2)).unwrap();
     }
 }
