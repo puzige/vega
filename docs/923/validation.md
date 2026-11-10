@@ -8,7 +8,7 @@
 
 ## 实际本地验证
 
-工具链：Cargo 1.95.0（huacnlee/cargo fork，按机器已安装固定版本，CARGO_FORK_AUTO_UPDATE=0），rustc 1.95.0。命令在本任务工作树执行，未运行远端命令、真实模型或用户未知命令。
+工具链：Cargo 1.101.0（e611c7a87 2026-11-04，huacnlee/cargo 0.102.0-9，CARGO_FORK_AUTO_UPDATE=0），rustc 1.98.0（88d9e12ae 2026-08-18）。命令在本任务工作树执行，未运行远端命令、真实模型或用户未知命令。
 
 - `cargo fmt --all -- --check`、`git diff --check`：通过。
 - `cargo test -p vega_conversation -p vega_ui -p vega shell_control_tests -- --nocapture`：**13 发现 / 13 执行 / 13 通过 / 0 忽略**；服务 7、通道 3、发送状态 3。
