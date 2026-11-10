@@ -336,6 +336,7 @@ impl ConversationStream {
         render_rows::MessageInteraction {
             user_top: Layout::USER_MESSAGE_PADDING_TOP,
             stream: None,
+            entry_identity: None,
             text_width: self
                 .workspace_width
                 .map(|width| width - 2. * Layout::CONVERSATION_PADDING)

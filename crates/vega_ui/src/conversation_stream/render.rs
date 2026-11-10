@@ -762,6 +762,7 @@ impl Render for ConversationStream {
                                                                 render_rows::MessageInteraction {
                                                                     user_top: this.user_message_top(index),
                                                                     stream: Some(stream),
+                                                                    entry_identity: this.entry_identities.get(index).cloned(),
                                                                     ..this.message_interaction()
                                                                 },
                                                             );

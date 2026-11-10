@@ -652,18 +652,14 @@ pub(super) fn label(expanded: bool) -> String {
 pub(in crate::conversation_stream) fn control(
     copy: &MessageCopy,
     stream: &Option<WeakEntity<ConversationStream>>,
+    identity: Option<&StreamEntryIdentity>,
     colors: &ThemeColors,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let Some(owner) = stream.as_ref().and_then(|stream| stream.upgrade()) else {
+    let (Some(owner), Some(identity)) = (stream.as_ref(), identity) else {
         return div().into_any_element();
     };
-    let current = owner.read(cx);
-    let Some(identity) = current.entries.iter().enumerate().find_map(|(index, entry)| {
-        matches!(entry, StreamEntry::User { copy: source, .. } if source.id == copy.id && Rc::ptr_eq(&source.user_disclosure, &copy.user_disclosure))
-            .then(|| current.entry_identities.get(index).cloned()).flatten()
-    }) else { return div().into_any_element(); };
     let id: SharedString = format!("user-message-disclosure-{}", copy.id).into();
     let focus = crate::disclosure::focus(id, window, cx);
     div()
@@ -673,10 +669,10 @@ pub(in crate::conversation_stream) fn control(
         .justify_start()
         .child(Native {
             input: Input {
-                owner: owner.downgrade(),
+                owner: owner.clone(),
                 copy: copy.clone(),
                 source: Source {
-                    identity,
+                    identity: identity.clone(),
                     stamp: DisclosureStamp::capture(copy),
                 },
                 colors: *colors,

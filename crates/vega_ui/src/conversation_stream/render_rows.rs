@@ -71,6 +71,7 @@ pub(crate) fn context_compaction_label(
 pub(crate) struct MessageInteraction {
     pub(crate) user_top: f32,
     pub(crate) stream: Option<gpui_kit::WeakEntity<ConversationStream>>,
+    pub(crate) entry_identity: Option<StreamEntryIdentity>,
     pub(crate) text_width: f32,
 }
 
@@ -425,6 +426,7 @@ fn selectable_user_message(
             body.child(super::user_disclosure::control(
                 copy,
                 &interaction.stream,
+                interaction.entry_identity.as_ref(),
                 colors,
                 window,
                 cx,
