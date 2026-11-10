@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::Arc};
 
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
-use vega_conversation::types::{TerminalColor, TerminalSnapshot, TerminalStatus};
+use vega_conversation::types::{TerminalCell, TerminalColor, TerminalSnapshot, TerminalStatus};
 use vega_theme::{Layout, ThemeColors, Typography};
 
 use crate::nsh::OrderedCommands;
@@ -52,6 +52,13 @@ struct Selection {
     generation: u64,
     start: usize,
     end: usize,
+}
+
+impl Selection {
+    fn range(self, generation: u64) -> Option<std::ops::Range<usize>> {
+        (self.generation == generation && self.start != self.end)
+            .then_some(self.start.min(self.end)..self.start.max(self.end))
+    }
 }
 
 struct PendingInput {
@@ -176,6 +183,19 @@ fn ansi(color: TerminalColor, fallback: gpui_kit::Rgba) -> Rgba {
     }
 }
 
+fn cell_colors(cell: &TerminalCell, colors: &ThemeColors, selected: bool) -> (Rgba, Rgba) {
+    if selected {
+        return (rgb(colors.brand_on_accent), rgb(colors.brand_primary));
+    }
+    let foreground = ansi(cell.foreground, colors.text_primary);
+    let background = ansi(cell.background, colors.bg_base);
+    if cell.inverse {
+        (background, foreground)
+    } else {
+        (foreground, background)
+    }
+}
+
 fn draw(
     projection: &Projection,
     metrics: Metrics,
@@ -187,38 +207,47 @@ fn draw(
         return painter;
     };
     let cols = snapshot.cells.first().map_or(1, |row| row.len().max(1));
-    for (index, cell) in snapshot.cells.iter().flatten().enumerate() {
-        let x = PAD + (index % cols) as f32 * metrics.cell;
-        let y = PAD + (index / cols) as f32 * metrics.line;
-        let (foreground, background) = if cell.inverse {
-            (cell.background, cell.foreground)
-        } else {
-            (cell.foreground, cell.background)
-        };
-        let selected = selection.is_some_and(|selection| {
-            selection.generation == snapshot.generation
-                && (selection.start.min(selection.end)..=selection.start.max(selection.end))
-                    .contains(&index)
-        });
-        let background = if selected {
-            rgb(projection.colors.bg_active)
-        } else {
-            ansi(background, projection.colors.bg_base)
-        };
-        painter = painter
-            .fill_style(background)
-            .fill_rect(x, y, metrics.cell, metrics.line);
-        if !cell.continuation && !cell.text.is_empty() {
-            let font = format!(
-                "{}{}px {FONT}",
-                if cell.bold { "bold " } else { "" },
-                Typography::CODE
+    let range = selection.and_then(|selection| selection.range(snapshot.generation));
+    let selected = |index| range.as_ref().is_some_and(|range| range.contains(&index));
+    for (row, cells) in snapshot.cells.iter().enumerate() {
+        let y = PAD + row as f32 * metrics.line;
+        for (col, cell) in cells.iter().enumerate() {
+            let lead = if cell.continuation {
+                col.saturating_sub(1)
+            } else {
+                col
+            };
+            let (_, background) = cell_colors(
+                &cells[lead],
+                &projection.colors,
+                selected(row * cols + lead),
             );
-            painter = painter
-                .font(&font)
-                .text_baseline(nsh_core::canvas::CanvasTextBaseline::Middle)
-                .fill_style(ansi(foreground, projection.colors.text_primary))
-                .fill_text(&cell.text, x, y + metrics.line * 0.5);
+            painter = painter.fill_style(background).fill_rect(
+                PAD + col as f32 * metrics.cell,
+                y,
+                metrics.cell,
+                metrics.line,
+            );
+        }
+        for (col, cell) in cells.iter().enumerate() {
+            if !cell.continuation && !cell.text.is_empty() {
+                let (foreground, _) =
+                    cell_colors(cell, &projection.colors, selected(row * cols + col));
+                let font = format!(
+                    "{}{}px {FONT}",
+                    if cell.bold { "bold " } else { "" },
+                    Typography::CODE
+                );
+                painter = painter
+                    .font(&font)
+                    .text_baseline(nsh_core::canvas::CanvasTextBaseline::Middle)
+                    .fill_style(foreground)
+                    .fill_text(
+                        &cell.text,
+                        PAD + col as f32 * metrics.cell,
+                        y + metrics.line * 0.5,
+                    );
+            }
         }
     }
     if show_cursor
@@ -235,49 +264,58 @@ fn draw(
     painter
 }
 
-fn cell_at(point: Point<Points>, snapshot: &TerminalSnapshot, metrics: Metrics) -> usize {
-    let col = ((point.x.0 - PAD).max(0.) / metrics.cell) as usize;
-    let row = ((point.y.0 - PAD).max(0.) / metrics.line) as usize;
-    let cols = snapshot.cells.first().map_or(1, |row| row.len().max(1));
-    row.min(snapshot.cells.len().saturating_sub(1)) * cols + col.min(cols - 1)
+fn cell_boundary(point: Point<Points>, snapshot: &TerminalSnapshot, metrics: Metrics) -> usize {
+    let cols = snapshot.cells.first().map_or(0, Vec::len);
+    let row = (((point.y.0 - PAD) / metrics.line).floor() as usize)
+        .min(snapshot.cells.len().saturating_sub(1));
+    let mut col = (((point.x.0 - PAD) / metrics.cell).round() as usize).min(cols);
+    if col > 0
+        && snapshot
+            .cells
+            .get(row)
+            .and_then(|cells| cells.get(col))
+            .is_some_and(|cell| cell.continuation)
+    {
+        col -= 1;
+    }
+    row * cols + col
 }
 
 fn copy_text(snapshot: &TerminalSnapshot, selection: Option<Selection>) -> String {
-    let selection = selection.filter(|selection| selection.generation == snapshot.generation);
-    if let Some(selection) = selection {
-        let start = selection.start.min(selection.end);
-        let end = selection.start.max(selection.end);
-        let mut text = String::new();
-        let cols = snapshot.cells.first().map_or(1, |row| row.len().max(1));
-        for index in start..=end {
-            if index > start && index % cols == 0 {
-                text.push('\n');
+    let selection = selection.and_then(|selection| selection.range(snapshot.generation));
+    let cols = snapshot.cells.first().map_or(0, Vec::len);
+    snapshot
+        .cells
+        .iter()
+        .enumerate()
+        .filter_map(|(row, cells)| {
+            let start = row * cols;
+            let end = start + cols;
+            let range = selection.as_ref().map_or(start..end, |range| {
+                range.start.max(start)..range.end.min(end)
+            });
+            if range.is_empty() {
+                return None;
             }
-            if let Some(cell) = snapshot
-                .cells
-                .get(index / cols)
-                .and_then(|row| row.get(index % cols))
-                .filter(|cell| !cell.continuation)
-            {
-                text.push_str(&cell.text);
+            let mut text = cells
+                .iter()
+                .enumerate()
+                .filter(|(col, cell)| range.contains(&(start + col)) && !cell.continuation)
+                .map(|(_, cell)| {
+                    if cell.text.is_empty() {
+                        " "
+                    } else {
+                        cell.text.as_str()
+                    }
+                })
+                .collect::<String>();
+            if range.end == end {
+                text.truncate(text.trim_end().len());
             }
-        }
-        text
-    } else {
-        snapshot
-            .cells
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .filter(|cell| !cell.continuation)
-                    .map(|cell| cell.text.as_str())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+            Some(text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn bindings(
@@ -456,6 +494,18 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                 });
                 let scroll_ref = element_ref();
                 let native_input = element_ref();
+                let update_selection = move |event: &ResponderEvent| {
+                    if let Some(snapshot) = projection.get_untracked().snapshot {
+                        selection.update(|selection| {
+                            if let Some(selection) = selection
+                                .as_mut()
+                                .filter(|selection| selection.generation == snapshot.generation)
+                            {
+                                selection.end = cell_boundary(event.location, &snapshot, metrics);
+                            }
+                        });
+                    }
+                };
                 let menu_open = signal(false);
                 let menu_items = [element_ref(), element_ref()];
                 let menu_selection = signal(0usize);
@@ -750,7 +800,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                                                 if let Some(snapshot) =
                                                                     projection.get().snapshot
                                                                 {
-                                                                    let index = cell_at(
+                                                                    let index = cell_boundary(
                                                                         event.location,
                                                                         &snapshot,
                                                                         metrics,
@@ -766,30 +816,8 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                                                 }
                                                             },
                                                         )
-                                                        .on_responder_move(
-                                                            move |event: &ResponderEvent| {
-                                                                if let Some(snapshot) =
-                                                                    projection.get().snapshot
-                                                                {
-                                                                    let index = cell_at(
-                                                                        event.location,
-                                                                        &snapshot,
-                                                                        metrics,
-                                                                    );
-                                                                    selection.update(|selection| {
-                                                                if let Some(selection) = selection
-                                                                    .as_mut()
-                                                                    .filter(|selection| {
-                                                                        selection.generation
-                                                                            == snapshot.generation
-                                                                    })
-                                                                {
-                                                                    selection.end = index;
-                                                                }
-                                                            });
-                                                                }
-                                                            },
-                                                        ),
+                                                        .on_responder_move(update_selection)
+                                                        .on_responder_release(update_selection),
                                                     ),
                                             ),
                                     )
