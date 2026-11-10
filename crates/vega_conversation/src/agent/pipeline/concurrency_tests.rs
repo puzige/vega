@@ -618,8 +618,10 @@ fn completed_preparation_rejects_late_foreign_tool_identity_without_overwrite() 
         },
     )?;
     let mut next_seq = prepared.next_tool_seq;
+    let transaction = fixture.store.immediate_transaction()?;
     let result = super::super::events::persist_runtime_event(
         &fixture.store,
+        &transaction,
         "",
         &fixture.child,
         &fixture.assistant,

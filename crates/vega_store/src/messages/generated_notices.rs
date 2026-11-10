@@ -36,17 +36,24 @@ pub fn record_generated_notice(
     content: &str,
     notice: &GeneratedNoticeRow,
 ) -> Result<bool, rusqlite::Error> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Messages,
-    )?;
-    if notice.message_id != message_id || !notice.is_valid_for(content) {
-        return Ok(false);
-    }
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::Messages,
     )?;
+    let result = record_generated_notice_in_transaction(&tx, message_id, content, notice)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn record_generated_notice_in_transaction(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    content: &str,
+    notice: &GeneratedNoticeRow,
+) -> Result<bool, rusqlite::Error> {
+    if notice.message_id != message_id || !notice.is_valid_for(content) {
+        return Ok(false);
+    }
     let Some(owner) = find(&tx, message_id)? else {
         return Ok(false);
     };
@@ -86,7 +93,6 @@ pub fn record_generated_notice(
             notice.delivered_images.map(i64::from),
         ],
     )?;
-    tx.commit()?;
     Ok(true)
 }
 

@@ -161,65 +161,98 @@ pub fn review_plan(
     plan_id: &str,
     action: PlanReviewAction,
 ) -> Result<PlanReviewOutcome, ConversationError> {
-    let _coordination = crate::permission_contracts::coordinate()?;
-    crate::permission_contracts::require_admission_open(store)?;
-    let _admission = crate::thread_access::acquire(store, thread_id)?;
-    let (status, note, instruction_id) = match action {
-        PlanReviewAction::Approve => (
-            PlanStatus::Approved,
-            None,
-            Some(ulid::Ulid::generate().to_string()),
-        ),
-        PlanReviewAction::RequestChanges { note } => {
-            validate_note(note.as_deref())?;
-            (PlanStatus::ChangesRequested, note, None)
-        }
-        PlanReviewAction::Abandon { note } => {
-            validate_note(note.as_deref())?;
-            (PlanStatus::Abandoned, note, None)
-        }
-    };
-    let now = now_ms();
-    let permission = instruction_id
-        .as_ref()
-        .map(|_| {
-            crate::threads::task_workspace_root(store, thread_id)?;
-            let row = vega_store::threads::find(store.conn(), thread_id)
-                .map_err(store_error)?
-                .ok_or(ConversationError::InvalidTaskIdentity)?;
-            let mut fence = crate::permission_contracts::capture_fence(store, &row)?;
-            fence.run_mode = "execute".into();
-            serde_json::to_string(&fence).map_err(store_error)
-        })
-        .transpose()?;
-    let instruction =
-        instruction_id
-            .as_deref()
-            .zip(permission.as_deref())
-            .map(|(id, permission_fence)| store_messages::PlanInstruction {
-                id,
-                content: APPROVAL_INSTRUCTION,
-                created_at: now,
-                permission_fence,
-            });
-    let result = store_messages::review_plan(
-        store.conn(),
-        store_messages::PlanReview {
-            thread_id,
-            plan_id,
-            status: status.as_str(),
-            note: note.as_deref(),
-            reviewed_at: now,
-            instruction,
+    if matches!(&action, PlanReviewAction::Approve) {
+        crate::threads::task_workspace_root(store, thread_id)?;
+    }
+    let path = store
+        .database_path()
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        ReviewPlan {
+            thread_id: thread_id.to_owned(),
+            plan_id: plan_id.to_owned(),
+            action,
         },
     )
-    .map_err(store_error)?;
-    Ok(match result {
-        store_messages::PlanReviewResult::Applied => PlanReviewOutcome::Applied {
-            instruction_message_id: instruction_id,
-        },
-        store_messages::PlanReviewResult::Stale => PlanReviewOutcome::Stale,
-    })
+    .map_err(store_error)?
+}
+
+struct ReviewPlan {
+    thread_id: String,
+    plan_id: String,
+    action: PlanReviewAction,
+}
+
+impl crate::database_writer::Sealed for ReviewPlan {}
+
+impl crate::database_writer::DatabaseCommand for ReviewPlan {
+    type Output = Result<PlanReviewOutcome, ConversationError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let thread_id = self.thread_id.as_str();
+        let plan_id = self.plan_id.as_str();
+        let action = self.action;
+        let _coordination = crate::permission_contracts::coordinate()?;
+        crate::permission_contracts::require_admission_open(store)?;
+        let _admission = crate::thread_access::acquire(store, thread_id)?;
+        let (status, note, instruction_id) = match action {
+            PlanReviewAction::Approve => (
+                PlanStatus::Approved,
+                None,
+                Some(ulid::Ulid::generate().to_string()),
+            ),
+            PlanReviewAction::RequestChanges { note } => {
+                validate_note(note.as_deref())?;
+                (PlanStatus::ChangesRequested, note, None)
+            }
+            PlanReviewAction::Abandon { note } => {
+                validate_note(note.as_deref())?;
+                (PlanStatus::Abandoned, note, None)
+            }
+        };
+        let now = now_ms();
+        let permission = instruction_id
+            .as_ref()
+            .map(|_| {
+                let row = vega_store::threads::find(store.conn(), thread_id)
+                    .map_err(store_error)?
+                    .ok_or(ConversationError::InvalidTaskIdentity)?;
+                let mut fence = crate::permission_contracts::capture_fence_for_commit(store, &row)?;
+                fence.run_mode = "execute".into();
+                serde_json::to_string(&fence).map_err(store_error)
+            })
+            .transpose()?;
+        let instruction =
+            instruction_id
+                .as_deref()
+                .zip(permission.as_deref())
+                .map(|(id, permission_fence)| store_messages::PlanInstruction {
+                    id,
+                    content: APPROVAL_INSTRUCTION,
+                    created_at: now,
+                    permission_fence,
+                });
+        let result = store_messages::review_plan(
+            store.conn(),
+            store_messages::PlanReview {
+                thread_id,
+                plan_id,
+                status: status.as_str(),
+                note: note.as_deref(),
+                reviewed_at: now,
+                instruction,
+            },
+        )
+        .map_err(store_error)?;
+        Ok(match result {
+            store_messages::PlanReviewResult::Applied => PlanReviewOutcome::Applied {
+                instruction_message_id: instruction_id,
+            },
+            store_messages::PlanReviewResult::Stale => PlanReviewOutcome::Stale,
+        })
+    }
 }
 
 fn validate_note(note: Option<&str>) -> Result<(), ConversationError> {

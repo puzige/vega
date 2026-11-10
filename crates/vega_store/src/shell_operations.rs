@@ -522,6 +522,22 @@ pub fn resume_writes(
     decision: &str,
     now: i64,
 ) -> rusqlite::Result<()> {
+    let tx = crate::write_coordination::WriteTransaction::new(
+        conn,
+        crate::write_coordination::WriteCategory::ToolCalls,
+    )?;
+    resume_writes_in_transaction(&tx, workspace, expected_epoch, operations, decision, now)?;
+    tx.commit()
+}
+
+pub fn resume_writes_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    workspace: &str,
+    expected_epoch: &ShellRecoveryVersion,
+    operations: &[String],
+    decision: &str,
+    now: i64,
+) -> rusqlite::Result<()> {
     let mut selected = operations.to_vec();
     selected.sort();
     selected.dedup();
@@ -530,10 +546,6 @@ pub fn resume_writes(
     }
     let content = json(
         &serde_json::json!({"workspace":workspace,"epoch":expected_epoch,"operations":selected,"kind":"user_risk"}),
-    )?;
-    let tx = crate::write_coordination::WriteTransaction::new(
-        conn,
-        crate::write_coordination::WriteCategory::ToolCalls,
     )?;
     let prior: Option<String> = tx
         .query_row(
@@ -544,7 +556,7 @@ pub fn resume_writes(
         .optional()?;
     if let Some(prior) = prior {
         return if prior == content {
-            tx.commit()
+            Ok(())
         } else {
             Err(rusqlite::Error::InvalidQuery)
         };
@@ -593,5 +605,5 @@ pub fn resume_writes(
     }
     let next = recovery_epoch(&tx, workspace)?;
     tx.execute("INSERT INTO shell_dispositions(disposition_id,workspace,operation_ids,expected_epoch,committed_epoch,kind,content,created_at) VALUES(?1,?2,?3,?4,?5,'user_risk',?6,?7)",params![decision,workspace,json(&selected)?,expected_epoch.epoch,next.epoch,content,now])?;
-    tx.commit()
+    Ok(())
 }

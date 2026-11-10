@@ -1681,17 +1681,111 @@ impl VegaWindow {
             });
             return;
         };
-        let materialized = match &cx.global::<VegaStore>().0 {
-            Ok(store) => {
-                vega_conversation::codex_tasks::materialize_codex_draft(store, &draft, &snapshot)
-                    .map_err(|_| ())
-            }
-            Err(_) => Err(()),
-        };
-        let Ok(thread) = materialized else {
+        let Some(database_path) = self.file_backed_store_path(cx) else {
             stream.update(cx, |stream, cx| {
                 stream.reject_composer_submission(cx);
                 stream.apply_controller_error(cx);
+            });
+            return;
+        };
+        let Some(startup_lease) =
+            self.trusted_actions
+                .acquire(TrustedActionKind::AgentPreflight, 0, 0)
+        else {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            return;
+        };
+        self.agent_controller.preparation_stream = Some(stream.clone());
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        let expected_draft = draft.clone();
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("vega-codex-startup".into())
+            .spawn(move || {
+                let result = vega_conversation::codex_tasks::prepare_codex_startup(
+                    &database_path,
+                    draft,
+                    snapshot,
+                );
+                let _ = startup_sender.send(result);
+            });
+        if worker.is_err() {
+            let _ = self.trusted_actions.release(startup_lease);
+            self.agent_controller.preparation_stream = None;
+            stream.update(cx, |stream, cx| {
+                stream.set_trusted_action_busy(false, cx);
+                stream.reject_composer_submission(cx);
+                stream.apply_controller_error(cx);
+            });
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AGENT_PREFLIGHT_POLL).await;
+                let result = match startup_receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err("Codex startup receipt unavailable".into())
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    if !this.trusted_actions.release(startup_lease) {
+                        return;
+                    }
+                    this.agent_controller.preparation_stream = None;
+                    stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    if cx.global::<SettingsOpen>().0
+                        || !this.owns_stream_request(&stream, &thread_id, cx)
+                        || this.draft_for_route(&thread_id).as_ref() != Some(&expected_draft)
+                    {
+                        stream.update(cx, ConversationStream::reject_composer_submission);
+                        return;
+                    }
+                    match result {
+                        Ok(startup) => this.start_codex_prepared(
+                            stream.clone(),
+                            thread_id.clone(),
+                            content.clone(),
+                            startup,
+                            cx,
+                        ),
+                        Err(error) => {
+                            tracing::error!(error = %error, "Codex startup not confirmed");
+                            stream.update(cx, |stream, cx| {
+                                stream.reject_composer_submission(cx);
+                                stream.apply_controller_error(cx);
+                            });
+                        }
+                    }
+                });
+                drop(worker_activity);
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn start_codex_prepared(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: String,
+        content: String,
+        startup: vega_conversation::codex_tasks::CodexStartup,
+        cx: &mut Context<Self>,
+    ) {
+        let vega_conversation::codex_tasks::CodexStartup {
+            thread,
+            snapshot,
+            intent: _,
+            persistence,
+        } = startup;
+        let Some(worker_activity) =
+            vega_ui::sidebar::register_project_worker(&thread.project_id, cx)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_agent_busy(cx);
             });
             return;
         };
@@ -1702,50 +1796,6 @@ impl VegaWindow {
         {
             self.draft = None;
         }
-        let intent = match &cx.global::<VegaStore>().0 {
-            Ok(store) => {
-                vega_conversation::codex_tasks::begin_codex_session_creation(store, &thread.id)
-            }
-            Err(_) => Err(vega_conversation::types::ConversationError::Store(
-                "Codex session intent unavailable".into(),
-            )),
-        };
-        let Ok(intent) = intent else {
-            if self
-                .draft
-                .as_ref()
-                .is_some_and(|draft| draft.id == thread.id)
-            {
-                self.draft = None;
-            }
-            stream.update(cx, |stream, cx| {
-                stream.set_draft_route(false, cx);
-                stream.apply_thread(thread.clone(), cx);
-            });
-            cx.set_global(OpenedThread(Some(thread.clone())));
-            stream.update(cx, |stream, cx| {
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
-            return;
-        };
-        let Some(database_path) = self.file_backed_store_path(cx) else {
-            if let Ok(store) = &cx.global::<VegaStore>().0
-                && let CodexSessionCreationState::Intent { intent_id } = &intent
-            {
-                let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-                    store,
-                    &thread.id,
-                    intent_id,
-                    CodexSessionFailureCode::ProcessStartFailed,
-                );
-            }
-            stream.update(cx, |stream, cx| {
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
-            return;
-        };
         let permission_queue = stream.read(cx).permission_queue();
         let Some((generation, cancel)) = self.agent_controller.begin(
             thread_id.clone(),
@@ -1753,16 +1803,6 @@ impl VegaWindow {
             Some(content.clone()),
             None,
         ) else {
-            if let Ok(store) = &cx.global::<VegaStore>().0
-                && let CodexSessionCreationState::Intent { intent_id } = &intent
-            {
-                let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-                    store,
-                    &thread.id,
-                    intent_id,
-                    CodexSessionFailureCode::ProcessStartFailed,
-                );
-            }
             if self
                 .draft
                 .as_ref()
@@ -1789,18 +1829,13 @@ impl VegaWindow {
 
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_request = crate::codex_agent::CodexWorkerRequest {
-            database_path,
+            persistence,
             thread: thread.clone(),
             snapshot,
-            intent,
             prompt: content,
             permission_queue,
             cancel,
             sender: sender.clone(),
-        };
-        let intent_id_for_failure = match &worker_request.intent {
-            CodexSessionCreationState::Intent { intent_id } => Some(intent_id.clone()),
-            _ => None,
         };
         let worker_sender = sender.clone();
         let worker = std::thread::Builder::new()
@@ -1815,16 +1850,6 @@ impl VegaWindow {
                 drop(worker_activity);
             });
         if worker.is_err() {
-            if let Ok(store) = &cx.global::<VegaStore>().0
-                && let Some(intent_id) = intent_id_for_failure.as_ref()
-            {
-                let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-                    store,
-                    &thread.id,
-                    intent_id,
-                    CodexSessionFailureCode::ProcessStartFailed,
-                );
-            }
             let _ = sender.send(AgentUpdate::Finished {
                 success: false,
                 reference_failure: None,

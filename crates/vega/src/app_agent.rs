@@ -38,7 +38,8 @@ pub(crate) fn install_context_precompute_shutdown(cx: &mut App) {
         return;
     }
     cx.set_global(AppContextPrecompute);
-    cx.on_app_quit(move |_| {
+    cx.on_app_quit(move |cx| {
+        cx.background_executor().spawn(async move {
         let result = ContextPrecomputeRegistry::global()
             .close()
             .and_then(|drain| drain.wait_blocking());
@@ -60,7 +61,16 @@ pub(crate) fn install_context_precompute_shutdown(cx: &mut App) {
         if !matches!(shell_cleanup, Ok(Ok(()))) {
             tracing::error!("shell session shutdown could not confirm settlement");
         }
-        std::future::ready(())
+        if let Err(error) = vega_conversation::submission_diagnostics::shutdown_background_writes() {
+            tracing::error!(%error, "background write shutdown could not confirm settlement");
+        }
+        if let Err(error) = vega_conversation::shutdown_database_writers() {
+            tracing::error!(%error, "database writer shutdown could not confirm settlement");
+        }
+        if let Err(error) = vega_store::persistence_failures::shutdown() {
+            tracing::error!(%error, "failure sidecar shutdown could not confirm settlement");
+        }
+        })
     })
     .detach();
 }
@@ -1111,7 +1121,7 @@ pub(crate) fn map_reference_failure(error: &vega_tools::ToolError) -> FileRefere
 pub(crate) fn run_agent_worker_with_mcp(
     database_path: std::path::PathBuf,
     project_path: std::path::PathBuf,
-    thread: Thread,
+    mut thread: Thread,
     mut run: PendingAgentRun,
     permission_queue: vega_conversation::agent::PermissionQueue,
     user_questions: vega_conversation::agent::UserQuestionQueue,
@@ -1200,6 +1210,15 @@ pub(crate) fn run_agent_worker_with_mcp(
             .with_read_state(file_read_state);
         let store = Store::open(&database_path).map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
         store.migrate().map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })?;
+        if ordinary.is_none() && let Some(pending) = vega_store::threads::pending_model(store.conn(), &thread.id)
+            .map_err(|error| { preparation_failure = runtime_failure(PreparationStage::Database, &error.into()); })? {
+            if pending != thread.model {
+                preparation_failure = PreparationFailure::new(PreparationStage::Conversation, PreparationReason::InvalidIdentity);
+                return Err(());
+            }
+            thread = vega_conversation::threads::promote_thread_model(&store, &thread.id, &pending, &admission)
+                .map_err(|error| { preparation_failure = conversation_failure(PreparationStage::Conversation, &error); })?;
+        }
         vega_conversation::automation::pause_matching(&store, &thread.id, &automation_pauses, "user_paused").map_err(|error| { preparation_failure = conversation_failure(PreparationStage::Conversation, &error); })?;
         // Resolve provider identity once, before constructing the provider and
         // before entering the runtime. The resulting FrozenReasoning is moved

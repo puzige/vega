@@ -339,10 +339,7 @@ impl PersistenceActor {
         };
         let owner = writer.clone();
         tokio::task::spawn_blocking(move || {
-            let result = owner
-                .registrations
-                .send(registration)
-                .map_err(|_| persistence_actor_error("writer registration closed"));
+            let result = owner.register_run(registration);
             owner.wake();
             result
         })
@@ -489,7 +486,7 @@ fn log_persistence_result<T>(
             sqlite_extended_code: metrics.sqlite_extended_code,
             observations: scope.observations(),
         };
-        if let Err(fault) = vega_store::persistence_failures::record(store, failure) {
+        if let Err(fault) = vega_store::persistence_failures::enqueue(store, failure) {
             tracing::warn!(
                 ?category,
                 stage = ?fault.stage,

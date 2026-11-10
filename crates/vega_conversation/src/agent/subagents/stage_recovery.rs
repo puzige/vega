@@ -3,6 +3,9 @@ use serde_json::{Value, json};
 use vega_store::delegated_ownership::DelegatedOwnership;
 use vega_store::delegated_stages as stages;
 
+#[cfg(test)]
+mod prepared_tests;
+
 pub(super) struct StageHook {
     pub database: PathBuf,
     pub snapshot: SubagentSnapshot,
@@ -97,27 +100,29 @@ impl vega_runtime::RuntimeSubagentHook for StageHook {
             if cancel.is_cancelled() || !owner.verifies(&database, &snapshot.agent_id) {
                 return Err(VegaError::Cancelled);
             }
-            let tx = store.immediate_transaction()?;
-            if stages::execution_authority(&tx, &snapshot.agent_id, &snapshot.message_id)?
-                != stages::authority(&tx, &snapshot.agent_id)?
-            {
-                return Err(failure("stage authority changed"));
-            }
-            stages::evidence(&tx, &snapshot.agent_id, &input["evidence_call_ids"])?;
-            let effects = stages::unknown_effects(&tx, &snapshot.agent_id, &snapshot.message_id)?;
-            let checkpoint = stages::append(
-                &tx,
-                &snapshot.agent_id,
-                &snapshot.message_id,
-                "declared",
-                input,
-                effects,
-                now_ms(),
-            )?;
-            if checkpoint.to_string().len() > 96 * 1024 {
-                return Err(failure("checkpoint receipt too large"));
-            }
-            tx.commit()?;
+            let checkpoint_snapshot = snapshot.clone();
+            let checkpoint = tokio::task::spawn_blocking(move || {
+                let store = Store::open_existing(&database)?;
+                let prepared = stages::PreparedStageCheckpoint::prepare(
+                    store.conn(),
+                    &checkpoint_snapshot.agent_id,
+                    &checkpoint_snapshot.message_id,
+                )?;
+                super::writer::commit(
+                    &database,
+                    CheckpointStage {
+                        database: database.clone(),
+                        snapshot: checkpoint_snapshot,
+                        owner,
+                        admission,
+                        input,
+                        prepared,
+                        cancel,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| failure("stage checkpoint persistence failed"))??;
             if let Ok(mut state) = registry.state.lock()
                 && let Some(record) = state
                     .executions
@@ -206,7 +211,11 @@ pub(super) fn verify_resume(
     {
         return Err(failure("recovery permission source changed"));
     }
-    let checkpoint = verify_resume_in_transaction(&tx, snapshot, previous, input)?;
+    let source = vega_store::context_compaction::load_source_version_in_transaction(
+        &tx,
+        &snapshot.agent_id,
+    )?;
+    let checkpoint = verify_resume_in_transaction(&tx, snapshot, previous, input, &source)?;
     tx.commit()?;
     Ok(checkpoint)
 }
@@ -216,9 +225,8 @@ pub(super) fn verify_resume_in_transaction(
     snapshot: &SubagentSnapshot,
     previous: &ContinuationBoundary,
     input: &Value,
+    source: &vega_store::context_compaction::ContextSourceVersion,
 ) -> Result<Value, VegaError> {
-    let source =
-        vega_store::context_compaction::load_source_version_in_transaction(tx, &snapshot.agent_id)?;
     let checkpoint = stages::latest(tx, &snapshot.agent_id, &previous.message_id)?
         .ok_or_else(|| failure("checkpoint unavailable"))?;
     let saved = vega_store::permission_contracts::interrupted_delegated_fence(
@@ -342,8 +350,7 @@ pub(super) fn load(
                     &row.child_thread_id,
                     &row.child_message_id,
                 )? == "unknown"))
-            && vega_store::recovery::recover_thread(store.conn(), &row.child_thread_id, now_ms())
-                .is_ok()
+            && crate::subagents::recover_child(&store, &row.child_thread_id, now_ms(), None).is_ok()
         {
             row = vega_store::subagents::find(store.conn(), &row.child_thread_id)?
                 .ok_or_else(|| failure("child unavailable"))?;
@@ -408,4 +415,55 @@ pub(super) fn load(
         );
     }
     Ok(())
+}
+
+struct CheckpointStage {
+    database: PathBuf,
+    snapshot: SubagentSnapshot,
+    owner: Arc<DelegatedOwnership>,
+    admission: vega_store::thread_admission::ThreadAdmission,
+    input: Value,
+    prepared: stages::PreparedStageCheckpoint,
+    cancel: CancellationToken,
+}
+
+impl crate::database_writer::Sealed for CheckpointStage {}
+impl crate::database_writer::DatabaseCommand for CheckpointStage {
+    type Output = Result<Value, VegaError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let Self {
+            database,
+            snapshot,
+            owner,
+            admission,
+            input,
+            prepared,
+            cancel,
+        } = self;
+        if cancel.is_cancelled() || !owner.verifies(&database, &snapshot.agent_id) {
+            return Err(VegaError::Cancelled);
+        }
+        crate::thread_access::verify(store, &snapshot.agent_id, &admission)
+            .map_err(|_| failure("child admission identity changed"))?;
+        let tx = store.immediate_transaction()?;
+        if stages::execution_authority(&tx, &snapshot.agent_id, &snapshot.message_id)?
+            != stages::authority(&tx, &snapshot.agent_id)?
+        {
+            return Err(failure("stage authority changed"));
+        }
+        stages::evidence(&tx, &snapshot.agent_id, &input["evidence_call_ids"])?;
+        let checkpoint = prepared.append(
+            &tx,
+            &snapshot.agent_id,
+            &snapshot.message_id,
+            input,
+            now_ms(),
+        )?;
+        if checkpoint.to_string().len() > 96 * 1024 {
+            return Err(failure("checkpoint receipt too large"));
+        }
+        tx.commit()?;
+        Ok(checkpoint)
+    }
 }

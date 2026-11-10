@@ -120,6 +120,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0061_preparation_revisions.sql"),
     include_str!("../migrations/0062_shell_operations.sql"),
     include_str!("../migrations/0063_persistence_receipts.sql"),
+    include_str!("../migrations/0064_configuration_intents.sql"),
+    include_str!("../migrations/0065_source_validation.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -292,5 +294,30 @@ impl Store {
 
     pub fn database_identity(&self) -> DatabaseIdentity {
         self.database_identity
+    }
+
+    pub fn verify_database_identity(&self, expected: DatabaseIdentity) -> rusqlite::Result<()> {
+        if self.database_identity != expected {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        if self.database_path.is_none() {
+            return Ok(());
+        }
+        let mut moved: std::ffi::c_int = 0;
+        // SAFETY: the connection is live, main is NUL terminated, and HAS_MOVED writes one c_int.
+        let result = unsafe {
+            rusqlite::ffi::sqlite3_file_control(
+                self.conn.handle(),
+                c"main".as_ptr(),
+                rusqlite::ffi::SQLITE_FCNTL_HAS_MOVED,
+                (&mut moved as *mut std::ffi::c_int).cast(),
+            )
+        };
+        if result != rusqlite::ffi::SQLITE_OK || moved != 0
+            || DatabaseIdentity::for_connection(&self.conn)? != expected
+        {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        Ok(())
     }
 }

@@ -14,6 +14,7 @@ mod stage_recovery;
 use lifecycle_ownership::LifecycleOwnership;
 mod precompute;
 mod provider;
+mod writer;
 use provider::{ChildProvider, ChildTransport};
 use vega_store::delegated_ownership::DelegatedOwnership;
 
@@ -624,6 +625,8 @@ struct ReservedExecution {
     owner: Arc<DelegatedOwnership>,
     admission: vega_store::thread_admission::ThreadAdmission,
     resume: Option<serde_json::Value>,
+    necessary_terminal: Option<crate::database_writer::NecessaryLease>,
+    database_identity: vega_store::DatabaseIdentity,
 }
 
 impl Supervisor {
@@ -779,9 +782,13 @@ impl Supervisor {
             release_state: "held".into(),
             ready_for_review: false,
         };
+        let store = Store::open_existing(&launch.database)?;
+        let database_identity = store.database_identity();
+        let necessary_terminal = crate::database_writer::NecessaryLease::reserve(&launch.database)
+            .map_err(|_| failure("necessary terminal capacity unavailable"))?;
+        store.verify_database_identity(database_identity)?;
         let owner = DelegatedOwnership::acquire(&launch.database, &snapshot.agent_id)
             .map_err(|_| failure("native writer ownership unavailable"))?;
-        let store = Store::open(&launch.database)?;
         let admission = crate::thread_access::acquire(&store, &snapshot.agent_id)
             .map_err(|_| failure("child admission unavailable"))?;
         let resume = (tool == "resume_agent").then(|| input.clone());
@@ -825,6 +832,8 @@ impl Supervisor {
             owner,
             admission,
             resume,
+            necessary_terminal: Some(necessary_terminal),
+            database_identity,
         })
     }
 
@@ -854,23 +863,15 @@ impl Supervisor {
             let database = launch.database.clone();
             let (child, run) = target.clone();
             let durable = tokio::task::spawn_blocking(move || {
-                let (owner, admission) =
-                    writer.ok_or_else(|| failure("child writer unavailable"))?;
-                if !owner.verifies(&database, &child) {
-                    return Err(failure("native writer identity changed"));
-                }
-                let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
-                crate::thread_access::verify(&store, &child, &admission)
-                    .map_err(|_| failure("child admission identity changed"))?;
-                let tx = store
-                    .immediate_transaction()
-                    .map_err(|_| failure("storage unavailable"))?;
-                vega_store::subagents::request_cancel(&tx, &child, &run)
-                    .map_err(|_| failure("storage unavailable"))?;
-                let execution = vega_store::subagents::execution(&tx, &child, &run)
-                    .map_err(|_| failure("storage unavailable"))?;
-                tx.commit().map_err(|_| failure("storage unavailable"))?;
-                Ok::<_, VegaError>(execution)
+                writer::commit(
+                    &database,
+                    writer::CancelChild {
+                        database: database.clone(),
+                        child,
+                        run,
+                        writer,
+                    },
+                )
             })
             .await
             .map_err(|_| failure("storage unavailable"))??;
@@ -981,11 +982,11 @@ fn child_lifecycle<'a>(
 
 fn child_lifecycle_inner<'a>(
     launch: &ChildLaunch<'a>,
-    reserved: ReservedExecution,
+    mut reserved: ReservedExecution,
     registry: Registry,
 ) -> LocalBoxFuture<'a, ()> {
     let mut ownership =
-        LifecycleOwnership::new(launch.database.clone(), &reserved, registry.clone());
+        LifecycleOwnership::new(launch.database.clone(), &mut reserved, registry.clone());
     let ReservedExecution {
         mut snapshot,
         task,
@@ -996,6 +997,8 @@ fn child_lifecycle_inner<'a>(
         owner,
         admission,
         resume,
+        necessary_terminal: _,
+        database_identity: _,
     } = reserved;
     let provider = launch.provider;
     let tools = launch.tools.isolated();
@@ -1299,7 +1302,11 @@ fn child_lifecycle_inner<'a>(
         }
         let released = !host_may_own || host.finish_and_release(snapshot.clone(),complete && persisted).await.is_ok();
         let release_recorded = if released && persisted {
-            Store::open(&database).and_then(|store| vega_store::delegated_stages::set_release(store.conn(),&snapshot.agent_id,&snapshot.message_id,"released")).is_ok()
+            {
+                let database = database.clone();
+                let command = writer::ReleaseChild { database: database.clone(), snapshot: snapshot.clone(), owner: owner.clone(), admission: admission.clone() };
+                tokio::task::spawn_blocking(move || writer::commit(&database, command)).await.is_ok_and(|result| result.is_ok())
+            }
         } else { false };
         if !release_recorded {
             ownership.quarantine(if !persisted { "Subagent terminal persistence failed; ownership remains occupied" } else { "Subagent host release failed; ownership remains occupied" });
@@ -1346,189 +1353,40 @@ async fn create_child(
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        if !owner.verifies(&database, &snapshot.agent_id) {
-            return Err(failure("native writer identity changed"));
-        }
-        let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
-        let _permission_coordination = crate::permission_contracts::coordinate()
-            .map_err(|_| failure("permission coordination unavailable"))?;
-        crate::permission_contracts::require_admission_open(&store)
-            .map_err(|_| failure("permission admission unavailable"))?;
-        if !settings.authority.matches_fence() {
-            return Err(failure("delegated permission source changed"));
-        }
-        crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
-            .map_err(|_| failure("child admission identity changed"))?;
+        let store = Store::open_existing(&database).map_err(|_| failure("storage unavailable"))?;
         let prepared_workspace =
             crate::threads::task_workspace_root(&store, &snapshot.parent_thread_id)
                 .map_err(|_| failure("parent workspace unavailable"))?;
-        let tx = store
-            .immediate_transaction()
-            .map_err(|_| failure("storage unavailable"))?;
-        if cancel.is_cancelled() {
-            return Err(VegaError::Cancelled);
-        }
-        if let Some(claim) = &settings.automation_claim {
-            crate::automation::check_subagent_budget(&tx, claim)
-                .map_err(|message| failure(&message))?;
-        }
-        let parent = vega_store::threads::find(&tx, &snapshot.parent_thread_id)
-            .map_err(|_| failure("parent unavailable"))?
-            .ok_or_else(|| failure("parent unavailable"))?;
-        let parent =
-            crate::threads::thread_from_row(&parent).map_err(|_| failure("parent unavailable"))?;
-        if parent.backend != TaskBackend::Native || parent.parent_thread_id.is_some() {
-            return Err(failure("nested delegation unavailable"));
-        }
-        let permission_mode = match settings.authority.permission_mode {
-            RuntimePermissionMode::ReadOnly => "readonly",
-            RuntimePermissionMode::Confirm => "confirm",
-            RuntimePermissionMode::Auto => "auto",
-            RuntimePermissionMode::FullAccess => "full_access",
-        };
-        if let Some(previous) = &previous {
-            let row = vega_store::threads::find(&tx, &snapshot.agent_id)
-                .map_err(|_| failure("storage unavailable"))?
-                .ok_or_else(|| failure("unknown_agent"))?;
-            let source = vega_store::context_compaction::load_source_version_in_transaction(
-                &tx,
-                &snapshot.agent_id,
+        let source = if previous.is_some() {
+            let store = Store::open_existing(&database)?;
+            Some(
+                vega_store::context_compaction::source_version::PreparedSourceVersion::capture(
+                    store.conn(),
+                    &snapshot.agent_id,
+                )?,
             )
-            .map_err(|_| failure("storage unavailable"))?;
-            if !same_context(&row, &previous.thread)
-                || row.backend != "native"
-                || row.mode != "execute"
-                || row.permission_mode != permission_mode
-                || row.model != settings.model
-                || row.parent_thread_id.as_deref() != Some(&snapshot.parent_thread_id)
-                || source.source_version != previous.source_version
-                || source.fingerprint != previous.fingerprint
-                || vega_store::pending_messages::count(&tx, &snapshot.agent_id)
-                    .map_err(|_| failure("storage unavailable"))?
-                    != 0
-            {
-                return Err(failure("externally_continued"));
-            }
-            let latest = vega_store::subagents::find(&tx, &snapshot.agent_id)
-                .map_err(|_| failure("storage unavailable"))?
-                .ok_or_else(|| failure("unknown_agent"))?;
-            if latest.child_message_id != previous.message_id {
-                return Err(failure("stale_execution"));
-            }
-            if let Some(input) = &resume {
-                stage_recovery::verify_resume_in_transaction(&tx, &snapshot, previous, input)?;
-            }
-            if latest.state
-                != if resume.is_some() {
-                    "interrupted"
-                } else {
-                    "completed"
-                }
-            {
-                return Err(failure("agent state changed"));
-            }
         } else {
-            let mut draft = crate::threads::draft_thread(
-                parent.project_binding(),
-                &settings.model,
-                permission_mode,
-            );
-            draft.reasoning_preferences = parent.reasoning_preferences.clone();
-            draft.id = snapshot.agent_id.clone();
-            crate::threads::materialize_draft_in_transaction(&tx, &draft)
-                .map_err(|_| failure("admission_failed"))?;
-            if vega_store::threads::rename(&tx, &snapshot.agent_id, &snapshot.name, now_ms())
-                .map_err(|_| failure("admission_failed"))?
-                != 1
-            {
-                return Err(failure("admission_failed"));
-            }
-        }
-        let user_id = ulid::Ulid::generate().to_string();
-        let seq = vega_store::messages::next_seq(&tx, &snapshot.agent_id)
-            .map_err(|_| failure("admission_failed"))?;
-        vega_store::messages::insert(
-            &tx,
-            &vega_store::messages::MessageRow {
-                id: user_id.clone(),
-                thread_id: snapshot.agent_id.clone(),
-                seq,
-                role: "user".into(),
-                kind: "text".into(),
-                content: task.clone(),
-                status: "done".into(),
-                created_at: now_ms(),
-                plan_status: None,
-                plan_review_note: None,
-                plan_reviewed_at: None,
+            None
+        };
+        writer::commit(
+            &database,
+            writer::CreateChild {
+                database: database.clone(),
+                snapshot,
+                task,
+                call_id,
+                model: settings.model,
+                authority: settings.authority,
+                automation_claim: settings.automation_claim,
+                cancel,
+                previous,
+                resume,
+                owner,
+                admission,
+                prepared_workspace,
+                source,
             },
         )
-        .map_err(|_| failure("admission_failed"))?;
-        let record = vega_store::subagents::DelegationRow {
-            child_thread_id: snapshot.agent_id.clone(),
-            parent_thread_id: parent.id,
-            parent_message_id: snapshot.parent_message_id,
-            spawn_call_id: call_id,
-            child_message_id: snapshot.message_id,
-            name: snapshot.name,
-            task,
-            state: "running".into(),
-            result: String::new(),
-            truncated: false,
-            created_at: now_ms(),
-        };
-        if let Some(previous) = previous {
-            if resume.is_some() {
-                vega_store::subagents::append_resume(&tx, &record, &previous.message_id, &user_id)
-            } else {
-                vega_store::subagents::append(&tx, &record, &previous.message_id, &user_id)
-            }
-            .map_err(|_| failure("admission_failed"))?;
-        } else {
-            vega_store::subagents::insert(&tx, &record).map_err(|_| failure("admission_failed"))?;
-        }
-        vega_store::delegated_stages::register(
-            &tx,
-            &record.child_thread_id,
-            &record.child_message_id,
-            resume
-                .as_ref()
-                .and_then(|input| input["checkpoint_id"].as_str()),
-            &resume
-                .as_ref()
-                .map(|input| input["reconciliations"].clone())
-                .unwrap_or_else(|| serde_json::json!([])),
-        )?;
-        let row = vega_store::threads::find(&tx, &snapshot.agent_id)
-            .map_err(|_| failure("admission_failed"))?
-            .ok_or_else(|| failure("admission_failed"))?;
-        let permission_fence = crate::permission_contracts::capture_delegated_fence(
-            &store,
-            &row,
-            &record.parent_thread_id,
-            &record.parent_message_id,
-            &record.child_message_id,
-            &settings.authority.permission_fence,
-        )
-        .map_err(|_| failure("delegated permission source changed"))?;
-        if prepared_workspace.to_str() != Some(permission_fence.workspace.as_str()) {
-            return Err(failure("delegated workspace changed"));
-        }
-        let encoded = serde_json::to_string(&permission_fence)
-            .map_err(|_| failure("delegated permission snapshot unavailable"))?;
-        vega_store::permission_contracts::record_delegated_fence(
-            &tx,
-            &record.child_thread_id,
-            &record.child_message_id,
-            &encoded,
-        )?;
-        let child =
-            crate::threads::thread_from_row(&row).map_err(|_| failure("admission_failed"))?;
-        if cancel.is_cancelled() {
-            return Err(VegaError::Cancelled);
-        }
-        tx.commit().map_err(|_| failure("admission_failed"))?;
-        Ok((child, user_id))
     })
     .await
     .map_err(|_| failure("admission_failed"))?
@@ -1542,87 +1400,25 @@ async fn persist_child_terminal(
     admission: vega_store::thread_admission::ThreadAdmission,
 ) -> Result<Option<ContinuationBoundary>, VegaError> {
     tokio::task::spawn_blocking(move || {
-        if !owner.verifies(&database, &snapshot.agent_id) {
-            return Err(failure("native writer identity changed"));
-        }
-        let store = Store::open(database).map_err(|_| failure("storage unavailable"))?;
-        crate::thread_access::verify(&store, &snapshot.agent_id, &admission)
-            .map_err(|_| failure("child admission identity changed"))?;
-        let tx = store
-            .immediate_transaction()
-            .map_err(|_| failure("storage unavailable"))?;
-        let effects = vega_store::delegated_stages::unknown_effects(
-            &tx,
+        let store = Store::open_existing(&database)?;
+        let prepared = vega_store::delegated_stages::PreparedTerminal::prepare(
+            store.conn(),
             &snapshot.agent_id,
             &snapshot.message_id,
+            snapshot.state != SubagentState::Completed,
+            now_ms(),
         )?;
-        if !vega_store::subagents::finish(
-            &tx,
-            &snapshot.agent_id,
-            &snapshot.message_id,
-            snapshot.state.as_str(),
-            &snapshot.result,
-            snapshot.truncated,
+        writer::commit(
+            &database,
+            writer::FinishChild {
+                database: database.clone(),
+                snapshot,
+                usage_complete,
+                prepared,
+                owner,
+                admission,
+            },
         )
-        .map_err(|_| failure("storage unavailable"))?
-        {
-            return Err(failure("delegated generation changed"));
-        }
-        vega_store::subagents::mark_usage_complete(
-            &tx,
-            &snapshot.agent_id,
-            &snapshot.message_id,
-            usage_complete,
-        )
-        .map_err(|_| failure("storage unavailable"))?;
-        if snapshot.state != SubagentState::Completed {
-            vega_store::recovery::recover_stopped_with_owner(
-                &tx,
-                &snapshot.agent_id,
-                now_ms(),
-                Some(&owner),
-            )
-            .map_err(|_| failure("storage unavailable"))?;
-        }
-        if snapshot.state != SubagentState::Completed
-            || vega_store::delegated_stages::latest(&tx, &snapshot.agent_id, &snapshot.message_id)?
-                .is_some()
-        {
-            vega_store::delegated_stages::final_checkpoint(
-                &tx,
-                &snapshot.agent_id,
-                &snapshot.message_id,
-                snapshot.state != SubagentState::Completed,
-                effects,
-                now_ms(),
-            )?;
-        }
-        let boundary = if matches!(
-            snapshot.state,
-            SubagentState::Completed | SubagentState::Interrupted
-        ) && vega_store::pending_messages::count(&tx, &snapshot.agent_id)
-            .map_err(|_| failure("storage unavailable"))?
-            == 0
-        {
-            let thread = vega_store::threads::find(&tx, &snapshot.agent_id)
-                .map_err(|_| failure("storage unavailable"))?
-                .ok_or_else(|| failure("unknown_agent"))?;
-            let source = vega_store::context_compaction::load_source_version_in_transaction(
-                &tx,
-                &snapshot.agent_id,
-            )
-            .map_err(|_| failure("storage unavailable"))?;
-            Some(ContinuationBoundary {
-                message_id: snapshot.message_id,
-                source_version: source.source_version,
-                fingerprint: source.fingerprint,
-                thread,
-            })
-        } else {
-            None
-        };
-        tx.commit().map_err(|_| failure("storage unavailable"))?;
-        Ok(boundary)
     })
     .await
     .map_err(|_| failure("storage unavailable"))?

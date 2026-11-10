@@ -7,7 +7,7 @@ pub fn record(
     event: &str,
     attempt: u8,
     occurred_at: i64,
-) {
+) -> rusqlite::Result<()> {
     if !matches!(
         event,
         "prepared"
@@ -33,8 +33,7 @@ pub fn record(
             | "applied"
             | "apply_rejected"
     ) {
-        tracing::warn!("composer prediction diagnostic category rejected");
-        return;
+        return Err(rusqlite::Error::InvalidQuery);
     }
     let result = (|| -> rusqlite::Result<()> {
         let _permit = crate::write_coordination::acquire(
@@ -50,7 +49,5 @@ pub fn record(
         )?;
         Ok(())
     })();
-    if result.is_err() {
-        tracing::warn!("composer prediction diagnostic persistence failed");
-    }
+    result
 }

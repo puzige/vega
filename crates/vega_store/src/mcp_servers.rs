@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_ENABLED_SERVERS: i64 = 8;
 
 /// SQLite representation, not a UI or runtime capability DTO.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerRow {
     pub id: String,
     pub display_name: String,
@@ -385,7 +385,11 @@ pub fn replace(
     Ok(new)
 }
 
-fn enqueue_cleanup(conn: &Connection, id: &str, reference: &str) -> Result<(), McpStoreError> {
+pub(crate) fn enqueue_cleanup(
+    conn: &Connection,
+    id: &str,
+    reference: &str,
+) -> Result<(), McpStoreError> {
     let _permit = crate::write_coordination::acquire(
         conn,
         crate::write_coordination::WriteCategory::McpServers,
@@ -784,15 +788,16 @@ pub(crate) fn validate_projection_refs(
     Ok(())
 }
 
-pub(crate) fn queue_projection_cleanup(
-    conn: &Connection,
+pub(crate) fn projection_cleanup_refs(
     old: &McpServerRow,
     new: &McpServerRow,
-) -> Result<(), McpStoreError> {
-    for reference in server_secret_refs(old)?.difference(&server_secret_refs(new)?) {
-        enqueue_cleanup(conn, &old.id, reference)?;
-    }
-    Ok(())
+) -> Result<Vec<String>, McpStoreError> {
+    let mut references = server_secret_refs(old)?
+        .difference(&server_secret_refs(new)?)
+        .cloned()
+        .collect::<Vec<_>>();
+    references.sort();
+    Ok(references)
 }
 
 pub(crate) fn write_projection(conn: &Connection, row: &McpServerRow) -> Result<(), McpStoreError> {

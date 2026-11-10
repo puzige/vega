@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use vega_store::context_precompute::{accounting, ready};
 
 pub(crate) mod registry;
+mod writer;
 
 pub(super) struct CapturedPrecompute {
     pub fence: vega_store::context_precompute::ContextAppendFence,
@@ -11,6 +12,7 @@ pub(super) struct CapturedPrecompute {
     pub expected_generation: Option<String>,
     pub ready_preferences: Option<String>,
     pub database_identity: vega_store::thread_admission::DatabaseIdentity,
+    pub authority: crate::types::PermissionFence,
 }
 
 #[derive(Clone, Default)]
@@ -49,17 +51,11 @@ pub(super) struct StageAccounting {
     stages: Arc<AtomicU32>,
     complete: Arc<AtomicBool>,
     attribution: PrecomputeUsageAttribution,
+    admission: vega_store::thread_admission::ThreadAdmission,
+    authority: crate::types::PermissionFence,
 }
 
 impl StageAccounting {
-    fn open(&self) -> Result<Store, VegaError> {
-        let store = Store::open(&self.database_path).map_err(VegaError::Store)?;
-        if store.database_identity() != self.database_identity {
-            return Err(context_error(ContextRuntimeError::SourceChanged));
-        }
-        Ok(store)
-    }
-
     pub(super) async fn record(
         &self,
         stage: usize,
@@ -93,48 +89,24 @@ impl StageAccounting {
                     .as_ref()
                     .map(|pricing| pricing.call_started_at),
             });
+        let missing = reported.is_none();
         let this = self.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let store = this.open()?;
-            let transaction = vega_store::write_coordination::WriteTransaction::new(
-                store.conn(),
-                vega_store::write_coordination::WriteCategory::Usage,
-            )
-            .map_err(VegaError::Store)?;
-            let id = accounting::record_stage_in_transaction(
-                &transaction,
-                &this.generation,
-                &this.thread_id,
-                &this.model,
-                stage,
-                reported.as_ref(),
-            )
-            .map_err(store_error)?;
-            if let (Some(id), Some(usage)) = (id, reported.as_ref()) {
-                if let Some((parent_thread, parent_message)) = &this.attribution.parent {
-                    vega_store::subagents::attribute_usage(
-                        &transaction,
-                        id,
-                        &this.thread_id,
-                        parent_thread,
-                        parent_message,
-                        usage.cache_read_tokens.is_some() && usage.cache_write_tokens.is_some(),
-                    )
-                    .map_err(VegaError::Store)?;
-                }
-                if let Some(claim) = &this.attribution.claim {
-                    crate::automation::record_usage(
-                        &transaction,
-                        claim,
-                        id,
-                        usage.input_tokens,
-                        usage.output_tokens,
-                    )
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
-                }
-            }
-            transaction.commit().map_err(VegaError::Store)?;
-            if reported.is_none() {
+            writer::commit(
+                &this.database_path,
+                this.database_identity,
+                writer::RecordStage {
+                    admission: this.admission.clone(),
+                    generation: this.generation.clone(),
+                    thread_id: this.thread_id.clone(),
+                    model: this.model.clone(),
+                    stage,
+                    reported,
+                    parent: this.attribution.parent.clone(),
+                    claim: this.attribution.claim.clone(),
+                },
+            )?;
+            if missing {
                 this.complete.store(false, Ordering::Release);
                 this.attribution.missing_usage();
             }
@@ -153,16 +125,18 @@ impl StageAccounting {
     async fn finish(&self) -> Result<(), VegaError> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
-            let store = this.open()?;
-            accounting::finish(
-                store.conn(),
-                &this.generation,
-                &this.thread_id,
-                &this.model,
-                this.stages.load(Ordering::Acquire),
-                this.complete.load(Ordering::Acquire),
+            writer::commit(
+                &this.database_path,
+                this.database_identity,
+                writer::Finish {
+                    admission: this.admission.clone(),
+                    generation: this.generation.clone(),
+                    thread_id: this.thread_id.clone(),
+                    model: this.model.clone(),
+                    stages: this.stages.load(Ordering::Acquire),
+                    complete: this.complete.load(Ordering::Acquire),
+                },
             )
-            .map_err(store_error)
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?
@@ -171,10 +145,15 @@ impl StageAccounting {
     async fn retire(&self) -> Result<(), VegaError> {
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
-            let store = this.open()?;
-            ready::retire(store.conn(), &this.thread_id, &this.generation)
-                .map(|_| ())
-                .map_err(store_error)
+            writer::commit(
+                &this.database_path,
+                this.database_identity,
+                writer::Retire {
+                    thread_id: this.thread_id.clone(),
+                    admission: this.admission.clone(),
+                    generation: this.generation.clone(),
+                },
+            )
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?
@@ -332,10 +311,19 @@ impl PreparedContextPrecompute {
             started,
         );
         let flushed = tokio::task::spawn_blocking(move || {
-            let store = accounting.open()?;
-            writer
-                .flush_background_compaction(&store)
-                .map_err(|_| context_error(ContextRuntimeError::SourceChanged))
+            let events = writer
+                .take_background_compaction_events()
+                .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+            writer::commit(
+                &accounting.database_path,
+                accounting.database_identity,
+                writer::RecordDiagnostics {
+                    admission: accounting.admission.clone(),
+                    thread_id: accounting.thread_id.clone(),
+                    generation: accounting.generation.clone(),
+                    events,
+                },
+            )
         })
         .await;
         if !matches!(flushed, Ok(Ok(()))) {
@@ -366,16 +354,19 @@ impl PreparedContextPrecompute {
             return Err(VegaError::Cancelled);
         }
         tokio::task::spawn_blocking(move || {
-            let store = begin.open()?;
-            ready::begin_generation_after_checkpoint(
-                store.conn(),
-                &begin.generation,
-                &begin.thread_id,
-                &begin.model,
-                expected_generation.as_deref(),
-                expected_checkpoint,
+            writer::commit(
+                &begin.database_path,
+                begin.database_identity,
+                writer::Begin {
+                    admission: begin.admission.clone(),
+                    authority: begin.authority.clone(),
+                    generation: begin.generation.clone(),
+                    thread_id: begin.thread_id.clone(),
+                    model: begin.model.clone(),
+                    expected_generation,
+                    expected_checkpoint,
+                },
             )
-            .map_err(store_error)
         })
         .await
         .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
@@ -428,14 +419,21 @@ impl PreparedContextPrecompute {
             (Ok(candidate), Ok(())) => {
                 let publish = accounting.clone();
                 tokio::task::spawn_blocking(move || {
-                    let store = publish.open()?;
-                    if cancel.is_cancelled() {
-                        return Err(VegaError::Cancelled);
-                    }
-                    ready::publish_with_guard(store.conn(), &candidate, now_ms(), || {
-                        !cancel.is_cancelled()
-                    })
-                    .map_err(store_error)
+                    let store = Store::open_existing(&publish.database_path)?;
+                    let prepared =
+                        ready::PreparedPublication::prepare(store.conn(), &candidate, now_ms())
+                            .map_err(store_error)?;
+                    writer::commit(
+                        &publish.database_path,
+                        publish.database_identity,
+                        writer::Publish {
+                            candidate,
+                            prepared,
+                            cancel,
+                            admission: publish.admission.clone(),
+                            authority: publish.authority.clone(),
+                        },
+                    )
                 })
                 .await
                 .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?
@@ -520,7 +518,14 @@ impl ConversationCompactionHook<'_> {
             .as_ref()
             .ok_or_else(|| context_error(ContextRuntimeError::InvalidProjection))?
             .database_identity;
-        drop(guard);
+        let authority = captured
+            .precompute
+            .as_ref()
+            .ok_or_else(|| context_error(ContextRuntimeError::InvalidProjection))?
+            .authority
+            .clone();
+        let admission = guard.admission;
+
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
@@ -535,6 +540,8 @@ impl ConversationCompactionHook<'_> {
                 stages: Arc::new(AtomicU32::new(0)),
                 complete: Arc::new(AtomicBool::new(true)),
                 attribution: self.precompute_attribution.clone(),
+                admission,
+                authority,
             },
             request,
             captured,

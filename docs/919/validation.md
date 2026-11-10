@@ -29,4 +29,14 @@
 
 完整清单及三个结构调整见 `database-writer.md`。19 项通过**不证明**全库入口迁移、完整事件原子性、提交未知恢复元数据、全局容量/公平性、独立侧录外移、app shutdown 或权限原子复核完成。
 
-尚未最终实现独立审查、云端 required CI、合并、正式打包、安装或用户第二阶段手测。独立子 Agent 只做了跨模块边界只读盘点，不是实现审查。无其他写入者。检查点保存后停止写入，等待分批/一次性全库交付方式裁决；不关闭 #919，不标 Ready/In review/Done。#918 仍 In review 待安全清理；不能将此记录当其全部收尾完成。
+上述为旧检查点的状态。用户随后明确选择一次性全库迁移，任务已继续；主 Agent 与具名互不重叠的范围协作者持续实现，不做 native-only 部分合并。尚未最终实现独立审查、云端 required CI、合并、正式打包、安装或用户第二阶段手测。独立子 Agent 的入口盘点不是实现审查；不关闭 #919，不标 In review/Done。
+
+## 后续集成阶段：后台关闭与准入
+
+- 当前基础 HEAD `555b0c0b3c00031ad22b69c7a5622e3c1dc4116b` 加未提交全库迁移差异；协作者仍在写 Codex、隐私、来源校验与 fork，以下不是最终冻结身份。
+- `cargo check -p vega --all-targets --locked --offline -j 2`（`CARGO_FORK_AUTO_UPDATE=0`）：成功；11.67 秒，剩余两处迁移后的 dead-code warning，非最终 Clippy 证据。此前的 Request move 错误已在责任层修复；Codex 私有方法、fork 模块缺失均曾阻断中间态编译，不列作通过。
+- `cargo test -p vega_conversation --lib --locked --offline -j 2`：30 发现/30 执行/30 通过，执行18.74秒；日志 `/tmp/vega-919-tests-current.log`。含慢准备时父任务与两个子任务完整终态提交、receipt 原子性/恢复、权限、跨库、后台池容量/失败/排空、同库最后生产者释放后重开仍同 actor、关闭等待运行和必要租约且丢回执仍提交。
+- `cargo test -p vega_store persistence_failures::tests --lib --locked --offline -j 2`：2 发现/2 执行/2 通过，执行0.37秒；日志 `/tmp/vega-919-sidecar-current.log`。覆盖文件锁不阻塞数据库、物理库替换拒绝、关闭超时不冒充落盘/后续排空/关闭拒绝。
+- 上述之后补充服务准入排队取消、排队预算、开始后取消仍等真实结果，以及必要终态失败不冒充关闭成功。首次专项编译被并行 fork 测试文件尚未创建阻断，尚无这些新增测试的通过证据。全库新版本仍需集中复验和最终门禁。
+- 本阶段最初两次中央命令沿用了本机默认选项（未显式 locked/offline/auto-update 环境），未安装或修改机器配置；随后恢复前述固定命令约束。实际 rustc/Cargo 版本与本文件前文相同。
+

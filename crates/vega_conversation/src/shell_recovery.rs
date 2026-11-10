@@ -106,12 +106,12 @@ impl ShellRecoveryService {
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
         let workspace = self.workspace(&store, source)?;
         reconcile_commits(&store, &workspace)?;
-        vega_store::shell_operations::recover_generation(
-            store.conn(),
-            vega_runtime::shell_generation(),
-            now(),
-        )
-        .map_err(unavailable)?;
+        commit(
+            &store,
+            RecoverGeneration {
+                generation: vega_runtime::shell_generation().into(),
+            },
+        )?;
         let recovery = vega_store::shell_operations::recovery(store.conn(), &workspace)
             .map_err(unavailable)?;
         for item in &recovery.items {
@@ -250,14 +250,14 @@ impl ShellRecoveryService {
                 let mut facts = item.facts;
                 facts.resources_closed = true;
                 facts.cleanup_state = "unresolved".into();
-                vega_store::shell_operations::append_cleanup_observation(
-                    store.conn(),
-                    &item.operation_id,
-                    &ulid::Ulid::generate().to_string(),
-                    &facts,
-                    now(),
-                )
-                .map_err(unavailable)?;
+                commit(
+                    &store,
+                    CleanupObservation {
+                        operation: item.operation_id,
+                        observation: ulid::Ulid::generate().to_string(),
+                        facts,
+                    },
+                )?;
             }
         }
         self.read(source)
@@ -268,13 +268,13 @@ impl ShellRecoveryService {
         source: &Thread,
         expected: &ShellRecoveryProjection,
     ) -> Result<ShellRecoveryConfirmation, ShellRecoveryError> {
-        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let projection = self.read(source)?;
         require_same(&projection, expected)?;
         if projection.rows.is_empty() || projection.rows.iter().any(|row| !row.can_resume) {
             return Err(ShellRecoveryError::KnownProcessOrResource);
         }
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
+        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let authority =
             vega_store::permission_contracts::load_state(store.conn()).map_err(unavailable)?;
         if authority.reset_pending {
@@ -293,16 +293,13 @@ impl ShellRecoveryService {
         &self,
         confirmation: &ShellRecoveryConfirmation,
     ) -> Result<ShellRecoveryProjection, ShellRecoveryError> {
-        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
+        let project = vega_store::projects::find(store.conn(), &confirmation.source.project_id)
+            .map_err(unavailable)?
+            .ok_or(ShellRecoveryError::Changed)?;
         if self.draft != confirmation.draft
             || self.workspace(&store, &confirmation.source)? != confirmation.projection.workspace
         {
-            return Err(ShellRecoveryError::Changed);
-        }
-        let authority =
-            vega_store::permission_contracts::load_state(store.conn()).map_err(unavailable)?;
-        if authority.reset_pending || authority.authority_epoch != confirmation.authority_epoch {
             return Err(ShellRecoveryError::Changed);
         }
         let operations: Vec<_> = confirmation
@@ -311,31 +308,38 @@ impl ShellRecoveryService {
             .iter()
             .map(|row| row.operation_id.clone())
             .collect();
-        let committed = || {
-            vega_store::shell_operations::verify_resume_decision(
+        let result = commit(
+            &store,
+            ResumeWrites {
+                source: confirmation.source.clone(),
+                draft: self.draft,
+                authority_epoch: confirmation.authority_epoch.clone(),
+                workspace: confirmation.projection.workspace.clone(),
+                project_path: project.path,
+                epoch: confirmation.projection.epoch.clone(),
+                operations: operations.clone(),
+                decision: confirmation.decision_id.clone(),
+            },
+        );
+        if let Err(error) = result {
+            if error == ShellRecoveryError::Changed {
+                return Err(error);
+            }
+            store
+                .verify_database_identity(store.database_identity())
+                .map_err(unavailable)?;
+            if !vega_store::shell_operations::verify_resume_decision(
                 store.conn(),
                 &confirmation.projection.workspace,
                 &confirmation.projection.epoch,
                 &operations,
                 &confirmation.decision_id,
             )
-            .map_err(unavailable)
-        };
-        if !committed()? {
-            let result = vega_store::shell_operations::resume_writes(
-                store.conn(),
-                &confirmation.projection.workspace,
-                &confirmation.projection.epoch,
-                &operations,
-                &confirmation.decision_id,
-                now(),
-            );
-            if !committed()? {
-                if result.is_err() {
-                    let current = self.read(&confirmation.source)?;
-                    require_same(&current, &confirmation.projection)?;
-                }
-                return Err(ShellRecoveryError::Unavailable);
+            .map_err(unavailable)?
+            {
+                let current = self.read(&confirmation.source)?;
+                require_same(&current, &confirmation.projection)?;
+                return Err(error);
             }
         }
         vega_tools::ReadState::invalidate_workspace(std::path::Path::new(
@@ -383,14 +387,14 @@ impl ShellRecoveryService {
                 process_resolved: snapshot.process_resolved,
                 cleanup_reasons: snapshot.cleanup_reasons,
             };
-            vega_store::shell_operations::append_cleanup_observation(
-                store.conn(),
-                &row.operation_id,
-                &ulid::Ulid::generate().to_string(),
-                &facts,
-                now(),
-            )
-            .map_err(unavailable)?;
+            commit(
+                &store,
+                CleanupObservation {
+                    operation: row.operation_id.clone(),
+                    observation: ulid::Ulid::generate().to_string(),
+                    facts,
+                },
+            )?;
             if snapshot.cleanup_safe {
                 vega_tools::ReadState::invalidate_workspace(std::path::Path::new(
                     &projection.workspace,
@@ -413,45 +417,14 @@ fn reconcile_commits(store: &Store, workspace: &str) -> Result<(), ShellRecovery
     for pending in
         vega_runtime::pending_shell_commits(std::path::Path::new(workspace)).map_err(unavailable)?
     {
-        let facts = vega_store::shell_operations::ShellFacts {
-            command_result: pending.command_result.clone(),
-            exit_signal: pending.exit_signal,
-            cleanup_state: pending.cleanup_state.clone(),
-            output_incomplete: pending.output_incomplete,
-            resources_closed: pending.resources_closed,
-            process_resolved: pending.process_resolved,
-            cleanup_reasons: pending.cleanup_reasons.clone(),
-        };
-        let record = vega_store::shell_operations::ShellOperationRecord {
-            operation_id: &pending.operation_id,
-            thread_id: &pending.thread_id,
-            run_id: &pending.run_id,
-            call_id: &pending.call_id,
-            generation: &pending.generation,
-            workspace: &pending.workspace,
-            state: &pending.state,
-            exit_code: pending.exit_code,
-            error: pending.error.as_deref(),
-            duration_ms: pending.duration_ms,
-        };
-        let result =
-            vega_store::shell_operations::record_with_facts(store.conn(), &record, &facts, now());
-        if !vega_store::shell_operations::verify_record(store.conn(), &record, &facts)
-            .map_err(unavailable)?
-        {
-            result.map_err(unavailable)?;
-            return Err(ShellRecoveryError::Unavailable);
-        }
-        if facts.cleanup_state == "best_effort_completed" {
+        let complete = pending.cleanup_state == "best_effort_completed";
+        commit(store, ShellRecord(pending.clone()))?;
+        if complete {
             vega_tools::ReadState::invalidate_workspace(std::path::Path::new(&pending.workspace))
                 .map_err(unavailable)?;
         }
-        vega_runtime::confirm_shell_commit(
-            &pending.operation_id,
-            facts.cleanup_state == "best_effort_completed",
-        )
-        .map_err(unavailable)?;
-        if facts.cleanup_state == "best_effort_completed" {
+        vega_runtime::confirm_shell_commit(&pending.operation_id, complete).map_err(unavailable)?;
+        if complete {
             vega_runtime::RuntimeWorkspaceMutationGuard::set_persisted_block(
                 std::path::Path::new(&pending.workspace),
                 &pending.operation_id,
@@ -515,4 +488,157 @@ fn now() -> i64 {
         .ok()
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(0)
+}
+
+fn commit<C: crate::database_writer::DatabaseCommand<Output = Result<(), ShellRecoveryError>>>(
+    store: &Store,
+    command: C,
+) -> Result<(), ShellRecoveryError> {
+    let path = store
+        .database_path()
+        .ok_or(ShellRecoveryError::Unavailable)?;
+    crate::database_writer::commit(path, store.database_identity(), command).map_err(unavailable)?
+}
+
+struct ResumeWrites {
+    source: Thread,
+    draft: bool,
+    authority_epoch: String,
+    workspace: String,
+    project_path: String,
+    epoch: vega_store::shell_operations::ShellRecoveryVersion,
+    operations: Vec<String>,
+    decision: String,
+}
+
+impl crate::database_writer::Sealed for ResumeWrites {}
+impl crate::database_writer::DatabaseCommand for ResumeWrites {
+    type Output = Result<(), ShellRecoveryError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
+        let tx = store.immediate_transaction().map_err(unavailable)?;
+        let authority = vega_store::permission_contracts::load_state(&tx).map_err(unavailable)?;
+        if authority.reset_pending || authority.authority_epoch != self.authority_epoch {
+            return Err(ShellRecoveryError::Changed);
+        }
+        let current = vega_store::threads::find(&tx, &self.source.id).map_err(unavailable)?;
+        if self.draft {
+            if current.is_some()
+                || self.source.backend != crate::types::TaskBackend::Native
+                || self.source.status != crate::types::ThreadStatus::Active
+                || self.source.parent_thread_id.is_some()
+                || self.source.forked_from_thread_id.is_some()
+                || self.source.forked_from_message_id.is_some()
+                || !(0..i64::MAX).contains(&self.source.permission_revision)
+                || ulid::Ulid::from_string(&self.source.id).is_err()
+                || self
+                    .source
+                    .draft_authority_epoch
+                    .as_ref()
+                    .is_some_and(|epoch| epoch != &authority.authority_epoch)
+            {
+                return Err(ShellRecoveryError::Changed);
+            }
+        } else {
+            let current =
+                crate::threads::thread_from_row(&current.ok_or(ShellRecoveryError::Changed)?)
+                    .map_err(unavailable)?;
+            if current.project_id != self.source.project_id
+                || current.permission_revision != self.source.permission_revision
+                || current.mode != self.source.mode
+                || current.permission_mode != self.source.permission_mode
+            {
+                return Err(ShellRecoveryError::Changed);
+            }
+        }
+        let project = vega_store::projects::find(&tx, &self.source.project_id)
+            .map_err(unavailable)?
+            .ok_or(ShellRecoveryError::Changed)?;
+        if project.path != self.project_path {
+            return Err(ShellRecoveryError::Changed);
+        }
+        vega_store::shell_operations::resume_writes_in_transaction(
+            &tx,
+            &self.workspace,
+            &self.epoch,
+            &self.operations,
+            &self.decision,
+            now(),
+        )
+        .map_err(unavailable)?;
+        tx.commit().map_err(unavailable)
+    }
+}
+
+struct RecoverGeneration {
+    generation: String,
+}
+impl crate::database_writer::Sealed for RecoverGeneration {}
+impl crate::database_writer::DatabaseCommand for RecoverGeneration {
+    type Output = Result<(), ShellRecoveryError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::shell_operations::recover_generation(store.conn(), &self.generation, now())
+            .map(|_| ())
+            .map_err(unavailable)
+    }
+}
+
+struct CleanupObservation {
+    operation: String,
+    observation: String,
+    facts: vega_store::shell_operations::ShellFacts,
+}
+impl crate::database_writer::Sealed for CleanupObservation {}
+impl crate::database_writer::DatabaseCommand for CleanupObservation {
+    type Output = Result<(), ShellRecoveryError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::shell_operations::append_cleanup_observation(
+            store.conn(),
+            &self.operation,
+            &self.observation,
+            &self.facts,
+            now(),
+        )
+        .map_err(unavailable)
+    }
+}
+
+struct ShellRecord(vega_runtime::RuntimeShellOperationRecord);
+impl crate::database_writer::Sealed for ShellRecord {}
+impl crate::database_writer::DatabaseCommand for ShellRecord {
+    type Output = Result<(), ShellRecoveryError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let pending = self.0;
+        let facts = vega_store::shell_operations::ShellFacts {
+            command_result: pending.command_result.clone(),
+            exit_signal: pending.exit_signal,
+            cleanup_state: pending.cleanup_state.clone(),
+            output_incomplete: pending.output_incomplete,
+            resources_closed: pending.resources_closed,
+            process_resolved: pending.process_resolved,
+            cleanup_reasons: pending.cleanup_reasons.clone(),
+        };
+        let record = vega_store::shell_operations::ShellOperationRecord {
+            operation_id: &pending.operation_id,
+            thread_id: &pending.thread_id,
+            run_id: &pending.run_id,
+            call_id: &pending.call_id,
+            generation: &pending.generation,
+            workspace: &pending.workspace,
+            state: &pending.state,
+            exit_code: pending.exit_code,
+            error: pending.error.as_deref(),
+            duration_ms: pending.duration_ms,
+        };
+        let result =
+            vega_store::shell_operations::record_with_facts(store.conn(), &record, &facts, now());
+        if !vega_store::shell_operations::verify_record(store.conn(), &record, &facts)
+            .map_err(unavailable)?
+        {
+            result.map_err(unavailable)?;
+            return Err(ShellRecoveryError::Unavailable);
+        }
+        Ok(())
+    }
 }

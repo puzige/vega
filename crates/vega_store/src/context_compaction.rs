@@ -16,7 +16,12 @@ use crate::image_attachments::ImageRow;
 use crate::messages::MessageRow;
 
 mod legacy_redaction;
+mod prepared_checkpoint;
+#[cfg(test)]
+mod prepared_tests;
+pub mod source_version;
 pub use legacy_redaction::{PreparedLegacyRedaction, prepare_legacy_thread_redaction};
+pub use prepared_checkpoint::PreparedContextCheckpoint;
 
 /// The largest setting accepted by the store.  This mirrors the runtime's
 /// bounded `u32` provider conversion without making the store depend on the
@@ -1173,11 +1178,6 @@ where
     F: Fn() -> bool,
 {
     checkpoint.validate()?;
-    let projection_plan = checkpoint
-        .projection_plan
-        .as_ref()
-        .map(ProjectionPlan::encode)
-        .transpose()?;
     if should_cancel() {
         return Err(ContextCheckpointError::Cancelled);
     }
@@ -1188,9 +1188,17 @@ where
     {
         return Ok(ContextCheckpointInstall::Stale);
     }
+    validate_prepared_coverage(transaction, checkpoint, &current)?;
+    install_validated_checkpoint_in_transaction(transaction, checkpoint, should_cancel)
+}
 
+fn validate_prepared_coverage(
+    transaction: &Transaction<'_>,
+    checkpoint: &NewContextCheckpoint,
+    current: &ContextSource,
+) -> Result<(), ContextCheckpointError> {
     if let Some(plan) = &checkpoint.projection_plan {
-        plan.validate_install(&current)?;
+        plan.validate_install(current)?;
         validate_summary_references(transaction, &checkpoint.thread_id, plan)?;
     } else {
         if let Some(owner) = checkpoint.covered_assistant_id.as_deref() {
@@ -1249,6 +1257,23 @@ where
         }
     }
 
+    Ok(())
+}
+
+fn install_validated_checkpoint_in_transaction<F>(
+    transaction: &Transaction<'_>,
+    checkpoint: &NewContextCheckpoint,
+    should_cancel: &F,
+) -> Result<ContextCheckpointInstall, ContextCheckpointError>
+where
+    F: Fn() -> bool,
+{
+    checkpoint.validate()?;
+    let projection_plan = checkpoint
+        .projection_plan
+        .as_ref()
+        .map(ProjectionPlan::encode)
+        .transpose()?;
     let thread_model: Option<String> = transaction
         .query_row(
             "SELECT model FROM threads WHERE id = ?1",
@@ -1668,7 +1693,7 @@ fn source_too_large() -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName("context source exceeds bounded read".to_string())
 }
 
-fn fingerprint_source(
+pub(super) fn fingerprint_source(
     conn: &Connection,
     messages: &[MessageRow],
     tool_calls: &[ContextToolCallRow],

@@ -360,6 +360,63 @@ pub fn publish_with_guard(
     Ok(())
 }
 
+pub fn publish_prepared_with_guard(
+    conn: &Connection,
+    candidate: &ReadyCompaction,
+    now_ms: i64,
+    prepared: &PreparedPublication,
+    mut permitted: impl FnMut() -> bool,
+) -> Result<(), ContextCheckpointError> {
+    if !permitted() {
+        return Err(ContextCheckpointError::Cancelled);
+    }
+    let encoded = candidate.encode()?;
+    let transaction = WriteTransaction::new(conn, WriteCategory::ContextCompaction)?;
+    let current: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM context_precompute_slots s JOIN context_precompute_accounting a ON a.generation=s.generation WHERE s.thread_id=?1 AND s.generation=?2 AND a.retired=0)",
+        params![candidate.checkpoint.thread_id, candidate.generation], |row| row.get(0),
+    )?;
+    if !current {
+        return Err(ContextCheckpointError::Stale);
+    }
+    if !prepared.validate(&transaction, candidate, now_ms)? {
+        return Err(ContextCheckpointError::Stale);
+    }
+    let previous: Option<String> = transaction
+        .query_row(
+            "SELECT payload FROM context_precompute_ready WHERE thread_id=?1",
+            [&candidate.checkpoint.thread_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(previous) = previous {
+        if previous != encoded {
+            return Err(ContextCheckpointError::Invalid);
+        }
+    } else {
+        let model_matches: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND model=?2 AND pending_model IS NULL)",
+            params![candidate.checkpoint.thread_id, candidate.checkpoint.model], |row| row.get(0),
+        )?;
+        if !model_matches {
+            return Err(ContextCheckpointError::Stale);
+        }
+        transaction.execute(
+            "INSERT INTO context_precompute_ready(thread_id,generation,payload) VALUES(?1,?2,?3)",
+            params![
+                candidate.checkpoint.thread_id,
+                candidate.generation,
+                encoded
+            ],
+        )?;
+    }
+    if !permitted() {
+        return Err(ContextCheckpointError::Cancelled);
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn recover(
     conn: &Connection,
     thread_id: &str,
@@ -417,4 +474,55 @@ pub fn retire_in_transaction(
         params![thread_id, generation],
     )?;
     Ok(changed != 0)
+}
+
+pub struct PreparedPublication {
+    candidate: ReadyCompaction,
+    fence: crate::context_compaction::source_version::SourceFence,
+}
+
+impl PreparedPublication {
+    pub fn prepare(
+        conn: &Connection,
+        candidate: &ReadyCompaction,
+        now: i64,
+    ) -> Result<Self, ContextCheckpointError> {
+        let tx = conn.unchecked_transaction()?;
+        let fence = crate::context_compaction::source_version::SourceFence::capture(
+            &tx,
+            &candidate.checkpoint.thread_id,
+        )?;
+        candidate.validate_current(&tx, now)?;
+        tx.commit()?;
+        Ok(Self {
+            candidate: candidate.clone(),
+            fence,
+        })
+    }
+
+    pub fn validate(
+        &self,
+        tx: &Transaction<'_>,
+        candidate: &ReadyCompaction,
+        now: i64,
+    ) -> Result<bool, ContextCheckpointError> {
+        if &self.candidate != candidate
+            || now < candidate.checkpoint.created_at
+            || now.saturating_sub(candidate.checkpoint.created_at) > MAX_READY_AGE_MS
+        {
+            return Ok(false);
+        }
+        if !self.fence.validate(tx)? {
+            return Ok(false);
+        }
+        accounting::validate_finished(
+            tx,
+            &candidate.generation,
+            &candidate.checkpoint.thread_id,
+            &candidate.checkpoint.model,
+            candidate.stage_count,
+            candidate.usage_complete,
+        )?;
+        Ok(true)
+    }
 }

@@ -32,17 +32,24 @@ pub fn record_assistant_response(
     content: &str,
     response: &AssistantResponseRow,
 ) -> Result<bool, rusqlite::Error> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Messages,
-    )?;
-    if response.message_id != message_id || !response.valid_for(content) {
-        return Ok(false);
-    }
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::Messages,
     )?;
+    let result = record_assistant_response_in_transaction(&tx, message_id, content, response)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn record_assistant_response_in_transaction(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    content: &str,
+    response: &AssistantResponseRow,
+) -> Result<bool, rusqlite::Error> {
+    if response.message_id != message_id || !response.valid_for(content) {
+        return Ok(false);
+    }
     let owner = find(&tx, message_id)?;
     if !owner.is_some_and(|owner| {
         owner.role == "assistant" && owner.status == "streaming" && owner.content == content
@@ -72,7 +79,6 @@ pub fn record_assistant_response(
         "INSERT INTO assistant_responses (message_id, response_id, text_start_bytes, text_end_bytes, kind) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![message_id, response.response_id, start, end, response.kind],
     )?;
-    tx.commit()?;
     Ok(true)
 }
 

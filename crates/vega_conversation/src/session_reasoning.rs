@@ -29,16 +29,45 @@ pub fn initialize(
     thread_id: &str,
     defaults: &[SessionReasoningPreference],
 ) -> Result<Vec<SessionReasoningPreference>, ConversationError> {
-    let _coordination = coordinate_preferences()?;
     for preference in defaults {
         preference.validate().map_err(failure)?;
     }
     let encoded = serde_json::to_string(defaults).map_err(failure)?;
-    vega_store::threads::set_reasoning_preferences(store.conn(), thread_id, &encoded, true)
-        .map_err(failure)?;
-    crate::threads::get_thread(store, thread_id)?
-        .reasoning_preferences
-        .ok_or_else(|| failure("session reasoning is not initialized"))
+    let path = store
+        .database_path()
+        .ok_or_else(|| failure("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        InitializePreferences {
+            thread_id: thread_id.to_owned(),
+            encoded,
+        },
+    )
+    .map_err(failure)?
+}
+
+struct InitializePreferences {
+    thread_id: String,
+    encoded: String,
+}
+
+impl crate::database_writer::Sealed for InitializePreferences {}
+
+impl crate::database_writer::DatabaseCommand for InitializePreferences {
+    type Output = Result<Vec<SessionReasoningPreference>, ConversationError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = coordinate_preferences()?;
+        let tx = store.immediate_transaction().map_err(failure)?;
+        vega_store::threads::set_reasoning_preferences(&tx, &self.thread_id, &self.encoded, true)
+            .map_err(failure)?;
+        let preferences = crate::threads::get_thread(store, &self.thread_id)?
+            .reasoning_preferences
+            .ok_or_else(|| failure("session reasoning is not initialized"))?;
+        tx.commit().map_err(failure)?;
+        Ok(preferences)
+    }
 }
 
 pub fn save(
@@ -46,21 +75,63 @@ pub fn save(
     thread_id: &str,
     candidate: &ReasoningProfileProjection,
 ) -> Result<Vec<SessionReasoningPreference>, ConversationError> {
-    let _coordination = coordinate_preferences()?;
-    let transaction = store.immediate_transaction().map_err(failure)?;
-    let mut preferences = crate::threads::get_thread(store, thread_id)?
-        .reasoning_preferences
-        .ok_or_else(|| failure("session reasoning is not initialized"))?;
-    set_preference(&mut preferences, candidate)?;
-    let encoded = serde_json::to_string(&preferences).map_err(failure)?;
-    if vega_store::threads::set_reasoning_preferences(&transaction, thread_id, &encoded, false)
+    let mut validated = Vec::new();
+    set_preference(&mut validated, candidate)?;
+    let preference = validated
+        .pop()
+        .ok_or_else(|| failure("invalid reasoning preference"))?;
+    let path = store
+        .database_path()
+        .ok_or_else(|| failure("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        SavePreference {
+            thread_id: thread_id.to_owned(),
+            preference,
+        },
+    )
+    .map_err(failure)?
+}
+
+struct SavePreference {
+    thread_id: String,
+    preference: SessionReasoningPreference,
+}
+
+impl crate::database_writer::Sealed for SavePreference {}
+
+impl crate::database_writer::DatabaseCommand for SavePreference {
+    type Output = Result<Vec<SessionReasoningPreference>, ConversationError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = coordinate_preferences()?;
+        let transaction = store.immediate_transaction().map_err(failure)?;
+        let mut preferences = crate::threads::get_thread(store, &self.thread_id)?
+            .reasoning_preferences
+            .ok_or_else(|| failure("session reasoning is not initialized"))?;
+        if let Some(existing) = preferences.iter_mut().find(|value| {
+            value.provider == self.preference.provider && value.model == self.preference.model
+        }) {
+            *existing = self.preference;
+        } else {
+            preferences.push(self.preference);
+        }
+        let encoded = serde_json::to_string(&preferences).map_err(failure)?;
+        if vega_store::threads::set_reasoning_preferences(
+            &transaction,
+            &self.thread_id,
+            &encoded,
+            false,
+        )
         .map_err(failure)?
-        != 1
-    {
-        return Err(ConversationError::NotFound(thread_id.to_string()));
+            != 1
+        {
+            return Err(ConversationError::NotFound(self.thread_id));
+        }
+        transaction.commit().map_err(failure)?;
+        Ok(preferences)
     }
-    transaction.commit().map_err(failure)?;
-    Ok(preferences)
 }
 
 pub fn set_preference(

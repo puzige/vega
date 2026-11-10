@@ -85,7 +85,7 @@ impl ThreadPermissionService {
 
     pub fn save(&self, change: &ThreadPermissionChange) -> Result<Thread, ThreadPermissionError> {
         let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
-        let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
+        let store = Store::open_read_only(&self.database_path).map_err(unavailable)?;
         require_open(&store)?;
         if store.database_identity() != change.database {
             return Err(ThreadPermissionError::Conflict);
@@ -114,6 +114,34 @@ impl ThreadPermissionService {
             tx.commit().map_err(unavailable)?;
             return Ok(next);
         }
+        drop(_coordination);
+        crate::database_writer::commit(
+            &self.database_path,
+            change.database,
+            SaveThreadPermission {
+                change: change.clone(),
+            },
+        )
+        .map_err(|_| ThreadPermissionError::OutcomeUnknown)?
+    }
+}
+
+struct SaveThreadPermission {
+    change: ThreadPermissionChange,
+}
+
+impl crate::database_writer::Sealed for SaveThreadPermission {}
+
+impl crate::database_writer::DatabaseCommand for SaveThreadPermission {
+    type Output = Result<Thread, ThreadPermissionError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
+        let change = &self.change;
+        require_open(store)?;
+        if store.database_identity() != change.database || change.draft {
+            return Err(ThreadPermissionError::Conflict);
+        }
         let tx = store.immediate_transaction().map_err(unavailable)?;
         let state = validate_change(&tx, change)?;
         let issued_at = crate::threads::now_ms();
@@ -137,7 +165,7 @@ impl ThreadPermissionService {
         }
         tx.commit_with_rollback()
             .map_err(|_| ThreadPermissionError::OutcomeUnknown)?;
-        let saved = crate::threads::get_thread(&store, &change.source.id)
+        let saved = crate::threads::get_thread(store, &change.source.id)
             .map_err(|_| ThreadPermissionError::OutcomeUnknown)?;
         if saved.permission_mode != change.mode
             || saved.permission_revision != revision

@@ -5,8 +5,9 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Component, Path};
-use std::sync::Mutex;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ static SAVE_FAILURES: Mutex<VecDeque<(crate::thread_admission::DatabaseIdentity,
 #[serde(rename_all = "snake_case")]
 pub enum FailureStage {
     RecordValidation,
+    QueueAdmission,
     ProcessLock,
     DatabasePath,
     ParentOpen,
@@ -204,6 +206,13 @@ fn directory(
             .filter(|path| !path.is_empty())
             .ok_or_else(invalid),
     )?);
+    directory_for_path(path, create)
+}
+
+fn directory_for_path(
+    path: &Path,
+    create: bool,
+) -> Result<(File, std::fs::Metadata), DiagnosticFault> {
     if !path.is_absolute() {
         return at(FailureStage::DatabasePath, Err(invalid()));
     }
@@ -365,26 +374,180 @@ fn write_temporary(directory: &File, bytes: &[u8]) -> Result<(), DiagnosticFault
     at(FailureStage::TemporaryWrite, file.sync_all())
 }
 
-pub fn record(store: &crate::Store, failure: PersistenceFailure) -> Result<(), DiagnosticFault> {
-    at(FailureStage::RecordValidation, validate(&failure))?;
-    let result = record_inner(store.conn(), &failure);
-    if let Err(fault) = result
-        && let Ok(mut failures) = SAVE_FAILURES.lock()
-    {
+struct QueuedFailure {
+    path: PathBuf,
+    database: crate::thread_admission::DatabaseIdentity,
+    failure: PersistenceFailure,
+}
+
+struct RecorderState {
+    sender: Option<mpsc::SyncSender<QueuedFailure>>,
+    pending: usize,
+    failed: usize,
+}
+
+struct Recorder {
+    state: Mutex<RecorderState>,
+    settled: Condvar,
+}
+
+static RECORDER: OnceLock<Result<Arc<Recorder>, DiagnosticFault>> = OnceLock::new();
+
+fn queue_fault(io_kind: &'static str) -> DiagnosticFault {
+    DiagnosticFault { stage: FailureStage::QueueAdmission, io_kind, os_code: None }
+}
+
+impl Recorder {
+    fn start() -> Result<Arc<Self>, DiagnosticFault> {
+        let (sender, receiver) = mpsc::sync_channel::<QueuedFailure>(CAPACITY);
+        let recorder = Arc::new(Self {
+            state: Mutex::new(RecorderState { sender: Some(sender), pending: 0, failed: 0 }),
+            settled: Condvar::new(),
+        });
+        let worker = recorder.clone();
+        at(FailureStage::QueueAdmission, std::thread::Builder::new()
+            .name("vega-failure-recorder".into())
+            .spawn(move || {
+                while let Ok(queued) = receiver.recv() {
+                    let result = record_inner(&queued.path, queued.database, &queued.failure);
+                    if let Err(fault) = result {
+                        retain_failure(queued.database, fault, queued.failure);
+                        tracing::warn!(stage = ?fault.stage, io_kind = fault.io_kind,
+                            os_code = fault.os_code, outcome = "failure_diagnostic_unavailable");
+                    }
+                    if let Ok(mut state) = worker.state.lock() {
+                        state.pending -= 1;
+                        state.failed += usize::from(result.is_err());
+                        worker.settled.notify_all();
+                    }
+                }
+            }))?;
+        Ok(recorder)
+    }
+
+    fn enqueue(&self, queued: QueuedFailure) -> Result<(), DiagnosticFault> {
+        let database = queued.database;
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                let fault = queue_fault("unavailable");
+                retain_failure(database, fault, queued.failure);
+                return Err(fault);
+            }
+        };
+        let Some(sender) = state.sender.as_ref() else {
+            let fault = queue_fault("closed");
+            retain_failure(database, fault, queued.failure);
+            return Err(fault);
+        };
+        match sender.try_send(queued) {
+            Ok(()) => { state.pending += 1; Ok(()) }
+            Err(error) => {
+                let fault = queue_fault(match &error {
+                    mpsc::TrySendError::Full(_) => "would_block",
+                    mpsc::TrySendError::Disconnected(_) => "broken_pipe",
+                });
+                let (mpsc::TrySendError::Full(queued) | mpsc::TrySendError::Disconnected(queued)) = error;
+                retain_failure(database, fault, queued.failure);
+                Err(fault)
+            }
+        }
+    }
+
+    fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| "failure recorder unavailable")?;
+        state.sender.take();
+        let deadline = Instant::now() + timeout;
+        while state.pending != 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!("failure sidecar unsettled: {} pending", state.pending));
+            }
+            state = self.settled.wait_timeout(state, remaining)
+                .map_err(|_| "failure recorder unavailable")?.0;
+        }
+        if state.failed != 0 {
+            return Err(format!("{} failure sidecar records not persisted", state.failed));
+        }
+        Ok(())
+    }
+}
+
+pub fn shutdown() -> Result<(), String> {
+    RECORDER.get_or_init(Recorder::start).as_ref().map_err(ToString::to_string)?.shutdown(Duration::from_secs(15))
+}
+
+fn retain_failure(
+    database: crate::thread_admission::DatabaseIdentity,
+    fault: DiagnosticFault,
+    failure: PersistenceFailure,
+) {
+    if let Ok(mut failures) = SAVE_FAILURES.lock() {
         if failures.len() == CAPACITY {
             failures.pop_front();
         }
-        failures.push_back((store.database_identity(), SaveFailure { fault, failure }));
+        failures.push_back((database, SaveFailure { fault, failure }));
+    }
+}
+
+pub fn enqueue(store: &crate::Store, failure: PersistenceFailure) -> Result<(), DiagnosticFault> {
+    at(FailureStage::RecordValidation, validate(&failure))?;
+    let database = store.database_identity();
+    let path = store.conn().path().filter(|path| !path.is_empty());
+    let Some(path) = path else {
+        let fault = DiagnosticFault {
+            stage: FailureStage::DatabasePath,
+            io_kind: "invalid_data",
+            os_code: None,
+        };
+        retain_failure(database, fault, failure);
+        return Err(fault);
+    };
+    let queued = QueuedFailure {
+        path: PathBuf::from(path),
+        database,
+        failure,
+    };
+    match RECORDER.get_or_init(Recorder::start) {
+        Ok(recorder) => recorder.enqueue(queued),
+        Err(fault) => {
+            retain_failure(database, *fault, queued.failure);
+            Err(*fault)
+        }
+    }
+}
+
+pub fn record(store: &crate::Store, failure: PersistenceFailure) -> Result<(), DiagnosticFault> {
+    at(FailureStage::RecordValidation, validate(&failure))?;
+    let result = store
+        .conn()
+        .path()
+        .filter(|path| !path.is_empty())
+        .ok_or(DiagnosticFault {
+            stage: FailureStage::DatabasePath,
+            io_kind: "invalid_data",
+            os_code: None,
+        })
+        .and_then(|path| record_inner(Path::new(path), store.database_identity(), &failure));
+    if let Err(fault) = result {
+        retain_failure(store.database_identity(), fault, failure);
     }
     result
 }
 
-fn record_inner(conn: &Connection, failure: &PersistenceFailure) -> Result<(), DiagnosticFault> {
+fn record_inner(
+    path: &Path,
+    identity: crate::thread_admission::DatabaseIdentity,
+    failure: &PersistenceFailure,
+) -> Result<(), DiagnosticFault> {
     let _guard = at(
         FailureStage::ProcessLock,
         FILE_ACCESS.lock().map_err(|_| invalid()),
     )?;
-    let (directory, database) = directory(conn, true)?;
+    let (directory, database) = directory_for_path(path, true)?;
+    if !identity.matches_metadata(&database) {
+        return at(FailureStage::DatabaseValidation, Err(invalid()));
+    }
     let _lock = lock_directory(&directory, true)?;
     let stored = StoredFailure {
         version: 1,
@@ -491,4 +654,98 @@ pub fn read_by_run(
     }
     failures.sort_by_key(|failure| failure.occurred_at);
     Ok(failures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorder_shutdown_reports_pending_then_drains_and_rejects_new_records()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("vega-sidecar-drain-{}", ulid::Ulid::generate()));
+        std::fs::create_dir(&root)?;
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+        let path = root.join("database.db");
+        let store = crate::Store::open(&path)?;
+        store.migrate()?;
+        let failure = PersistenceFailure {
+            thread_id: ulid::Ulid::generate().to_string(),
+            run_id: ulid::Ulid::generate().to_string(),
+            message_id: ulid::Ulid::generate().to_string(),
+            occurred_at: 1,
+            category: PersistenceCategory::Snapshot,
+            elapsed_ms: 1,
+            sqlite_extended_code: Some(5),
+            observations: Vec::new(),
+        };
+        let recorder = Recorder::start()?;
+        let guard = FILE_ACCESS.lock().map_err(|_| invalid())?;
+        recorder.enqueue(QueuedFailure { path: path.clone(), database: store.database_identity(), failure: failure.clone() })?;
+        assert!(recorder.shutdown(Duration::from_millis(10)).unwrap_err().contains("pending"));
+        assert_eq!(recorder.enqueue(QueuedFailure { path, database: store.database_identity(), failure: failure.clone() }).unwrap_err().io_kind, "closed");
+        drop(guard);
+        recorder.shutdown(Duration::from_secs(2))?;
+        assert_eq!(read_by_run(store.conn(), &failure.thread_id, &failure.run_id)?.len(), 1);
+        drop(store);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn queued_file_wait_does_not_block_database_and_replaced_database_is_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!("vega-sidecar-{}", ulid::Ulid::generate()));
+        std::fs::create_dir(&root)?;
+        std::fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+        let path = root.join("database.db");
+        let store = crate::Store::open(&path)?;
+        store.migrate()?;
+        let failure = PersistenceFailure {
+            thread_id: ulid::Ulid::generate().to_string(),
+            run_id: ulid::Ulid::generate().to_string(),
+            message_id: ulid::Ulid::generate().to_string(),
+            occurred_at: 1,
+            category: PersistenceCategory::Snapshot,
+            elapsed_ms: 1,
+            sqlite_extended_code: Some(5),
+            observations: Vec::new(),
+        };
+        let file_guard = FILE_ACCESS.lock().map_err(|_| invalid())?;
+        let started = std::time::Instant::now();
+        enqueue(&store, failure.clone())?;
+        let tx = store.immediate_transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE sidecar_progress(value INTEGER); INSERT INTO sidecar_progress VALUES(1);",
+        )?;
+        tx.commit()?;
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let queued = QueuedFailure {
+            path: path.clone(),
+            database: store.database_identity(),
+            failure: failure.clone(),
+        };
+        std::fs::rename(&path, root.join("original.db"))?;
+        let replacement = crate::Store::open(&path)?;
+        replacement.migrate()?;
+        drop(file_guard);
+        let fault = record_inner(&queued.path, queued.database, &queued.failure)
+            .expect_err("replaced database must not receive the old diagnostic");
+        assert_eq!(fault.stage, FailureStage::DatabaseValidation);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while process_save_failures(&store, &failure.thread_id, &failure.run_id).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background failure was not retained"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (directory, _) = directory(replacement.conn(), true)?;
+        drop(lock_directory(&directory, true)?);
+        assert!(read_by_run(replacement.conn(), &failure.thread_id, &failure.run_id)?.is_empty());
+        drop(replacement);
+        drop(store);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

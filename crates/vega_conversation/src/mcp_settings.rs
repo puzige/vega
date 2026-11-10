@@ -1,3 +1,7 @@
+mod writer;
+#[cfg(test)]
+mod protocol_tests;
+
 use std::collections::{HashMap, HashSet};
 use std::net::TcpListener as StdTcpListener;
 use vega_runtime::{CredentialReadError, CredentialReadReason, CredentialReadStage};
@@ -304,8 +308,8 @@ pub struct McpServerSettingsService {
     registry: Arc<Mutex<RegistryState>>,
     configuration_cancel: CancellationToken,
     configuration_budget: Option<Arc<Mutex<ConfigurationRetryBudget>>>,
-    configuration_retry_enabled: bool,
     configuration_invalidation: Arc<std::sync::atomic::AtomicBool>,
+    reconciliation_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -376,59 +380,47 @@ impl McpServerSettingsService {
             registry: Arc::new(Mutex::new(RegistryState::default())),
             configuration_cancel: CancellationToken::new(),
             configuration_budget: None,
-            configuration_retry_enabled: false,
             configuration_invalidation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reconciliation_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     fn store(&self) -> Result<Store, McpSettingsError> {
-        if self.configuration_retry_enabled {
-            return self
-                .configuration_operation()
-                .credential_store()
-                .map_err(Into::into);
+        self.configuration_operation()
+            .credential_store()
+            .map_err(Into::into)
+    }
+
+    fn schedule_reconciliation(&self) {
+        if self
+            .reconciliation_running
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
         }
-        let store = Store::open(&self.database_path).map_err(|_| McpSettingsError::Store)?;
-        store.migrate().map_err(|_| McpSettingsError::Store)?;
-        let mut state = self.lock()?;
-        match vega_store::mcp_config::reconcile(
-            store.conn(),
-            &self.config_root.join("config.yaml"),
-            validate_yaml_row,
-        ) {
-            Ok(changed) => {
-                for id in changed {
-                    state.revoke(&id);
-                }
-            }
-            Err(error) => {
-                let ids = state
-                    .epochs
-                    .keys()
-                    .chain(state.leases.keys())
-                    .chain(state.connecting.keys())
-                    .cloned()
-                    .collect::<HashSet<_>>();
-                for id in ids {
-                    state.invalidate_connections(&id);
-                }
-                return Err(error.into());
-            }
+        let operation = self.configuration_operation();
+        let running = self.reconciliation_running.clone();
+        if let Err(error) = crate::submission_diagnostics::background::submit(move || {
+                let result = operation.reconcile_declarations();
+                operation
+                    .reconciliation_running
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                result.map_err(|_| "MCP configuration reconciliation not confirmed".into())
+            })
+        {
+            running.store(false, std::sync::atomic::Ordering::SeqCst);
+            tracing::warn!(%error, outcome = "mcp_configuration_reconciliation_not_accepted");
         }
-        drop(state);
-        Ok(store)
     }
 
     pub fn with_configuration_cancel(mut self, cancel: CancellationToken) -> Self {
         self.configuration_cancel = cancel;
         self.configuration_budget = None;
-        self.configuration_retry_enabled = true;
         self
     }
 
     fn configuration_operation(&self) -> Self {
         let mut operation = self.clone();
-        operation.configuration_retry_enabled = true;
         if operation.configuration_budget.is_none() {
             operation.configuration_budget =
                 Some(Arc::new(Mutex::new(ConfigurationRetryBudget::default())));
@@ -556,33 +548,105 @@ impl McpServerSettingsService {
     }
 
     fn credential_store(&self) -> Result<Store, CredentialReadError> {
-        let store = Store::open(&self.database_path)
-            .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
-        store
-            .migrate()
+        let store = Store::open_read_only(&self.database_path)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
         let (mut state, document) = self.configuration_guard()?;
-        match vega_store::mcp_config::reconcile_with_edit(
+        if let Err(error) = vega_store::mcp_config::projection_current(
             store.conn(),
             &self.config_root.join("config.yaml"),
-            validate_yaml_row,
-            document,
         ) {
-            Ok(changed) => {
-                for id in changed {
-                    state.revoke(&id);
-                }
-            }
-            Err(error) => {
-                Self::invalidate_configuration(&mut state);
-                return Err(mcp_read_error(error));
-            }
+            Self::invalidate_configuration(&mut state);
+            drop(document);
+            drop(state);
+            self.schedule_reconciliation();
+            return Err(mcp_read_error(error));
         }
         Ok(store)
     }
 
     pub fn reconcile_declarations(&self) -> Result<(), McpSettingsError> {
-        self.store().map(|_| ())
+        self.reconcile_configuration().map_err(Into::into)
+    }
+
+    fn reconcile_configuration(&self) -> Result<(), CredentialReadError> {
+        let result = self.reconcile_configuration_inner();
+        if result.is_err() {
+            self.configuration_invalidation
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Ok(mut state) = self.registry.try_lock() {
+                Self::invalidate_configuration(&mut state);
+            }
+        }
+        result
+    }
+
+    fn reconcile_configuration_inner(&self) -> Result<(), CredentialReadError> {
+        let operation = self.configuration_operation();
+        let store = Store::open_read_only(&self.database_path)
+            .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        let path = self.config_root.join("config.yaml");
+        let (state, document) = operation.configuration_guard()?;
+        let prepared = vega_store::mcp_config::prepare_reconciliation(
+            &store,
+            document.bytes().as_deref(),
+            validate_yaml_row,
+        )
+        .map_err(mcp_read_error)?;
+        if prepared.unchanged() {
+            return Ok(());
+        }
+        drop(document);
+        drop(state);
+        let intent = crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::BeginMcpReconciliation {
+                registry: self.registry.clone(),
+                prepared,
+            },
+        )
+        .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
+        .map_err(mcp_read_error)?;
+        let (state, document) = operation.configuration_guard()?;
+        let prepared = intent
+            .save(&store, &path, document)
+            .map_err(mcp_read_error)?;
+        drop(state);
+        crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::ConfirmMcpReconciliation {
+                registry: self.registry.clone(),
+                prepared,
+            },
+        )
+        .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
+        .map_err(mcp_read_error)?;
+        let (state, document) = operation.configuration_guard()?;
+        let result =
+            vega_store::mcp_config::projection_current(store.conn(), &path).map_err(mcp_read_error);
+        drop(document);
+        drop(state);
+        result.map(|_| ())
+    }
+
+    fn commit_metadata(
+        &self,
+        store: &Store,
+        expected_epoch: Option<(String, u64)>,
+        command: writer::McpMetadataWrite,
+    ) -> Result<McpServerRow, McpSettingsError> {
+        crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::SaveMcpMetadata {
+                registry: self.registry.clone(),
+                expected_epoch,
+                projection: writer::CleanupProjection::read(store.conn())?,
+                command,
+            },
+        )
+        .map_err(|_| McpSettingsError::Store)?
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState>, McpSettingsError> {
@@ -640,10 +704,39 @@ impl McpServerSettingsService {
 
     /// Read-only list; no process launch, network access or secret retrieval.
     pub fn list(&self) -> Result<Vec<McpServerView>, McpSettingsError> {
-        let store = self.store()?;
-        let state = self.lock()?;
-        mcp_servers::list(store.conn())?
-            .iter()
+        let store =
+            Store::open_read_only(&self.database_path).map_err(|_| McpSettingsError::Store)?;
+        let mut state = self
+            .registry
+            .try_lock()
+            .map_err(|_| McpSettingsError::Conflict)?;
+        if self
+            .configuration_invalidation
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            Self::invalidate_configuration(&mut state);
+        }
+        let snapshot = store
+            .conn()
+            .unchecked_transaction()
+            .map_err(|_| McpSettingsError::Store)?;
+        if let Err(error) = vega_store::mcp_config::projection_current(
+            &snapshot,
+            &self.config_root.join("config.yaml"),
+        ) {
+            Self::invalidate_configuration(&mut state);
+            drop(snapshot);
+            drop(state);
+            self.schedule_reconciliation();
+            return Err(error.into());
+        }
+        let rows = mcp_servers::list(&snapshot)?;
+        vega_store::mcp_config::projection_current(
+            &snapshot,
+            &self.config_root.join("config.yaml"),
+        )?;
+        snapshot.commit().map_err(|_| McpSettingsError::Store)?;
+        rows.iter()
             .map(|row| view(row, &state, &self.config_root))
             .collect()
     }
@@ -651,10 +744,11 @@ impl McpServerSettingsService {
     /// Save a new disabled server, with no implicit activation.
     pub fn create(&self, form: McpServerForm) -> Result<McpServerView, McpSettingsError> {
         let draft = draft_from_form(&form)?;
+        self.reconcile_declarations()?;
         let store = self.store()?;
         let state = self.lock()?;
-        let row = mcp_servers::create(store.conn(), &draft)?;
         drop(state);
+        let row = self.commit_metadata(&store, None, writer::McpMetadataWrite::Create(draft))?;
         self.reconcile_pending()?;
         let state = self.lock()?;
         view(&row, &state, &self.config_root)
@@ -672,8 +766,17 @@ impl McpServerSettingsService {
         let store = self.store()?;
         let mut state = self.lock()?;
         state.revoke(id);
-        let row = mcp_servers::replace(store.conn(), id, expected_revision, &draft)?;
+        let epoch = state.epoch(id);
         drop(state);
+        let row = self.commit_metadata(
+            &store,
+            Some((id.to_owned(), epoch)),
+            writer::McpMetadataWrite::Replace {
+                id: id.to_owned(),
+                revision: expected_revision,
+                draft,
+            },
+        )?;
         self.reconcile_pending()?;
         let state = self.lock()?;
         view(&row, &state, &self.config_root)
@@ -702,7 +805,25 @@ impl McpServerSettingsService {
             return Err(McpSettingsError::Conflict);
         }
         let draft = draft_from_row(&old);
-        let row = mcp_servers::replace(store.conn(), id, expected_revision, &draft)?;
+        let epoch = state.epoch(id);
+        drop(state);
+        let row = self.commit_metadata(
+            &store,
+            Some((id.to_owned(), epoch)),
+            writer::McpMetadataWrite::Replace {
+                id: id.to_owned(),
+                revision: expected_revision,
+                draft,
+            },
+        )?;
+        let state = self.lock()?;
+        if state.epoch(id) != epoch {
+            return Err(McpSettingsError::Conflict);
+        }
+        let current = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
+        if current != row {
+            return Err(McpSettingsError::Conflict);
+        }
         let reference = row
             .remote_credential_ref
             .as_deref()
@@ -750,7 +871,23 @@ impl McpServerSettingsService {
             let store = self.store()?;
             let mut state = self.lock()?;
             state.revoke(id);
-            mcp_servers::begin_local_secret_rotation(store.conn(), id, expected_revision, variable)?
+            let epoch = state.epoch(id);
+            drop(state);
+            let row = self.commit_metadata(
+                &store,
+                Some((id.to_owned(), epoch)),
+                writer::McpMetadataWrite::LocalRotation {
+                    id: id.to_owned(),
+                    revision: expected_revision,
+                    variable: variable.to_owned(),
+                },
+            )?;
+            let reference = env_slots_from_row(&row)?
+                .into_iter()
+                .find(|slot| slot.variable == variable)
+                .ok_or(McpSettingsError::Conflict)?
+                .credential_ref;
+            (row, reference)
         };
         self.reconcile_pending()?;
         vega_store::keystore::set_key(&self.config_root, &reference, &secret)
@@ -1099,14 +1236,22 @@ impl McpServerSettingsService {
             let current = mcp_servers::find(store.conn(), &prepared.server_id)?
                 .ok_or(McpSettingsError::NotFound)?;
             let _ = oauth_endpoint(&current, prepared.revision)?;
-            let row = mcp_servers::set_enabled(
-                store.conn(),
-                &prepared.server_id,
-                prepared.revision,
-                false,
-            )?;
-            let cancel = CancellationToken::new();
             let epoch = state.epoch(&prepared.server_id);
+            drop(state);
+            let row = self.commit_metadata(
+                &store,
+                Some((prepared.server_id.clone(), epoch)),
+                writer::McpMetadataWrite::Enable {
+                    id: prepared.server_id.clone(),
+                    revision: prepared.revision,
+                    enabled: false,
+                },
+            )?;
+            let mut state = self.lock()?;
+            if state.epoch(&prepared.server_id) != epoch {
+                return Err(McpSettingsError::Conflict);
+            }
+            let cancel = CancellationToken::new();
             state.active_oauth.insert(
                 flow_id.to_owned(),
                 ActiveOAuth {
@@ -1278,17 +1423,35 @@ impl McpServerSettingsService {
                 return Err(McpSettingsError::Conflict);
             }
             state.revoke_for_oauth_install(&pending.server_id, flow_id)?;
-            let (row, reference) = mcp_servers::begin_oauth_install(
-                store.conn(),
-                &pending.server_id,
-                pending.revision,
-                pending.client.server_issuer(),
-                pending.client.client_id(),
+            let epoch = state.epoch(&pending.server_id);
+            drop(state);
+            let row = self.commit_metadata(
+                &store,
+                Some((pending.server_id.clone(), epoch)),
+                writer::McpMetadataWrite::OAuthInstall {
+                    id: pending.server_id.clone(),
+                    revision: pending.revision,
+                    issuer: pending.client.server_issuer().to_owned(),
+                    client_id: pending.client.client_id().to_owned(),
+                },
             )?;
+            let state = self.lock()?;
+            if state.epoch(&pending.server_id) != epoch {
+                return Err(McpSettingsError::Conflict);
+            }
+            let current =
+                mcp_servers::find(store.conn(), &row.id)?.ok_or(McpSettingsError::NotFound)?;
+            if current != row {
+                return Err(McpSettingsError::Conflict);
+            }
+            let reference = row
+                .remote_credential_ref
+                .as_deref()
+                .ok_or(McpSettingsError::Conflict)?;
             let envelope = tokens
                 .to_owner_only_envelope(&pending.server_id, row.config_revision)
                 .map_err(map_oauth_error)?;
-            vega_store::keystore::set_key(&self.config_root, &reference, &envelope)
+            vega_store::keystore::set_key(&self.config_root, reference, &envelope)
                 .map_err(|_| McpSettingsError::Credential)?;
             row
         };
@@ -1319,7 +1482,16 @@ impl McpServerSettingsService {
             let store = self.store()?;
             let mut state = self.lock()?;
             state.revoke(id);
-            mcp_servers::begin_oauth_disconnect(store.conn(), id, expected_revision)?
+            let epoch = state.epoch(id);
+            drop(state);
+            self.commit_metadata(
+                &store,
+                Some((id.to_owned(), epoch)),
+                writer::McpMetadataWrite::Disconnect {
+                    id: id.to_owned(),
+                    revision: expected_revision,
+                },
+            )?
         };
         self.reconcile_pending()?;
         let state = self.lock()?;
@@ -1342,11 +1514,17 @@ impl McpServerSettingsService {
             let store = self.store()?;
             let mut state = self.lock()?;
             state.revoke(id);
-            let row = mcp_servers::set_enabled(store.conn(), id, expected_revision, enabled)?;
-            if enabled {
-                state.suspended.remove(id);
-            }
-            row
+            let epoch = state.epoch(id);
+            drop(state);
+            self.commit_metadata(
+                &store,
+                Some((id.to_owned(), epoch)),
+                writer::McpMetadataWrite::Enable {
+                    id: id.to_owned(),
+                    revision: expected_revision,
+                    enabled,
+                },
+            )?
         };
         self.reconcile_pending()?;
         if enabled {
@@ -1359,7 +1537,15 @@ impl McpServerSettingsService {
                 .err()
                 .map(McpSettingsError::code);
             let store = self.store()?;
-            let _ = mcp_servers::set_last_error(store.conn(), id, row.config_revision, code);
+            let _ = self.commit_metadata(
+                &store,
+                None,
+                writer::McpMetadataWrite::LastError {
+                    id: id.to_owned(),
+                    revision: row.config_revision,
+                    code: code.map(str::to_owned),
+                },
+            );
         }
         let store = self.store()?;
         let row = mcp_servers::find(store.conn(), id)?.ok_or(McpSettingsError::NotFound)?;
@@ -1436,7 +1622,10 @@ impl McpServerSettingsService {
     }
 
     async fn ready_for_run_operation(&self) -> Result<McpRunReadiness, McpSettingsError> {
-        self.reconcile_pending_for_run()?;
+        let operation = self.clone();
+        tokio::task::spawn_blocking(move || operation.reconcile_pending_for_run())
+            .await
+            .map_err(|_| McpSettingsError::Store)??;
         let store = self.credential_store()?;
         let rows: Vec<_> = mcp_servers::list(store.conn())
             .map_err(mcp_read_error)?
@@ -1498,7 +1687,16 @@ impl McpServerSettingsService {
             let store = self.store()?;
             let mut state = self.lock()?;
             state.revoke(id);
-            mcp_servers::begin_remove(store.conn(), id, expected_revision)?;
+            let epoch = state.epoch(id);
+            drop(state);
+            self.commit_metadata(
+                &store,
+                Some((id.to_owned(), epoch)),
+                writer::McpMetadataWrite::Remove {
+                    id: id.to_owned(),
+                    revision: expected_revision,
+                },
+            )?;
         }
         self.reconcile_pending()?;
         let store = self.store()?;
@@ -1511,6 +1709,7 @@ impl McpServerSettingsService {
     /// Retry any interrupted owner-only secret deletion after restart. The
     /// outbox is durable and acknowledges only after deletion/Missing.
     pub fn reconcile_pending(&self) -> Result<(), McpSettingsError> {
+        self.reconcile_declarations()?;
         let store = self.store()?;
         let _state = self.lock()?;
         let path = self.config_root.join("config.yaml");
@@ -1525,6 +1724,8 @@ impl McpServerSettingsService {
         )
         .map_err(|_| McpSettingsError::Store)?;
         vega_store::mcp_config::projection_current(store.conn(), &path)?;
+        let projection = writer::CleanupProjection::read(store.conn())?;
+        let mut acknowledged = Vec::new();
         for entry in mcp_servers::pending_cleanup(store.conn())? {
             if !is_owned_secret_ref(&entry.server_id, &entry.credential_ref)
                 || !mcp_servers::cleanup_target_is_stale(store.conn(), &entry)?
@@ -1535,18 +1736,31 @@ impl McpServerSettingsService {
                 Ok(()) | Err(vega_store::keystore::Error::Missing) => {}
                 Err(_) => return Err(McpSettingsError::Credential),
             }
-            mcp_servers::acknowledge_cleanup(store.conn(), &entry)?;
+            acknowledged.push(entry);
         }
-        for row in mcp_servers::list(store.conn())?
+        let deleting = mcp_servers::list(store.conn())?
             .into_iter()
             .filter(|row| row.deleting)
-        {
-            let _ = mcp_servers::finish_remove(store.conn(), &row.id)?;
-        }
+            .collect();
+        drop(_permit);
+        drop(_document);
+        drop(_state);
+        crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::FinishMcpCleanup {
+                registry: self.registry.clone(),
+                projection,
+                acknowledged,
+                deleting,
+            },
+        )
+        .map_err(|_| McpSettingsError::Store)??;
         Ok(())
     }
 
     fn reconcile_pending_for_run(&self) -> Result<(), CredentialReadError> {
+        self.reconcile_configuration()?;
         let store = self.credential_store()?;
         let (_state, _document) = self.configuration_guard()?;
         let path = self.config_root.join("config.yaml");
@@ -1559,6 +1773,8 @@ impl McpServerSettingsService {
         )
         .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
         vega_store::mcp_config::projection_current(store.conn(), &path).map_err(mcp_read_error)?;
+        let projection = writer::CleanupProjection::read(store.conn()).map_err(mcp_read_error)?;
+        let mut acknowledged = Vec::new();
         for entry in mcp_servers::pending_cleanup(store.conn()).map_err(mcp_read_error)? {
             if !is_owned_secret_ref(&entry.server_id, &entry.credential_ref)
                 || !mcp_servers::cleanup_target_is_stale(store.conn(), &entry)
@@ -1577,15 +1793,28 @@ impl McpServerSettingsService {
                     ));
                 }
             }
-            mcp_servers::acknowledge_cleanup(store.conn(), &entry).map_err(mcp_read_error)?;
+            acknowledged.push(entry);
         }
-        for row in mcp_servers::list(store.conn())
+        let deleting = mcp_servers::list(store.conn())
             .map_err(mcp_read_error)?
             .into_iter()
             .filter(|row| row.deleting)
-        {
-            let _ = mcp_servers::finish_remove(store.conn(), &row.id).map_err(mcp_read_error)?;
-        }
+            .collect();
+        drop(_permit);
+        drop(_document);
+        drop(_state);
+        crate::database_writer::commit(
+            &self.database_path,
+            store.database_identity(),
+            writer::FinishMcpCleanup {
+                registry: self.registry.clone(),
+                projection,
+                acknowledged,
+                deleting,
+            },
+        )
+        .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?
+        .map_err(mcp_read_error)?;
         Ok(())
     }
 
@@ -1646,17 +1875,20 @@ impl McpServerSettingsService {
             Ok(ready) => ready,
             Err(error) => {
                 let store = self.store()?;
-                let _ = mcp_servers::set_last_error(
-                    store.conn(),
-                    &row.id,
-                    row.config_revision,
-                    Some(error.code()),
+                let _ = self.commit_metadata(
+                    &store,
+                    Some((row.id.clone(), epoch)),
+                    writer::McpMetadataWrite::LastError {
+                        id: row.id.clone(),
+                        revision: row.config_revision,
+                        code: Some(error.code().to_owned()),
+                    },
                 );
                 return Err(error);
             }
         };
         let store = self.store()?;
-        let mut state = self.lock()?;
+        let state = self.lock()?;
         let current =
             mcp_servers::find(store.conn(), &row.id)?.ok_or(McpSettingsError::NotFound)?;
         if state.epoch(&row.id) != epoch
@@ -1680,7 +1912,28 @@ impl McpServerSettingsService {
         }
         // A concurrent external metadata revision must not become executable
         // after the validation read but before registry publication.
-        mcp_servers::set_last_error(store.conn(), &row.id, row.config_revision, None)?;
+        drop(state);
+        self.commit_metadata(
+            &store,
+            Some((row.id.clone(), epoch)),
+            writer::McpMetadataWrite::LastError {
+                id: row.id.clone(),
+                revision: row.config_revision,
+                code: None,
+            },
+        )?;
+        let mut state = self.lock()?;
+        let current =
+            mcp_servers::find(store.conn(), &row.id)?.ok_or(McpSettingsError::NotFound)?;
+        if state.epoch(&row.id) != epoch
+            || state.suspended.contains(&row.id)
+            || !current.enabled
+            || current.deleting
+            || current.config_revision != row.config_revision
+        {
+            connected.ready.revoke();
+            return Err(McpSettingsError::Conflict);
+        }
         let lease = connected.ready.revocation_lease();
         state
             .leases

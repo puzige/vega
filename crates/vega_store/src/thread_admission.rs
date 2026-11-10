@@ -23,6 +23,10 @@ impl DatabaseIdentity {
         }
     }
 
+    pub(crate) fn matches_metadata(self, metadata: &std::fs::Metadata) -> bool {
+        matches!(self.0, Identity::File { device, inode } if device == metadata.dev() && inode == metadata.ino())
+    }
+
     pub(crate) fn for_connection(conn: &Connection) -> rusqlite::Result<Self> {
         let identity = match conn.path().filter(|path| !path.is_empty()) {
             Some(path) => {
@@ -37,7 +41,15 @@ impl DatabaseIdentity {
                     inode: metadata.ino(),
                 }
             }
-            None => Identity::Memory(Ulid::generate()),
+            None => {
+                let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE type='table' AND name='vega_connection_identity')", [], |row| row.get(0))?;
+                if !exists {
+                    conn.execute_batch("CREATE TEMP TABLE vega_connection_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL) STRICT;")?;
+                    conn.execute("INSERT INTO temp.vega_connection_identity VALUES(1,?1)", [Ulid::generate().to_string()])?;
+                }
+                let id: String = conn.query_row("SELECT id FROM temp.vega_connection_identity WHERE singleton=1", [], |row| row.get(0))?;
+                Identity::Memory(id.parse().map_err(|_| rusqlite::Error::InvalidQuery)?)
+            }
         };
         Ok(Self(identity))
     }
@@ -229,4 +241,28 @@ fn try_acquire_in(
     });
     admissions.owners.insert(key, Arc::downgrade(&admission));
     Ok(Some(ThreadAdmission(admission)))
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn memory_source_fence_is_stable_for_one_connection_and_rejects_another() -> rusqlite::Result<()> {
+        let store = crate::Store::open(":memory:")?;
+        store.migrate()?;
+        store.conn().execute("INSERT INTO preparation_revisions(thread_id,revision) VALUES('memory-source',0)", [])?;
+        assert_eq!(store.database_identity(), DatabaseIdentity::for_connection(store.conn())?);
+        let fence = crate::context_compaction::source_version::SourceFence::capture(store.conn(), "memory-source")?;
+        let tx = store.conn().unchecked_transaction()?;
+        assert!(fence.validate(&tx)?);
+        tx.commit()?;
+        let other = crate::Store::open(":memory:")?;
+        other.migrate()?;
+        other.conn().execute("INSERT INTO preparation_revisions(thread_id,revision) VALUES('memory-source',0)", [])?;
+        assert_ne!(store.database_identity(), other.database_identity());
+        let tx = other.conn().unchecked_transaction()?;
+        assert!(!fence.validate(&tx)?);
+        Ok(())
+    }
 }

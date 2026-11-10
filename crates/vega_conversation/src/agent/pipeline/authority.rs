@@ -1,5 +1,44 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct CommitAuthority {
+    pub delegated: bool,
+    pub delegated_parent: Option<(String, String)>,
+    pub delegated_message_id: Option<String>,
+    pub delegated_authority: Option<super::super::persistence::DelegatedAuthority>,
+    pub pending_message_id: Option<String>,
+    pub pending_authority: Option<crate::types::PendingInputAuthority>,
+    pub credential_continuation_id: Option<String>,
+    pub interrupted_assistant: Option<crate::types::InterruptedAssistant>,
+    pub automation_claim: Option<crate::types::AutomationRunClaim>,
+    pub steering_cancel: Option<CancellationToken>,
+    pub automatic_title: Option<String>,
+    pub admission: Option<crate::types::ThreadAdmission>,
+}
+
+impl From<&PersistenceActorConfig> for CommitAuthority {
+    fn from(config: &PersistenceActorConfig) -> Self {
+        Self {
+            delegated: config.delegated,
+            delegated_parent: config.delegated_parent.clone(),
+            delegated_message_id: config.delegated_message_id.clone(),
+            delegated_authority: config.delegated_authority.clone(),
+            pending_message_id: config.pending_message_id.clone(),
+            pending_authority: config.pending_authority.clone(),
+            credential_continuation_id: config.credential_continuation_id.clone(),
+            interrupted_assistant: config.interrupted_assistant.clone(),
+            automation_claim: config.automation_claim.clone(),
+            steering_cancel: config.steering_cancel.clone(),
+            automatic_title: config
+                .automatic_title
+                .as_ref()
+                .map(|request| request.fallback()),
+            admission: config.admission.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct RunAuthority {
     pub fence: crate::types::PermissionFence,
     pub thread: vega_store::threads::ThreadRow,
@@ -21,7 +60,7 @@ impl RunAuthority {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn verify_pending_sources(
     store: &Store,
-    config: &PersistenceActorConfig,
+    config: &CommitAuthority,
     thread_id: &str,
     user_id: &str,
     _content: &str,
@@ -53,7 +92,7 @@ pub(super) fn verify_pending_sources(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn verified(
     store: &Store,
-    config: &PersistenceActorConfig,
+    config: &CommitAuthority,
     thread_id: &str,
     assistant_message_id: &str,
     user_message_id: &str,
@@ -78,7 +117,7 @@ pub(super) fn verified(
             .delegated_parent
             .as_ref()
             .ok_or(ConversationError::InvalidTaskIdentity)?;
-        let fence = crate::permission_contracts::capture_delegated_fence(
+        let fence = crate::permission_contracts::capture_delegated_fence_for_commit(
             store,
             &thread,
             parent_thread,
@@ -102,7 +141,7 @@ pub(super) fn verified(
         if config.delegated_authority.is_some() {
             return Err(ConversationError::InvalidTaskIdentity);
         }
-        crate::permission_contracts::capture_fence(store, &thread)?
+        crate::permission_contracts::capture_fence_for_commit(store, &thread)?
     };
     let pending = verify_pending_sources(
         store,

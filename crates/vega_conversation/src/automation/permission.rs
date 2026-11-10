@@ -80,50 +80,17 @@ impl AutomationPermissionService {
         if !confirmed {
             return Err(Error::ConfirmationRequired);
         }
-        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
-        let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
-        require_open(&store)?;
-        if store.database_identity() != change.database {
-            return Err(Error::Conflict);
-        }
-        let tx = store.immediate_transaction().map_err(unavailable)?;
-        let row = vega_store::threads::find(&tx, &change.task.thread_id)
-            .map_err(unavailable)?
-            .ok_or(Error::Conflict)?;
-        if row.status != "active"
-            || row.mode != "execute"
-            || row.backend != "native"
-            || crate::permission_contracts::capture_fence(&store, &row)
-                .map_err(|_| Error::Conflict)?
-                != change.authorization.fence
-        {
-            return Err(Error::Conflict);
-        }
-        require_task(&tx, &change.task)?;
-        let now = now_ms();
-        let mut tasks = if change.resume {
-            command_in_transaction(
-                &tx,
-                &change.task.thread_id,
-                &AutomationCommand::Control(change.task.kind, AutomationControl::Resume),
-                now,
-            )
-            .map_err(|_| Error::Conflict)?
-        } else {
-            load_from(&tx, &change.task.thread_id).map_err(unavailable)?
-        };
-        let task = tasks
-            .iter_mut()
-            .find(|task| task.kind == change.task.kind && task.identity == change.task.identity)
-            .ok_or(Error::Conflict)?;
-        let mut authorization = change.authorization.clone();
-        authorization.revision = task.revision;
-        task.permission_authorization = Some(authorization);
-        task.updated_at_ms = now;
-        save(&tx, task).map_err(unavailable)?;
-        tx.commit_with_rollback()
-            .map_err(|_| Error::OutcomeUnknown)?;
-        Ok(tasks)
+        let store = Store::open_read_only(&self.database_path).map_err(unavailable)?;
+        crate::threads::existing_task_workspace_root(&store, &change.task.thread_id)
+            .map_err(unavailable)?;
+        crate::database_writer::commit(
+            &self.database_path,
+            change.database,
+            SaveAutomationPermission {
+                change: change.clone(),
+            },
+        )
+        .map_err(|_| Error::OutcomeUnknown)?
     }
 }
 
@@ -164,4 +131,61 @@ fn require_task(conn: &Connection, expected: &AutomationTask) -> Result<(), Erro
 
 fn unavailable(_: impl std::fmt::Display) -> Error {
     Error::Unavailable
+}
+
+struct SaveAutomationPermission {
+    change: AutomationPermissionChange,
+}
+
+impl crate::database_writer::Sealed for SaveAutomationPermission {}
+
+impl crate::database_writer::DatabaseCommand for SaveAutomationPermission {
+    type Output = Result<Vec<AutomationTask>, Error>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let change = &self.change;
+        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
+        require_open(store)?;
+        if store.database_identity() != change.database {
+            return Err(Error::Conflict);
+        }
+        let tx = store.immediate_transaction().map_err(unavailable)?;
+        let row = vega_store::threads::find(&tx, &change.task.thread_id)
+            .map_err(unavailable)?
+            .ok_or(Error::Conflict)?;
+        if row.status != "active"
+            || row.mode != "execute"
+            || row.backend != "native"
+            || crate::permission_contracts::capture_fence_for_commit(store, &row)
+                .map_err(|_| Error::Conflict)?
+                != change.authorization.fence
+        {
+            return Err(Error::Conflict);
+        }
+        require_task(&tx, &change.task)?;
+        let now = now_ms();
+        let mut tasks = if change.resume {
+            command_in_transaction(
+                &tx,
+                &change.task.thread_id,
+                &AutomationCommand::Control(change.task.kind, AutomationControl::Resume),
+                now,
+            )
+            .map_err(|_| Error::Conflict)?
+        } else {
+            load_from(&tx, &change.task.thread_id).map_err(unavailable)?
+        };
+        let task = tasks
+            .iter_mut()
+            .find(|task| task.kind == change.task.kind && task.identity == change.task.identity)
+            .ok_or(Error::Conflict)?;
+        let mut authorization = change.authorization.clone();
+        authorization.revision = task.revision;
+        task.permission_authorization = Some(authorization);
+        task.updated_at_ms = now;
+        save(&tx, task).map_err(unavailable)?;
+        tx.commit_with_rollback()
+            .map_err(|_| Error::OutcomeUnknown)?;
+        Ok(tasks)
+    }
 }

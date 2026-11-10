@@ -320,3 +320,405 @@ async fn closing_one_run_keeps_other_run_live_and_reopening_drains() -> TestResu
     assert_eq!(count, 12);
     Ok(())
 }
+
+async fn send_proposal(
+    actor: &PersistenceActor,
+    operation: &str,
+    call: &str,
+) -> Result<(), VegaError> {
+    let (ack, received) = oneshot::channel();
+    actor
+        .sender
+        .send(PersistenceCommand::Event {
+            operation_id: operation.to_owned(),
+            event: Box::new(RuntimeEvent::ToolCallProposed(
+                vega_runtime::RuntimeToolCall {
+                    id: call.to_owned(),
+                    name: "read".into(),
+                    input_json: "{\"path\":\"fixture.txt\"}".into(),
+                    description: None,
+                },
+            )),
+            content: String::new(),
+            execution_duration_ms: None,
+            ack,
+        })
+        .await?;
+    received
+        .await
+        .map_err(|_| persistence_actor_error("test receipt lost"))??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn replaying_older_receipt_does_not_regress_sequence_and_restart_uses_latest_watermark()
+-> TestResult {
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let operation = ulid::Ulid::generate().to_string();
+    send_proposal(&actor, &operation, "first-proposal").await?;
+    send_proposal(
+        &actor,
+        &ulid::Ulid::generate().to_string(),
+        "second-proposal",
+    )
+    .await?;
+    send_proposal(&actor, &operation, "first-proposal").await?;
+    send_proposal(
+        &actor,
+        &ulid::Ulid::generate().to_string(),
+        "third-proposal",
+    )
+    .await?;
+    actor.close().await?;
+    let thread: String = fixture
+        .store
+        .conn()
+        .query_row("SELECT id FROM threads", [], |row| row.get(0))?;
+    let message: String = fixture
+        .store
+        .conn()
+        .query_row("SELECT id FROM messages", [], |row| row.get(0))?;
+    let admission = crate::agent::ordinary::verified_admission(&fixture.store, &thread, None)
+        .map_err(|_| persistence_actor_error("restart admission"))?;
+    let reopened = PersistenceActor::start(PersistenceActorStart {
+        database_path: fixture.root.join("fixture.db"),
+        project_id: String::new(),
+        thread_id: thread,
+        message_id: message,
+        model: "model".into(),
+        is_plan: false,
+        next_tool_seq: 1,
+        config: PersistenceActorConfig::default().with_thread_admission(admission),
+    })
+    .await?;
+    send_proposal(
+        &reopened,
+        &ulid::Ulid::generate().to_string(),
+        "fourth-proposal",
+    )
+    .await?;
+    reopened.close().await?;
+    let sequences = fixture
+        .store
+        .conn()
+        .prepare("SELECT seq FROM tool_calls ORDER BY seq")?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(sequences, vec![1, 2, 3, 4]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn response_receipt_replay_preserves_original_timestamp() -> TestResult {
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let operation = ulid::Ulid::generate().to_string();
+    let mut clocks = Vec::new();
+    for _ in 0..2 {
+        let (ack, received) = oneshot::channel();
+        actor
+            .sender
+            .send(PersistenceCommand::Event {
+                operation_id: operation.clone(),
+                event: Box::new(RuntimeEvent::AssistantResponseStarted {
+                    response_id: "response-one".into(),
+                    text_start_bytes: 0,
+                }),
+                content: String::new(),
+                execution_duration_ms: None,
+                ack,
+            })
+            .await?;
+        let metadata = received.await??;
+        let clock = metadata
+            .into_iter()
+            .find_map(|event| match event {
+                ConversationEvent::MessageTimestamp { sent_at_ms, .. } => Some(sent_at_ms),
+                _ => None,
+            })
+            .ok_or("timestamp metadata missing")?;
+        assert!(clock.is_some());
+        clocks.push(clock);
+    }
+    assert_eq!(clocks[0], clocks[1]);
+    actor.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn receipt_failure_rolls_back_usage_and_does_not_leave_partial_business_write() -> TestResult
+{
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    fixture.store.conn().execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON persistence_command_receipts BEGIN SELECT RAISE(ABORT,'receipt fault'); END;")?;
+    let result = actor
+        .event(
+            RuntimeEvent::UsageUpdated {
+                usage: vega_runtime::RuntimeTokenUsage {
+                    input: 10,
+                    output: 4,
+                    cache_read: None,
+                    cache_write: None,
+                },
+                cost_microcents: 17,
+                pricing: None,
+            },
+            String::new(),
+            None,
+        )
+        .await;
+    assert!(result.is_err());
+    actor.close().await?;
+    let usage: i64 =
+        fixture
+            .store
+            .conn()
+            .query_row("SELECT count(*) FROM token_usage", [], |row| row.get(0))?;
+    let receipts: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM persistence_command_receipts",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!((usage, receipts), (0, 0));
+    Ok(())
+}
+
+struct AdmissionGate {
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+impl crate::database_writer::Sealed for AdmissionGate {}
+impl crate::database_writer::DatabaseCommand for AdmissionGate {
+    type Output = Result<(), String>;
+    fn apply(self, _: &Store) -> Self::Output {
+        self.started.send(()).map_err(|error| error.to_string())?;
+        self.release.recv().map_err(|error| error.to_string())
+    }
+}
+
+#[test]
+fn queued_service_cancellation_prevents_execution_after_capacity_acceptance() -> TestResult {
+    use crate::database_writer::{commit, commit_with_admission, CommitCancellation, CommitError};
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held_path = path.clone();
+    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let cancel = CancellationToken::new();
+    let cancellation = cancel.clone();
+    let queued_path = path.clone();
+    let pending = std::thread::spawn(move || commit_with_admission(&queued_path, identity, NecessaryInsert, CommitCancellation { token: Some(cancellation), submission: None }, Duration::from_secs(2)));
+    let writer = DatabaseWriter::open_blocking(path)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while writer.commands.state.lock().map_err(|_| "queue poisoned")?.commands.is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    cancel.cancel();
+    assert!(matches!(pending.join().map_err(|_| "submit panicked")?, Err(CommitError::CancelledBeforeStart)));
+    release.send(())?;
+    held.join().map_err(|_| "gate panicked")???;
+    writer.begin_close()?;
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn started_service_waits_for_real_result_despite_cancelled_caller() -> TestResult {
+    use crate::database_writer::{commit_with_admission, CommitCancellation};
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let cancel = CancellationToken::new();
+    let cancellation = cancel.clone();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let (completed, receipt) = std::sync::mpsc::channel();
+    let pending = std::thread::spawn(move || {
+        let result = commit_with_admission(&path, identity, AdmissionGate { started, release: gate }, CommitCancellation { token: Some(cancellation), submission: None }, Duration::from_secs(2));
+        completed.send(result).unwrap();
+    });
+    observed.recv_timeout(Duration::from_secs(2))?;
+    cancel.cancel();
+    assert!(matches!(receipt.recv_timeout(Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+    release.send(())?;
+    receipt.recv_timeout(Duration::from_secs(2))???;
+    pending.join().map_err(|_| "submit panicked")?;
+    Ok(())
+}
+
+#[test]
+fn queued_service_budget_expiration_does_not_execute_business_command() -> TestResult {
+    use crate::database_writer::{commit, commit_with_admission, CommitCancellation, CommitError};
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held_path = path.clone();
+    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let result = commit_with_admission(&path, identity, NecessaryInsert, CommitCancellation::default(), Duration::from_millis(30));
+    assert!(matches!(result, Err(CommitError::BudgetBeforeStart)));
+    release.send(())?;
+    held.join().map_err(|_| "gate panicked")???;
+    let writer = DatabaseWriter::open_blocking(path)?;
+    writer.begin_close()?;
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='necessary_drain'", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+struct BudgetedBegin;
+impl crate::database_writer::Sealed for BudgetedBegin {}
+impl crate::database_writer::DatabaseCommand for BudgetedBegin {
+    type Output = (Duration, Result<(), String>);
+    fn apply(self, _: &Store) -> Self::Output { panic!("admission budget was not passed") }
+    fn apply_with_admission(self, store: &Store, remaining: Duration) -> Self::Output {
+        let result = (|| {
+            store.conn().busy_timeout(Duration::ZERO).map_err(|error| error.to_string())?;
+            let tx = vega_store::write_coordination::WriteTransaction::new_with_budget(
+                store.conn(), vega_store::write_coordination::WriteCategory::RuntimeEvent,
+                || false, remaining,
+            ).map_err(|error| error.to_string())?;
+            tx.execute_batch("CREATE TABLE budget_probe(value INTEGER);").map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })();
+        (remaining, result)
+    }
+}
+
+#[test]
+fn service_queue_wait_and_engine_busy_share_one_remaining_budget() -> TestResult {
+    use crate::database_writer::{commit, commit_with_admission, CommitCancellation};
+    let fixture = Fixture::new()?;
+    let path = fixture.root.join("fixture.db");
+    let identity = fixture.store.database_identity();
+    let (started, observed) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let held_path = path.clone();
+    let held = std::thread::spawn(move || commit(&held_path, identity, AdmissionGate { started, release: gate }));
+    observed.recv_timeout(Duration::from_secs(2))?;
+    let writer = DatabaseWriter::open_blocking(path.clone())?;
+    let pending = std::thread::spawn(move || commit_with_admission(&path, identity, BudgetedBegin, CommitCancellation::default(), Duration::from_millis(500)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while writer.commands.state.lock().map_err(|_| "queue poisoned")?.commands.is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    fixture.store.conn().execute_batch("BEGIN IMMEDIATE")?;
+    std::thread::sleep(Duration::from_millis(150));
+    release.send(())?;
+    held.join().map_err(|_| "gate panicked")???;
+    let (remaining, result) = pending.join().map_err(|_| "submit panicked")??;
+    fixture.store.conn().execute_batch("ROLLBACK")?;
+    assert!(remaining <= Duration::from_millis(350));
+    assert!(!remaining.is_zero());
+    assert!(result.is_err());
+    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM sqlite_schema WHERE name='budget_probe'", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+struct NecessaryInsert;
+impl crate::database_writer::Sealed for NecessaryInsert {}
+impl crate::database_writer::DatabaseCommand for NecessaryInsert {
+    type Output = Result<(), String>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let tx = store.immediate_transaction().map_err(|error| error.to_string())?;
+        tx.execute_batch("CREATE TABLE necessary_drain(value INTEGER); INSERT INTO necessary_drain VALUES(1);")
+            .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+}
+
+#[test]
+fn reopening_after_last_producer_release_reuses_live_database_actor() -> TestResult {
+    let fixture = Fixture::new()?;
+    let writer = DatabaseWriter::open_blocking(fixture.root.join("fixture.db"))?;
+    let original = Arc::downgrade(&writer);
+    drop(writer);
+    let reopened = DatabaseWriter::open_blocking(fixture.root.join("fixture.db"))?;
+    assert!(Arc::ptr_eq(&original.upgrade().ok_or("writer disappeared before shutdown")?, &reopened));
+    reopened.begin_close()?;
+    reopened.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_active_run_and_reserved_terminal_even_without_receipt() -> TestResult {
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let writer = actor.sender.writer.clone();
+    let terminal = writer.reserve_necessary()?;
+    writer.begin_close()?;
+    assert!(writer.reserve_necessary().is_err());
+    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_millis(10)).is_err());
+    actor.snapshot("accepted run settles during close".into()).await?;
+    actor.close().await?;
+    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_millis(10)).is_err());
+    let receipt = terminal.submit(fixture.store.database_identity(), NecessaryInsert)?;
+    drop(receipt);
+    writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2))?;
+    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+#[test]
+fn necessary_terminal_failure_is_not_reported_as_successful_shutdown() -> TestResult {
+    let fixture = Fixture::new()?;
+    fixture.store.conn().execute_batch("CREATE TABLE necessary_drain(value INTEGER);")?;
+    let writer = DatabaseWriter::open_blocking(fixture.root.join("fixture.db"))?;
+    let terminal = writer.reserve_necessary()?;
+    writer.begin_close()?;
+    let receipt = terminal.submit(fixture.store.database_identity(), NecessaryInsert)?;
+    assert!(receipt.recv_timeout(Duration::from_secs(2))?.is_err());
+    assert!(writer.wait_stopped(std::time::Instant::now() + Duration::from_secs(2)).is_err());
+    let count: i64 = fixture.store.conn().query_row("SELECT count(*) FROM necessary_drain", [], |row| row.get(0))?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn moved_database_rejects_command_instead_of_writing_replacement() -> TestResult {
+    let fixture = Fixture::new()?;
+    let actor = fixture.actor().await?;
+    let path = fixture.root.join("fixture.db");
+    assert!(
+        fixture
+            .store
+            .verify_database_identity(fixture.store.database_identity())
+            .is_ok()
+    );
+    std::fs::rename(&path, fixture.root.join("original.db"))?;
+    let replacement = Store::open(&path)?;
+    replacement.migrate()?;
+    assert!(
+        fixture
+            .store
+            .verify_database_identity(fixture.store.database_identity())
+            .is_err()
+    );
+    assert!(actor.snapshot("must-not-persist".into()).await.is_err());
+    actor.close().await?;
+    let old_count: i64 = fixture.store.conn().query_row(
+        "SELECT count(*) FROM messages WHERE content='must-not-persist'",
+        [],
+        |row| row.get(0),
+    )?;
+    let new_count: i64 =
+        replacement
+            .conn()
+            .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))?;
+    assert_eq!((old_count, new_count), (0, 0));
+    drop(replacement);
+    Ok(())
+}

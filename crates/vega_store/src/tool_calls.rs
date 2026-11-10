@@ -232,14 +232,22 @@ pub fn approve(
     remember: Option<RememberExactRule<'_>>,
     now: i64,
 ) -> Result<(), ToolCallTransitionError> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::ToolCalls,
-    )?;
     let transaction = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
+    approve_in_transaction(&transaction, id, approval_json, remember, now)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn approve_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &str,
+    approval_json: &str,
+    remember: Option<RememberExactRule<'_>>,
+    now: i64,
+) -> Result<(), ToolCallTransitionError> {
     let updated = transaction.execute(
         "UPDATE tool_calls SET status = 'approved', approval = ?1 \
          WHERE id = ?2 AND status = 'pending_approval'",
@@ -257,7 +265,6 @@ pub fn approve(
             },
         )?;
     }
-    transaction.commit()?;
     Ok(())
 }
 
@@ -290,7 +297,7 @@ pub fn reject(
     Ok(())
 }
 
-fn reject_in_transaction(
+pub fn reject_in_transaction(
     conn: &Connection,
     id: &str,
     approval_json: &str,
@@ -383,13 +390,25 @@ pub fn insert_codex_pending(
         conn,
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
+    insert_codex_pending_in_transaction(&transaction, call, display)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn insert_codex_pending_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    call: NewToolCall<'_>,
+    display: &StoredCodexDisplayMetadata,
+) -> Result<(), ToolCallTransitionError> {
+    if call.tool != "codex_acp" || display.terminal_reason.is_some() {
+        return Err(ToolCallTransitionError::InvalidTransition);
+    }
     let id = call.id;
-    insert_pending(&transaction, call)?;
+    insert_pending(transaction, call)?;
     transaction.execute(
         "INSERT INTO codex_display_metadata (tool_call_id, preview_kind, preview_count) VALUES (?1, ?2, ?3)",
         params![id, display.preview_kind, display.preview_count],
     )?;
-    transaction.commit()?;
     Ok(())
 }
 
@@ -402,10 +421,40 @@ pub fn finish_codex(
         conn,
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
-    set_codex_terminal_reason(&transaction, finished.id, terminal_reason)?;
-    finish(&transaction, finished)?;
+    finish_codex_in_transaction(&transaction, finished, terminal_reason)?;
     transaction.commit()?;
     Ok(())
+}
+
+pub fn finish_codex_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    finished: FinishToolCall<'_>,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    set_codex_terminal_reason(transaction, finished.id, terminal_reason)?;
+    finish(transaction, finished)
+}
+
+pub fn finish_codex_observed_after_denial_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    finished: FinishToolCall<'_>,
+    approval_json: &str,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    if !matches!(
+        (finished.status, terminal_reason),
+        ("success", "tool_completed") | ("failed", "tool_failed") | ("cancelled", "tool_cancelled")
+    ) || finished.exit_code.is_some()
+        || finished.duration_ms.is_some()
+    {
+        return Err(ToolCallTransitionError::InvalidTransition);
+    }
+    set_codex_terminal_reason(transaction, finished.id, terminal_reason)?;
+    let updated = transaction.execute(
+        "UPDATE tool_calls SET status=?2,output_text=?3,approval=?4,finished_at=?5 WHERE id=?1 AND tool='codex_acp' AND status='pending_approval' AND json_extract(?4,'$.decision')='deny' AND json_extract(?4,'$.source')='user'",
+        params![finished.id, finished.status, finished.output_text, approval_json, finished.finished_at],
+    )?;
+    ensure_one(updated)
 }
 
 pub fn reject_codex(
@@ -420,17 +469,35 @@ pub fn reject_codex(
         conn,
         crate::write_coordination::WriteCategory::ToolCalls,
     )?;
-    set_codex_terminal_reason(&transaction, id, terminal_reason)?;
-    reject_in_transaction(
+    reject_codex_in_transaction(
         &transaction,
         id,
         approval_json,
         output_text,
         finished_at,
-        None,
+        terminal_reason,
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+pub fn reject_codex_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &str,
+    approval_json: &str,
+    output_text: &str,
+    finished_at: i64,
+    terminal_reason: &str,
+) -> Result<(), ToolCallTransitionError> {
+    set_codex_terminal_reason(transaction, id, terminal_reason)?;
+    reject_in_transaction(
+        transaction,
+        id,
+        approval_json,
+        output_text,
+        finished_at,
+        None,
+    )
 }
 
 fn set_codex_terminal_reason(

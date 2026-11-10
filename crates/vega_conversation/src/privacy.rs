@@ -142,15 +142,22 @@ pub(crate) fn refresh_authority_values(
     root: &std::path::Path,
 ) -> Result<Vec<String>, CredentialReadError> {
     let result = (|| {
-        let store = Store::open(database)
+        let store = Store::open_read_only(database)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
         let key = key(root)?;
         let mut owner = known(&store, Some(root))?;
         owner.sort();
         let encoded = serde_json::to_string(&owner).map_err(|_| unavailable())?;
         let epoch = fingerprint(key.as_bytes(), "owner-epoch", &encoded);
-        vega_store::credential_privacy::refresh_epoch(store.conn(), &epoch)
-            .map_err(|error| CredentialReadError::database(CredentialReadStage::Privacy, error))?;
+        crate::database_writer::commit(
+            database,
+            store.database_identity(),
+            RefreshPrivacyEpoch {
+                epoch: epoch.clone(),
+            },
+        )
+        .map_err(|_| unavailable())?
+        .map_err(|_| unavailable())?;
         Ok((epoch, owner))
     })();
     let mut epochs = AUTHORITY
@@ -612,15 +619,60 @@ pub fn set_exception(
     }
     let database = store.database_path().ok_or_else(unavailable)?;
     invalidate_exceptions(database, thread)?;
-    vega_store::credential_privacy::set_exception_checked(
-        store.conn(),
-        thread,
-        &snapshot.source_fingerprint,
-        &finding.rule,
-        &finding.fingerprint,
-        allow,
+    crate::database_writer::commit(
+        database,
+        store.database_identity(),
+        SetPrivacyException {
+            thread: thread.to_owned(),
+            source_fingerprint: snapshot.source_fingerprint.clone(),
+            rule: finding.rule.clone(),
+            fingerprint: finding.fingerprint.clone(),
+            allow,
+        },
     )
+    .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.exception_failed").into()))?
     .map_err(|_| ConversationError::Store(vega_i18n::t("domain.privacy.exception_failed").into()))
+}
+
+struct RefreshPrivacyEpoch {
+    epoch: String,
+}
+
+impl crate::database_writer::Sealed for RefreshPrivacyEpoch {}
+
+impl crate::database_writer::DatabaseCommand for RefreshPrivacyEpoch {
+    type Output = Result<(), String>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::credential_privacy::refresh_epoch(store.conn(), &self.epoch)
+            .map_err(|_| "privacy epoch persistence failed".to_string())
+    }
+}
+
+struct SetPrivacyException {
+    thread: String,
+    source_fingerprint: String,
+    rule: String,
+    fingerprint: String,
+    allow: bool,
+}
+
+impl crate::database_writer::Sealed for SetPrivacyException {}
+
+impl crate::database_writer::DatabaseCommand for SetPrivacyException {
+    type Output = Result<(), String>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::credential_privacy::set_exception_checked(
+            store.conn(),
+            &self.thread,
+            &self.source_fingerprint,
+            &self.rule,
+            &self.fingerprint,
+            self.allow,
+        )
+        .map_err(|_| "privacy exception persistence failed".to_string())
+    }
 }
 
 pub fn permanently_clean(

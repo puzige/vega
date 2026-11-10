@@ -18,18 +18,21 @@ impl vega_runtime::RuntimeShellOperationHook for ShellOperationPersistence {
         let run = self.run_id.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                let store = Store::open_existing(path).map_err(VegaError::from)?;
-                let authorized: bool = store.conn().query_row("SELECT EXISTS(SELECT 1 FROM shell_operations WHERE operation_id=?1 AND thread_id=?2 AND run_id=?3 AND generation=?4)", [operation.as_str(), thread.as_str(), run.as_str(), vega_runtime::shell_generation()], |row| row.get(0)).map_err(VegaError::from)?;
-                if !authorized { return Err(shell_state_error()); }
                 let identity = serde_json::to_string(&resource).map_err(|_| shell_state_error())?;
-                match vega_store::shell_operations::register_resource(store.conn(), &operation, &identity) {
-                    Ok(()) => Ok(()),
-                    Err(error) => {
-                        if vega_store::shell_operations::resource(store.conn(), &operation).map_err(VegaError::from)?.as_deref() == Some(&identity) { Ok(()) } else { Err(VegaError::from(error)) }
-                    }
-                }
-            }).await.map_err(|_| shell_state_error())?
-        }.boxed()
+                commit_shell(
+                    &path,
+                    ShellResource {
+                        operation,
+                        thread,
+                        run,
+                        identity,
+                    },
+                )
+            })
+            .await
+            .map_err(|_| shell_state_error())?
+        }
+        .boxed()
     }
 
     fn record(
@@ -43,53 +46,9 @@ impl vega_runtime::RuntimeShellOperationHook for ShellOperationPersistence {
             if record.thread_id != thread || record.run_id != run {
                 return Err(shell_state_error());
             }
-            tokio::task::spawn_blocking(move || {
-                let store = Store::open(path).map_err(VegaError::from)?;
-                let facts = vega_store::shell_operations::ShellFacts {
-                    command_result: record.command_result.clone(),
-                    exit_signal: record.exit_signal,
-                    cleanup_state: record.cleanup_state.clone(),
-                    output_incomplete: record.output_incomplete,
-                    resources_closed: record.resources_closed,
-                    process_resolved: record.process_resolved,
-                    cleanup_reasons: record.cleanup_reasons.clone(),
-                };
-                let persisted = vega_store::shell_operations::ShellOperationRecord {
-                    operation_id: &record.operation_id,
-                    thread_id: &record.thread_id,
-                    run_id: &record.run_id,
-                    call_id: &record.call_id,
-                    generation: &record.generation,
-                    workspace: &record.workspace,
-                    state: &record.state,
-                    exit_code: record.exit_code,
-                    error: record.error.as_deref(),
-                    duration_ms: record.duration_ms,
-                };
-                match vega_store::shell_operations::record_with_facts(
-                    store.conn(),
-                    &persisted,
-                    &facts,
-                    now_ms(),
-                ) {
-                    Ok(()) => Ok(()),
-                    Err(error) => {
-                        if vega_store::shell_operations::verify_record(
-                            store.conn(),
-                            &persisted,
-                            &facts,
-                        )
-                        .map_err(VegaError::from)?
-                        {
-                            Ok(())
-                        } else {
-                            Err(VegaError::from(error))
-                        }
-                    }
-                }
-            })
-            .await
-            .map_err(|_| shell_state_error())?
+            tokio::task::spawn_blocking(move || commit_shell(&path, ShellRecord(record)))
+                .await
+                .map_err(|_| shell_state_error())?
         }
         .boxed()
     }
@@ -330,5 +289,98 @@ fn shell_state_error() -> VegaError {
     VegaError::Tool {
         tool: "bash".into(),
         message: "shell operation authority unavailable".into(),
+    }
+}
+
+fn commit_shell<C: crate::database_writer::DatabaseCommand<Output = Result<(), VegaError>>>(
+    path: &std::path::Path,
+    command: C,
+) -> Result<(), VegaError> {
+    let store = Store::open_existing(path).map_err(VegaError::from)?;
+    crate::database_writer::commit(path, store.database_identity(), command)
+        .map_err(|_| shell_state_error())?
+}
+
+struct ShellResource {
+    operation: String,
+    thread: String,
+    run: String,
+    identity: String,
+}
+impl crate::database_writer::Sealed for ShellResource {}
+impl crate::database_writer::DatabaseCommand for ShellResource {
+    type Output = Result<(), VegaError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let Self {
+            operation,
+            thread,
+            run,
+            identity,
+        } = self;
+        let authorized: bool = store.conn().query_row("SELECT EXISTS(SELECT 1 FROM shell_operations WHERE operation_id=?1 AND thread_id=?2 AND run_id=?3 AND generation=?4)", [operation.as_str(), thread.as_str(), run.as_str(), vega_runtime::shell_generation()], |row| row.get(0)).map_err(VegaError::from)?;
+        if !authorized {
+            return Err(shell_state_error());
+        }
+        match vega_store::shell_operations::register_resource(store.conn(), &operation, &identity) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if vega_store::shell_operations::resource(store.conn(), &operation)
+                    .map_err(VegaError::from)?
+                    .as_deref()
+                    == Some(&identity)
+                {
+                    Ok(())
+                } else {
+                    Err(VegaError::from(error))
+                }
+            }
+        }
+    }
+}
+
+struct ShellRecord(vega_runtime::RuntimeShellOperationRecord);
+impl crate::database_writer::Sealed for ShellRecord {}
+impl crate::database_writer::DatabaseCommand for ShellRecord {
+    type Output = Result<(), VegaError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let record = self.0;
+        let facts = vega_store::shell_operations::ShellFacts {
+            command_result: record.command_result.clone(),
+            exit_signal: record.exit_signal,
+            cleanup_state: record.cleanup_state.clone(),
+            output_incomplete: record.output_incomplete,
+            resources_closed: record.resources_closed,
+            process_resolved: record.process_resolved,
+            cleanup_reasons: record.cleanup_reasons.clone(),
+        };
+        let persisted = vega_store::shell_operations::ShellOperationRecord {
+            operation_id: &record.operation_id,
+            thread_id: &record.thread_id,
+            run_id: &record.run_id,
+            call_id: &record.call_id,
+            generation: &record.generation,
+            workspace: &record.workspace,
+            state: &record.state,
+            exit_code: record.exit_code,
+            error: record.error.as_deref(),
+            duration_ms: record.duration_ms,
+        };
+        match vega_store::shell_operations::record_with_facts(
+            store.conn(),
+            &persisted,
+            &facts,
+            now_ms(),
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if vega_store::shell_operations::verify_record(store.conn(), &persisted, &facts)
+                    .map_err(VegaError::from)?
+                {
+                    Ok(())
+                } else {
+                    Err(VegaError::from(error))
+                }
+            }
+        }
     }
 }

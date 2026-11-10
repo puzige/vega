@@ -523,25 +523,59 @@ fn persist_usage(
         vega_token::PricingProfile::Base => "base",
         vega_token::PricingProfile::PeakUtcWeekly => "peak_utc_weekly",
     });
-    if vega_store::token_usage::insert(
-        store.conn(),
-        vega_store::token_usage::NewTokenUsage {
-            thread_id,
-            message_id: None,
-            model,
-            input_tokens: usage.input,
-            output_tokens: usage.output,
-            cache_read_tokens: usage.cache_read.unwrap_or(0),
-            cache_write_tokens: usage.cache_write.unwrap_or(0),
-            cost_microcents: quote.as_ref().map_or(0, |quote| quote.cost_microcents),
-            created_at: started.saturating_mul(1000),
-            pricing_version: quote.as_ref().map(|quote| quote.pricing_version),
-            pricing_profile: profile,
-            call_started_at: Some(started),
-        },
-    )
-    .is_err()
-    {
+    let command = PersistPredictionUsage {
+        thread_id: thread_id.to_owned(),
+        model: model.to_owned(),
+        started,
+        usage,
+        cost_microcents: quote.as_ref().map_or(0, |quote| quote.cost_microcents),
+        pricing_version: quote.as_ref().map(|quote| quote.pricing_version.to_owned()),
+        pricing_profile: profile.map(str::to_owned),
+    };
+    let result = store
+        .database_path()
+        .ok_or_else(|| "database path unavailable".to_string())
+        .and_then(|path| crate::database_writer::commit(path, store.database_identity(), command))
+        .and_then(|result| result);
+    if result.is_err() {
         tracing::warn!("composer prediction usage persistence failed");
+    }
+}
+
+struct PersistPredictionUsage {
+    thread_id: String,
+    model: String,
+    started: i64,
+    usage: PredictionUsage,
+    cost_microcents: i64,
+    pricing_version: Option<String>,
+    pricing_profile: Option<String>,
+}
+
+impl crate::database_writer::Sealed for PersistPredictionUsage {}
+
+impl crate::database_writer::DatabaseCommand for PersistPredictionUsage {
+    type Output = Result<(), String>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::token_usage::insert(
+            store.conn(),
+            vega_store::token_usage::NewTokenUsage {
+                thread_id: &self.thread_id,
+                message_id: None,
+                model: &self.model,
+                input_tokens: self.usage.input,
+                output_tokens: self.usage.output,
+                cache_read_tokens: self.usage.cache_read.unwrap_or(0),
+                cache_write_tokens: self.usage.cache_write.unwrap_or(0),
+                cost_microcents: self.cost_microcents,
+                created_at: self.started.saturating_mul(1000),
+                pricing_version: self.pricing_version.as_deref(),
+                pricing_profile: self.pricing_profile.as_deref(),
+                call_started_at: Some(self.started),
+            },
+        )
+        .map(|_| ())
+        .map_err(|_| "prediction usage persistence failed".to_string())
     }
 }

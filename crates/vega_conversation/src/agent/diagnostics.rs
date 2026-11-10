@@ -131,12 +131,10 @@ impl DiagnosticsWriter {
         }
     }
 
-    pub(crate) fn flush_background_compaction(
+    pub(crate) fn take_background_compaction_events(
         &self,
-        store: &vega_store::Store,
-    ) -> Result<(), vega_store::run_diagnostics::DiagnosticError> {
+    ) -> Result<Vec<NewDiagnosticEvent>, vega_store::run_diagnostics::DiagnosticError> {
         use vega_store::run_diagnostics::DiagnosticError;
-        use vega_store::write_coordination::{WriteCategory, WriteTransaction};
         let sink = self
             .sender
             .lock()
@@ -145,12 +143,7 @@ impl DiagnosticsWriter {
         let Some(DiagnosticsSink::Compaction { events, .. }) = sink else {
             return Err(DiagnosticError::InvalidField { field: "writer" });
         };
-        let transaction = WriteTransaction::new(store.conn(), WriteCategory::Diagnostics)?;
-        for event in events {
-            vega_store::run_diagnostics::insert(&transaction, &event)?;
-        }
-        transaction.commit()?;
-        Ok(())
+        Ok(events.into_iter().collect())
     }
 
     pub(crate) async fn close(&self) {
