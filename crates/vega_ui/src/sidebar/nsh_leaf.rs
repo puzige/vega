@@ -148,6 +148,8 @@ struct Snapshot {
     colors: ThemeColors,
     selected: Option<usize>,
     recovery: bool,
+    // Keep each native button actionable while its offscreen text awaits first paint.
+    row_was_visible: bool,
     presentation: Presentation,
 }
 
@@ -789,6 +791,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 colors: theme(cx).colors,
                 selected: None,
                 recovery: false,
+                row_was_visible: false,
                 presentation,
             },
             surface: None,
@@ -823,6 +826,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             this.acknowledged = None;
             this.selected = None;
             this.motion_visible = false;
+            this.snapshot.row_was_visible = false;
         }
         if this
             .surface
@@ -1058,15 +1062,20 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         Mounted {
             id: key,
             child: geometry::sample(host.into_any_element(), move |bounds, window, cx| {
-                let visible = !bounds.intersect(&window.content_mask().bounds).is_empty()
+                let on_screen = !bounds.intersect(&window.content_mask().bounds).is_empty();
+                let visible = on_screen
                     && window.is_visible()
                     && window.is_window_active()
                     && !cx.reduce_motion();
                 let _ = weak.update(cx, |this, _cx| {
+                    let first_paint = this.snapshot.presentation == Presentation::ThreadRow
+                        && on_screen
+                        && !this.snapshot.row_was_visible;
                     if this.mount.matches(&mount)
                         && this.lease.upgrade().is_some()
-                        && this.motion_visible != visible
+                        && (first_paint || this.motion_visible != visible)
                     {
+                        this.snapshot.row_was_visible |= first_paint;
                         this.motion_visible = visible;
                         for item in &mut this.snapshot.items {
                             item.motion = visible;
@@ -1319,6 +1328,13 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                             .w(ns::px(Layout::SIDEBAR_ACTIONS_WIDTH / action_count as f32))
                             .h(ns::px(Layout::SIDEBAR_ACTION_SIZE))
                     };
+                }
+                if snapshot.presentation == Presentation::ThreadRow
+                    && !snapshot.row_was_visible
+                    && !snapshot.recovery
+                {
+                    actions = actions.child(button);
+                    continue;
                 }
                 if quiet {
                     if item.running {
