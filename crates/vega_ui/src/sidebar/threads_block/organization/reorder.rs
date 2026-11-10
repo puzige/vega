@@ -300,6 +300,35 @@ impl ThreadsBlock {
         cx.notify();
     }
 
+    pub(in crate::sidebar::threads_block) fn reorder_drag_source(
+        &self,
+        element: gpui_kit::Stateful<gpui_kit::Div>,
+        item: ReorderItem,
+        label: String,
+        cx: &Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let drag_entity = cx.entity().downgrade();
+        let drag_item = item;
+        element.on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
+            drag_entity
+                .update(cx, |this, cx| {
+                    this.close_actions();
+                    this.hold_reorder_projection(&drag_item);
+                    if let Some(org) = this.organization.as_mut() {
+                        org.menu = None;
+                        org.menu_anchor = None;
+                        org.reorder.source = Some(drag_item.clone());
+                        org.reorder.gesture = true;
+                        org.reorder.previous_focus = window.focused(cx);
+                        window.focus(&org.reorder.focus, cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            cx.new(|_| drag.clone())
+        })
+    }
+
     pub(in crate::sidebar::threads_block) fn render_reorder_row(
         &self,
         item: ReorderItem,
@@ -318,8 +347,7 @@ impl ThreadsBlock {
                     && std::mem::discriminant(source) == std::mem::discriminant(&item)
                     && org.reorder.targets.contains(item.id())
             });
-        let drag_entity = cx.entity().downgrade();
-        let drag_item = item.clone();
+        let row = self.reorder_drag_source(row, item.clone(), label, cx);
         let hover_item = item.clone();
         let line_key = format!(
             "sidebar-reorder-line-{}-{}",
@@ -344,24 +372,6 @@ impl ThreadsBlock {
                         this.clear_reorder_projection(cx);
                     }
                 }))
-                .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
-                    drag_entity
-                        .update(cx, |this, cx| {
-                            this.close_actions();
-                            this.hold_reorder_projection(&drag_item);
-                            if let Some(org) = this.organization.as_mut() {
-                                org.menu = None;
-                                org.menu_anchor = None;
-                                org.reorder.source = Some(drag_item.clone());
-                                org.reorder.gesture = true;
-                                org.reorder.previous_focus = window.focused(cx);
-                                window.focus(&org.reorder.focus, cx);
-                            }
-                            cx.notify();
-                        })
-                        .ok();
-                    cx.new(|_| drag.clone())
-                })
                 .child(
                     gpui_kit::canvas(
                         move |bounds, window, _| {

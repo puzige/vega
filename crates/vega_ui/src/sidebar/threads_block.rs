@@ -1422,6 +1422,32 @@ impl ThreadsBlock {
         } else {
             thread.title.clone()
         };
+        let context_menu = {
+            let thread = thread.clone();
+            let key = row_key.clone();
+            let generation = self.project_generation;
+            move |this: &mut Self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>| {
+                cx.stop_propagation();
+                if cx.has_active_drag()
+                    || this
+                        .editing
+                        .as_ref()
+                        .is_some_and(|session| session.thread_id == thread.id)
+                    || this.project_generation != generation
+                    || !this
+                        .threads
+                        .iter()
+                        .chain(&this.archived)
+                        .any(|current| current == &thread)
+                {
+                    return;
+                }
+                this.toggle_actions(&thread.id, &key, window, cx);
+                if let Some(focus) = this.thread_action_focuses.get(&key) {
+                    focus.focus(window, cx);
+                }
+            }
+        };
         let mut row = div()
             .id(ElementId::Name(
                 format!("{selector_prefix}{thread_id}").into(),
@@ -1446,28 +1472,12 @@ impl ThreadsBlock {
             .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
                 this.on_thread_mouse_move(&mouse_move_thread_id, cx);
             }))
-            .on_mouse_up(
-                MouseButton::Right,
-                cx.listener({
-                    let thread_id = thread.id.clone();
-                    let row_key = row_key.clone();
-                    move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        if this
-                            .editing
-                            .as_ref()
-                            .is_some_and(|session| session.thread_id == thread_id)
-                            || cx.has_active_drag()
-                        {
-                            return;
-                        }
-                        this.toggle_actions(&thread_id, &row_key, window, cx);
-                        if let Some(focus) = this.thread_action_focuses.get(&row_key) {
-                            focus.focus(window, cx);
-                        }
-                    }
-                }),
-            );
+            .on_mouse_up(MouseButton::Right, cx.listener(context_menu.clone()));
+        let reorder_item = if selector_prefix == "standalone-thread-row-" {
+            organization::ReorderItem::RecentThread(thread.id.clone())
+        } else {
+            organization::ReorderItem::Thread(thread.id.clone())
+        };
         if let Some(session) = editing_session {
             row = row.child(rename::mount(session, rename_inset, cx));
         } else {
@@ -1493,6 +1503,7 @@ impl ThreadsBlock {
                     .min_w_0()
                     .h_full()
                     .pl(px(content_inset))
+                    .relative()
                     .child(nsh_leaf::host(
                         format!("{row_key}-title"),
                         None,
@@ -1534,7 +1545,32 @@ impl ThreadsBlock {
                                 }
                             });
                         },
-                    )),
+                    ))
+                    .when(actions_enabled || self.organization.is_some(), |title| {
+                        // Observe gestures before the embedded title consumes its mouse events.
+                        // Primary clicks and accessibility activation still go to the NSH title.
+                        let gestures = div()
+                            .id("sidebar-title-gestures")
+                            .absolute()
+                            .top_0()
+                            .left(px(content_inset))
+                            .right_0()
+                            .bottom_0()
+                            .when(actions_enabled, |pad| {
+                                pad.on_mouse_down(MouseButton::Right, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .on_mouse_up(MouseButton::Right, cx.listener(context_menu))
+                            });
+                        title.child(gestures.when(self.organization.is_some(), |pad| {
+                            self.reorder_drag_source(
+                                pad,
+                                reorder_item.clone(),
+                                thread_title(thread),
+                                cx,
+                            )
+                        }))
+                    }),
             );
             row = if actions_enabled {
                 row.child(self.render_row_actions(
@@ -1556,16 +1592,7 @@ impl ThreadsBlock {
             };
         }
         if self.organization.is_some() && !editing_this_row {
-            self.render_reorder_row(
-                if selector_prefix == "standalone-thread-row-" {
-                    organization::ReorderItem::RecentThread(thread.id.clone())
-                } else {
-                    organization::ReorderItem::Thread(thread.id.clone())
-                },
-                thread_title(thread),
-                row,
-                cx,
-            )
+            self.render_reorder_row(reorder_item, thread_title(thread), row, cx)
         } else {
             row.into_any_element()
         }
