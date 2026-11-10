@@ -298,9 +298,7 @@ impl Mount {
             && self.viewport == Some(window.viewport_size())
             && self.scale == window.scale_factor()
             && self.frame.is_some()
-            && self
-                .clipped
-                .is_some_and(|bounds| !bounds.intersect(&window.content_mask().bounds).is_empty())
+            && self.clipped.is_some_and(|bounds| !bounds.is_empty())
     }
 }
 
