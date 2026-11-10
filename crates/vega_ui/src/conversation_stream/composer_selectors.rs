@@ -99,6 +99,12 @@ struct Row {
     glyph: Option<crate::icons::Icon>,
 }
 
+#[derive(Default)]
+struct NativeRevisions {
+    action: AtomicU64,
+    height: AtomicU64,
+}
+
 #[derive(Clone)]
 struct Snapshot {
     id: ProjectionId,
@@ -111,9 +117,10 @@ struct Snapshot {
     geometry: Option<Geometry>,
     mount: Option<ProjectionId>,
     selected: Option<usize>,
+    keyboard_focus_visible: bool,
     intent: ProjectionId,
     activation: Option<(usize, Origin)>,
-    native_revision: Arc<AtomicU64>,
+    native_revision: Arc<NativeRevisions>,
 }
 
 impl Snapshot {
@@ -263,9 +270,10 @@ impl Snapshot {
             geometry: None,
             mount: None,
             selected,
+            keyboard_focus_visible: false,
             intent: ProjectionId::new(),
             activation: None,
-            native_revision: Arc::new(AtomicU64::new(0)),
+            native_revision: Arc::new(NativeRevisions::default()),
         }
     }
 
@@ -282,7 +290,7 @@ impl Snapshot {
             && self.intent.matches(&observed.intent)
             && self.same_source(observed)
             && Arc::ptr_eq(&self.native_revision, &observed.native_revision)
-            && observed.native_revision.load(Ordering::Acquire) == native
+            && observed.native_revision.action.load(Ordering::Acquire) == native
             && self.rows.get(index) == observed.rows.get(index)
             && self.rows.get(index).is_some_and(|row| row.enabled)
             && (origin == Origin::Pointer
@@ -398,7 +406,26 @@ impl Host {
         self.snapshot.intent = ProjectionId::new();
         self.snapshot.activation = None;
         self.activation_focus = None;
-        self.snapshot.native_revision = Arc::new(AtomicU64::new(0));
+        self.snapshot.native_revision = Arc::new(NativeRevisions::default());
+    }
+
+    fn sync_geometry(&mut self, lease: &Mount) -> bool {
+        if self.snapshot.geometry != lease.geometry.get()
+            || !self
+                .snapshot
+                .mount
+                .as_ref()
+                .is_some_and(|mount| mount.matches(&lease.identity))
+        {
+            self.snapshot.geometry = lease.geometry.get();
+            self.snapshot.mount = Some(lease.identity.clone());
+            self.snapshot.id = ProjectionId::new();
+            self.snapshot.intent = ProjectionId::new();
+            self.snapshot.activation = None;
+            self.snapshot.native_revision = Arc::new(NativeRevisions::default());
+            return true;
+        }
+        false
     }
 
     fn valid(&self, observed: &Snapshot, window: &Window, cx: &App) -> bool {
@@ -693,7 +720,7 @@ impl Host {
                     .update_in(cx, |host, window, cx| match request {
                         Request::Intent(observed, index, origin, native) => {
                             if host.valid(&observed, window, cx)
-                                && observed.native_revision.load(Ordering::Acquire) == native
+                                && observed.native_revision.action.load(Ordering::Acquire) == native
                             {
                                 host.request(index, origin, window, cx);
                             }
@@ -703,7 +730,7 @@ impl Host {
                         }
                         Request::Height(observed, native, width, height) => {
                             if host.valid(&observed, window, cx)
-                                && observed.native_revision.load(Ordering::Acquire) == native
+                                && observed.native_revision.height.load(Ordering::Acquire) == native
                                 && width.is_finite()
                                 && height.is_finite()
                                 && height > 0.
@@ -714,9 +741,11 @@ impl Host {
                                     .is_some_and(|geometry| {
                                         (f32::from(geometry.bounds.size.width) - width).abs() < 1.
                                     })
-                                && host
-                                    .height
-                                    .is_none_or(|previous| (previous - height).abs() > 0.5)
+                                && host.height.is_none_or(|previous| {
+                                    (previous - height.min(Layout::COMPOSER_PICKER_MAX_HEIGHT))
+                                        .abs()
+                                        > 0.5
+                                })
                             {
                                 host.height = Some(height.min(Layout::COMPOSER_PICKER_MAX_HEIGHT));
                                 cx.notify();
@@ -828,26 +857,15 @@ impl Render for Host {
                 .options
                 .iter()
                 .position(|focus| focus.is_focused(window));
+            self.snapshot.keyboard_focus_visible =
+                index.is_some() && window.last_input_was_keyboard();
             if index.is_some() && self.snapshot.selected != index {
                 self.snapshot.selected = index;
                 self.snapshot.intent = ProjectionId::new();
                 self.snapshot.activation = None;
             }
         }
-        if self.snapshot.geometry != lease.geometry.get()
-            || !self
-                .snapshot
-                .mount
-                .as_ref()
-                .is_some_and(|mount| mount.matches(&lease.identity))
-        {
-            self.snapshot.geometry = lease.geometry.get();
-            self.snapshot.mount = Some(lease.identity.clone());
-            self.snapshot.id = ProjectionId::new();
-            self.snapshot.intent = ProjectionId::new();
-            self.snapshot.activation = None;
-            self.snapshot.native_revision = Arc::new(AtomicU64::new(0));
-        }
+        self.sync_geometry(&lease);
         self.mount(window, cx);
         let Some(surface) = &mut self.surface else {
             return div().into_any_element();
@@ -856,6 +874,7 @@ impl Render for Host {
         if self.published.as_ref().is_none_or(|published| {
             !published.id.matches(&self.snapshot.id)
                 || !published.intent.matches(&self.snapshot.intent)
+                || published.keyboard_focus_visible != self.snapshot.keyboard_focus_visible
                 || published.selected != self.snapshot.selected
                 || published.geometry != self.snapshot.geometry
         }) {
@@ -1049,7 +1068,21 @@ impl Element for Mounted {
             }
         }
         if previous != self.lease.geometry.get() {
-            let _ = self.host.update(cx, |_, cx| cx.notify());
+            let lease = &self.lease;
+            let _ = self.host.update(cx, |host, cx| {
+                if host
+                    .lease
+                    .upgrade()
+                    .is_some_and(|active| Rc::ptr_eq(&active, lease))
+                    && host.sync_geometry(lease)
+                {
+                    if let Some(surface) = &host.surface {
+                        surface.publish(host.snapshot.clone());
+                        host.published = Some(host.snapshot.clone());
+                    }
+                    cx.on_next_frame(window, |_, _, cx| cx.notify());
+                }
+            });
         }
         self.child.prepaint(window, cx);
     }
@@ -1211,7 +1244,13 @@ fn selector(owner: WeakEntity<ConversationStream>, kind: Kind, popup: Option<Kin
                     .absolute()
                     .bottom(gpui_kit::relative(1.))
                     .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-                    .left_0()
+                    .map(|popup| {
+                        if kind == Kind::PermissionMenu {
+                            popup.left_0()
+                        } else {
+                            popup.right_0()
+                        }
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(Native {
                         owner,

@@ -23,23 +23,73 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         ns::watch_scroll(
             move || viewport.node(),
             move |event| {
+                scroll_revision.action.fetch_add(1, Ordering::AcqRel);
                 offset.set(event.offset.y.0);
                 revision.update(|revision| *revision = revision.wrapping_add(1));
-                scroll_revision.fetch_add(1, Ordering::AcqRel);
             },
         );
         let mut content = ns::view().w_full().flex_col();
         if snapshot.kind == Kind::Thinking {
             content = content.items_center().gap(ns::px(8.));
         }
-        for line in &snapshot.header {
+        if snapshot.kind == Kind::PermissionMenu
+            && let [title, more, details @ ..] = snapshot.header.as_slice()
+        {
             content = content.child(
-                ns::text(line.clone())
+                ns::view()
+                    .w_full()
+                    .flex_row()
+                    .items_start()
+                    .gap_2()
                     .px_2()
-                    .py_1()
-                    .text_size(ns::px(Typography::METADATA))
-                    .text_color(crate::nsh::color(snapshot.colors.text_secondary)),
+                    .pt_2()
+                    .pb_1()
+                    .child(
+                        ns::text(title.clone())
+                            .flex_1()
+                            .min_w(ns::px(0.))
+                            .text_size(ns::px(Typography::METADATA))
+                            .line_height(ns::px(
+                                Typography::METADATA * Typography::BODY_LINE_HEIGHT,
+                            ))
+                            .text_color(crate::nsh::color(snapshot.colors.text_secondary)),
+                    )
+                    .child(
+                        ns::text(more.clone())
+                            .flex_shrink_0()
+                            .text_size(ns::px(Typography::METADATA))
+                            .line_height(ns::px(
+                                Typography::METADATA * Typography::BODY_LINE_HEIGHT,
+                            ))
+                            .text_color(crate::nsh::color(snapshot.colors.text_tertiary)),
+                    ),
             );
+            for detail in details {
+                content = content.child(
+                    ns::text(detail.clone())
+                        .px_2()
+                        .pb_1()
+                        .text_size(ns::px(Typography::METADATA))
+                        .line_height(ns::px(Typography::METADATA * Typography::BODY_LINE_HEIGHT))
+                        .text_color(crate::nsh::color(snapshot.colors.text_secondary)),
+                );
+            }
+            content = content.child(
+                ns::view()
+                    .mx_2()
+                    .h(ns::px(1.))
+                    .bg(crate::nsh::color(snapshot.colors.border_subtle)),
+            );
+        } else {
+            for line in &snapshot.header {
+                content = content.child(
+                    ns::text(line.clone())
+                        .px_2()
+                        .py_1()
+                        .text_size(ns::px(Typography::METADATA))
+                        .text_color(crate::nsh::color(snapshot.colors.text_secondary)),
+                );
+            }
         }
         let mut controls = Vec::new();
         for (index, row) in snapshot.rows.iter().enumerate() {
@@ -57,7 +107,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 let observation = revision.get();
                 let commands = measure_commands.clone();
                 let observed = measured.clone();
-                let native = observed.native_revision.load(Ordering::Acquire);
+                let native = observed.native_revision.action.load(Ordering::Acquire);
                 command_owner.run(|| {
                     ns::spawn(async move {
                         let (Some(control), Some(container)) =
@@ -67,7 +117,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         };
                         if !presentation_owner.is_live()
                             || revision.get_untracked() != observation
-                            || observed.native_revision.load(Ordering::Acquire) != native
+                            || observed.native_revision.action.load(Ordering::Acquire) != native
                         {
                             return;
                         }
@@ -113,6 +163,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let colors = snapshot.colors;
             let row_revision = native_revision.clone();
             let selected = snapshot.selected == Some(index);
+            let permission_option = snapshot.kind == Kind::PermissionMenu;
+            let show_ring = selected && (!permission_option || snapshot.keyboard_focus_visible);
+            let checked_permission = permission_option && row.checked;
             let enabled = row.enabled;
             let foreground = if !enabled {
                 colors.text_tertiary
@@ -120,6 +173,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 colors.warning
             } else if snapshot.kind == Kind::Thinking && index == 0 {
                 super::super::thinking_slider::native_label_color(&snapshot.source.slider.model)
+            } else if snapshot.kind == Kind::PermissionMenu {
+                colors.text_primary
             } else if row.checked {
                 colors.brand_primary
             } else {
@@ -150,6 +205,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 .rounded(ns::px(
                     if matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger) {
                         Layout::COMPOSER_TEXT_TRIGGER_HEIGHT / 2.
+                    } else if permission_option {
+                        6.
                     } else {
                         Layout::MENU_RADIUS
                     },
@@ -171,6 +228,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                                 Origin::Accessibility,
                                 accessibility_observed
                                     .native_revision
+                                    .action
                                     .load(Ordering::Acquire),
                             ));
                         });
@@ -186,21 +244,23 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         colors.bg_active
                     } else if enabled && hover.get() {
                         colors.bg_hover
-                    } else if selected {
+                    } else if checked_permission {
+                        crate::menu_list::selected_row_bg(colors)
+                    } else if selected && !permission_option {
                         colors.bg_active
                     } else {
                         colors.bg_elevated.opacity(0.)
                     })
                 })
-                .border(ns::px(1.))
-                .border_color(crate::nsh::color(if selected {
+                .border(ns::px(if permission_option { 0. } else { 1. }))
+                .border_color(crate::nsh::color(if show_ring {
                     colors.accent
                 } else {
                     colors.bg_elevated.opacity(0.)
                 }))
                 .on_layout(move |_: &ns::Bounds<ns::Points>| {
+                    row_revision.action.fetch_add(1, Ordering::AcqRel);
                     revision.update(|revision| *revision = revision.wrapping_add(1));
-                    row_revision.fetch_add(1, Ordering::AcqRel);
                 })
                 .on_mouse_enter(move |_: &nsh_core::MouseEvent| hover.set(true))
                 .on_mouse_leave(move |_: &nsh_core::MouseEvent| {
@@ -218,7 +278,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     command_owner.run(|| {
                         ns::spawn(async move {
                             let observation = revision.get_untracked();
-                            let native = observed.native_revision.load(Ordering::Acquire);
+                            let native = observed.native_revision.action.load(Ordering::Acquire);
                             let (Some(control), Some(container)) =
                                 (target.measure().await, viewport.measure().await)
                             else {
@@ -226,7 +286,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                             };
                             if presentation_owner.is_live()
                                 && revision.get_untracked() == observation
-                                && observed.native_revision.load(Ordering::Acquire) == native
+                                && observed.native_revision.action.load(Ordering::Acquire) == native
                                 && visible(control, container)
                             {
                                 commands.send(Request::Activate(
@@ -239,23 +299,61 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         })
                     });
                 });
-            if let Some(glyph) = row.glyph {
-                control = control.child(icon(glyph, foreground));
+            if permission_option && show_ring {
+                control = control
+                    .outline(ns::px(1.))
+                    .outline_offset(ns::px(-1.))
+                    .outline_color(crate::nsh::color(colors.accent));
             }
-            let mut text = ns::view().flex_1().min_w(ns::px(0.)).flex_col().child(
-                ns::text(row.label.clone())
-                    .text_size(ns::px(Typography::SIDEBAR))
-                    .text_color(crate::nsh::color(foreground)),
-            );
+            if let Some(glyph) = row.glyph {
+                control = control.child(icon(
+                    glyph,
+                    if snapshot.kind == Kind::PermissionMenu && enabled && !row.warning {
+                        colors.text_secondary
+                    } else {
+                        foreground
+                    },
+                ));
+            }
+            let mut label = ns::text(row.label.clone())
+                .text_size(ns::px(Typography::SIDEBAR))
+                .text_color(crate::nsh::color(foreground));
+            if snapshot.kind == Kind::PermissionMenu {
+                label =
+                    label.line_height(ns::px(Typography::SIDEBAR * Typography::BODY_LINE_HEIGHT));
+            }
+            let mut text = ns::view()
+                .flex_1()
+                .min_w(ns::px(0.))
+                .flex_col()
+                .child(label);
             if let Some(description) = &row.description {
-                text = text.child(
-                    ns::text(description.clone())
-                        .text_size(ns::px(Typography::METADATA))
-                        .text_color(crate::nsh::color(colors.text_secondary)),
-                );
+                let mut desc =
+                    ns::text(description.clone()).text_size(ns::px(Typography::METADATA));
+                if snapshot.kind == Kind::PermissionMenu {
+                    desc = desc
+                        .line_height(ns::px(Typography::METADATA * Typography::BODY_LINE_HEIGHT));
+                }
+                text = text.child(desc.text_color(crate::nsh::color(
+                    if snapshot.kind == Kind::PermissionMenu {
+                        colors.text_tertiary
+                    } else {
+                        colors.text_secondary
+                    },
+                )));
             }
             control = control.child(text);
-            if row.checked && matches!(snapshot.kind, Kind::PermissionMenu | Kind::ModelMenu) {
+            if snapshot.kind == Kind::PermissionMenu {
+                let mut marker = ns::view()
+                    .w(ns::px(Typography::SIDEBAR))
+                    .flex_shrink_0()
+                    .flex_row()
+                    .justify_end();
+                if row.checked {
+                    marker = marker.child(icon(crate::icons::Icon::Check, colors.brand_primary));
+                }
+                control = control.child(marker);
+            } else if row.checked && snapshot.kind == Kind::ModelMenu {
                 control = control.child(icon(crate::icons::Icon::Check, colors.brand_primary));
             }
             if snapshot.kind == Kind::ModelTrigger
@@ -310,7 +408,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                                     ns::spawn(async move {
                                         let observation = revision.get_untracked();
                                         let native =
-                                            observed.native_revision.load(Ordering::Acquire);
+                                            observed.native_revision.action.load(Ordering::Acquire);
                                         let (Some(control), Some(container)) =
                                             (target.measure().await, viewport.measure().await)
                                         else {
@@ -318,7 +416,10 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                                         };
                                         if presentation_owner.is_live()
                                             && revision.get_untracked() == observation
-                                            && observed.native_revision.load(Ordering::Acquire)
+                                            && observed
+                                                .native_revision
+                                                .action
+                                                .load(Ordering::Acquire)
                                                 == native
                                             && visible(control, container)
                                         {
@@ -340,6 +441,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                                         Origin::Accessibility,
                                         accessibility_observed
                                             .native_revision
+                                            .action
                                             .load(Ordering::Acquire),
                                     ));
                                 });
@@ -351,6 +453,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 content = content.child(default);
             }
             content = content.child(ns::view().flex_col().children(controls));
+        } else if snapshot.kind == Kind::PermissionMenu {
+            content = content.child(ns::view().flex_col().p_1().children(controls));
         } else {
             content = content.children(controls);
         }
@@ -362,8 +466,10 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             Kind::PermissionMenu | Kind::ModelMenu | Kind::Thinking
         );
         if popup {
+            if snapshot.kind != Kind::PermissionMenu {
+                content = content.p_1();
+            }
             content = content
-                .p_1()
                 .bg(crate::nsh::color(snapshot.colors.bg_elevated))
                 .rounded(ns::px(Layout::MENU_RADIUS))
                 .border(ns::px(1.))
@@ -372,13 +478,17 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         let layout_commands = commands.clone();
         let layout_observed = snapshot.clone();
         content = content.on_layout(move |bounds: &ns::Bounds<ns::Points>| {
+            // Effects run synchronously when notified and must observe this layout revision.
+            native_revision.action.fetch_add(1, Ordering::AcqRel);
             revision.update(|revision| *revision = revision.wrapping_add(1));
-            native_revision.fetch_add(1, Ordering::AcqRel);
             if popup {
                 command_owner.run(|| {
                     layout_commands.send(Request::Height(
                         Box::new(layout_observed.clone()),
-                        native_revision.load(Ordering::Acquire),
+                        native_revision
+                            .height
+                            .fetch_add(1, Ordering::AcqRel)
+                            .wrapping_add(1),
                         bounds.size.width.0,
                         bounds.size.height.0,
                     ))
