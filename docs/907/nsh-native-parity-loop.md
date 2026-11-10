@@ -266,3 +266,11 @@ macOS 15.8.2 arm64，源码 d477250538cb587394a9b756562940cdee48ad43，优化构
 - 最终生产程序在全新隔离目录使用 72 条合成任务。↓、↑、Tab、Shift-Tab 均有实窗焦点框证据。确认焦点与勾选都回到 Ask for approval 后按回车，重新打开时仍是 Ask for approval，Approve for me、Full access 均未勾选。以已选项做快速回车 8/8 成功，按原生辅助功能索引操作 4/4 成功。没有正向授予 Full access，没有执行受保护工具。宽窗和 960×600pt 原生窗口另已对照文字裁切。权限菜单键盘激活要求目标持有实际焦点，鼠标与辅助功能使用各自的实时可见性和来源校验。
 - 模型和思考菜单恢复右锚。原版从思考标题进入模型列表后，回车选用当前模型并关闭；最终构建在回环项目重现该行为，保留 ui-parity。思考菜单仍有额外的 Default 控件，长模型清单、VoiceOver 播报和跨平台操作尚待验证。
 - 源码 11677b2a6266a1a6bd7ce13819f34f8ea5e0457d，macOS 15.8.2 arm64 优化程序 SHA-256 为 82604812003ba1781f192ec3b78b7d5e6c129428d9e9a7921661643a5d39b652，UUID 为 9421CCEE-50E0-31C0-BC89-4B31D8BBBC89。独立启动器核实创建新数据库并运行同一程序。两批非作者复核差异为 10a7e3784365212bf002e36d4b08ce5059906a8b29eea8b0b8debbdc2f953d4f 和 ff3fd0dde4c2be890b5dff3f4aa10790edcad4b13d2872d46713df76baeb06fb。隔离实测记录为 performance/permission-menu-layout.json 和 performance/permission-r137-incident.json。
+
+## ecea6b1a 设置用量页的活动模式
+
+在 macOS 15.8.2 arm64 的两个独立数据目录中分别放入相同的七条合成用量记录。原版 0.1.413 和 NSH 均显示 110.2k 总 token、7 个活跃日、最长连续 4 天。在 1404×860pt 窗口，原版的每日、每周、累计按钮在标题右侧紧邻，修复前 NSH 把标题和三个按钮均匀分布在整行。现在三个按钮同组，对每个原版按钮的中心位置依次点击，在 NSH 实窗中也能切到每周、累计和每日。截图中对应热图的填色区域随模式变化。用量页汇总卡高度、元数据字色与趋势图纵向位置仍有差距。
+
+源码 ecea6b1a，优化程序 SHA-256 为 46c85ec70edb7409ac73e9bb28edd95646b0755af48f550a29b3d5ffca1d24fb，UUID 1351F1A6-D50F-3FAD-95F2-092EAC787F0E。单文件差异独立审查 SHA-256 为 e8c7a7a6f60549ceba76b6d317f303bc7349c9e0e9f104bea8d2935b5b53f711。本机 fmt、全目标严格 Clippy 和 Python 三组 5/15/40 项通过，Rust 0 发现、0 执行。截图在本机 performance/usage-mode-{old,r145}-{daily,weekly,cumulative}.jpg。
+
+在上一生产源码 11677b2a 上，前台无输入时分别在用量页、单任务空历史和 72 条置顶任务的空历史采样约 53、50、31 秒。三组图像超过阈值的像素变化仅位于鼠标指针处。间隔截图不能测量每一帧，用户报告的周期性卡顿仍为 PARTIAL。
