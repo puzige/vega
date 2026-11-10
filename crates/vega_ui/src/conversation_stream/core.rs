@@ -66,6 +66,7 @@ pub struct ConversationStream {
     pub(super) resume_tail_ui: std::rc::Rc<std::cell::RefCell<super::resume_tail::ResumeTailUi>>,
     pub(super) resume_tail_authority: Option<super::resume_tail::Authority>,
     pub(super) reading_navigation_epoch: crate::nsh::ProjectionId,
+    pub(super) reading_navigation_blocked: bool,
     pub(super) ui_presentations_suspended: bool,
     pub(crate) run_notice_epoch: crate::nsh::ProjectionId,
     pub(crate) delegated_run_active: bool,
@@ -313,6 +314,16 @@ impl ConversationStream {
         }
         self.suspend_reading_navigation(cx);
         self.resume_tail_authority = Some(authority);
+    }
+
+    pub fn set_reading_navigation_blocked(stream: &Entity<Self>, blocked: bool, cx: &mut App) {
+        if stream.read(cx).reading_navigation_blocked != blocked {
+            stream.update(cx, |this, cx| {
+                this.reading_navigation_blocked = blocked;
+                this.suspend_reading_navigation(cx);
+                cx.notify();
+            });
+        }
     }
 
     pub fn suspend_reading_navigation(&mut self, cx: &mut Context<Self>) {
@@ -591,6 +602,7 @@ impl ConversationStream {
             resume_tail_ui: std::rc::Rc::default(),
             resume_tail_authority: None,
             reading_navigation_epoch: crate::nsh::ProjectionId::new(),
+            reading_navigation_blocked: false,
             ui_presentations_suspended: false,
             run_notice_epoch: crate::nsh::ProjectionId::new(),
             delegated_run_active: false,

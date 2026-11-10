@@ -297,17 +297,8 @@ impl Render for VegaWindow {
         self.sync_palette(window, cx);
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
-        if settings_open
-            || self.palette.view.is_some()
-            || pending_delete.is_some()
-            || self.sidebar.read(cx).opening_thread(cx).is_some()
-        {
-            if let Some((_, stream)) = &self.stream_view {
-                stream.update(cx, ConversationStream::suspend_reading_navigation);
-            }
-            self.suspend_subagent_reading_navigation(cx);
-        }
-        if (settings_open || self.sidebar.read(cx).opening_thread(cx).is_some())
+        let opening_thread = self.sidebar.read(cx).opening_thread(cx).is_some();
+        if (settings_open || opening_thread)
             && let Some((_, stream)) = &self.stream_view
         {
             stream.update(cx, ConversationStream::suspend_ui_presentations);
@@ -755,6 +746,14 @@ impl Render for VegaWindow {
         }
         self.sync_navigation(cx);
         self.sync_preparation(cx);
+        let reading_blocked = settings_open
+            || self.palette.view.is_some()
+            || pending_delete.is_some()
+            || self.sidebar.read(cx).opening_thread(cx).is_some();
+        if let Some((_, stream)) = &self.stream_view {
+            ConversationStream::set_reading_navigation_blocked(stream, reading_blocked, cx);
+        }
+        self.set_subagent_reading_navigation_blocked(reading_blocked, cx);
         let preparation_error = self.render_preparation_error(cx);
         div()
             .key_context("VegaWindow")

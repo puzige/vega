@@ -91,7 +91,8 @@ impl ReadingOwner {
             return false;
         };
         let stream = entity.read(cx);
-        self.epoch.matches(&stream.reading_navigation_epoch)
+        !stream.reading_navigation_blocked
+            && self.epoch.matches(&stream.reading_navigation_epoch)
             && stream.thread.id == self.thread
             && stream.reading_preview == self.preview
             && stream.permissions_revoked == self.revoked

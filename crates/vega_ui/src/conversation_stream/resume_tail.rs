@@ -21,7 +21,8 @@ struct Source {
 impl Source {
     fn current(&self, stream: &ConversationStream, cx: &App) -> bool {
         let placement = stream.turn_placement.borrow();
-        stream.reading_navigation_epoch.matches(&self.epoch)
+        !stream.reading_navigation_blocked
+            && stream.reading_navigation_epoch.matches(&self.epoch)
             && stream.thread.id == self.thread
             && stream.reading_preview == self.preview
             && stream.permissions_revoked == self.permissions_revoked

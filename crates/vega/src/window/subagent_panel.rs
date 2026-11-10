@@ -589,14 +589,18 @@ impl VegaWindow {
         self.subagent_panel.selection = self.subagent_panel.selection.wrapping_add(1);
     }
 
-    pub(super) fn suspend_subagent_reading_navigation(&self, cx: &mut Context<Self>) {
+    pub(super) fn set_subagent_reading_navigation_blocked(
+        &self,
+        blocked: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(stream) = self
             .subagent_panel
             .detail
             .as_ref()
             .and_then(|detail| detail.stream.as_ref())
         {
-            stream.update(cx, ConversationStream::suspend_reading_navigation);
+            ConversationStream::set_reading_navigation_blocked(stream, blocked, cx);
         }
     }
 
