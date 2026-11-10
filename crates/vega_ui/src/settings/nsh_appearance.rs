@@ -409,7 +409,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
-        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
             if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5

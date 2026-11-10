@@ -448,7 +448,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .flex_shrink_0()
         .gap_1()
         .text_size(px(Typography::BODY))
-        .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
+        .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .on_layout(move |bounds: &Bounds<Points>| {
             let height = bounds.size.height.0;
