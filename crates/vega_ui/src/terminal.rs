@@ -23,7 +23,8 @@ pub struct TerminalView {
     accepted_input: u64,
     surface: Option<Surface<Projection, Request>>,
     surface_error: bool,
-    focus_subscription: Option<Subscription>,
+    menu_dismissal: u64,
+    focus_subscriptions: Option<[Subscription; 2]>,
 }
 
 impl TerminalView {
@@ -67,7 +68,8 @@ impl TerminalView {
             accepted_input: 0,
             surface: None,
             surface_error: false,
-            focus_subscription: None,
+            menu_dismissal: 0,
+            focus_subscriptions: None,
         }
     }
 
@@ -120,6 +122,7 @@ impl TerminalView {
             snapshot: self.snapshot.clone(),
             cell_width: self.cell_width,
             epoch: self.epoch,
+            menu_dismissal: self.menu_dismissal,
             colors: theme(cx).colors,
             status_label,
             copy_label: vega_i18n::t("ui.copy_current_terminal_screen_c").into(),
@@ -127,6 +130,11 @@ impl TerminalView {
             error_label: vega_i18n::t("ui.terminal_input_was_not_sent_try_again").into(),
             input_error: self.input_error,
         }
+    }
+
+    fn dismiss_terminal_menu(&mut self, cx: &App) {
+        self.menu_dismissal = self.menu_dismissal.wrapping_add(1);
+        self.publish(cx);
     }
 
     fn publish(&self, cx: &App) {
@@ -245,12 +253,17 @@ impl Focusable for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_surface(window, cx);
-        if self.focus_subscription.is_none() {
-            self.focus_subscription = Some(cx.on_focus(&self.focus, window, |this, window, cx| {
-                if let Some(surface) = &this.surface {
-                    surface.focus(window, cx);
-                }
-            }));
+        if self.focus_subscriptions.is_none() {
+            self.focus_subscriptions = Some([
+                cx.on_focus(&self.focus, window, |this, window, cx| {
+                    if let Some(surface) = &this.surface {
+                        surface.focus(window, cx);
+                    }
+                }),
+                cx.on_focus_out(&self.focus, window, |this, _, _, cx| {
+                    this.dismiss_terminal_menu(cx)
+                }),
+            ]);
             if self.focus.is_focused(window)
                 && let Some(surface) = &self.surface
             {
@@ -265,6 +278,9 @@ impl Render for TerminalView {
             .id("terminal-view")
             .key_context("Terminal")
             .track_focus(&self.focus)
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_terminal_menu(cx)),
+            )
             .size_full()
             .children(self.surface.as_ref().map(Surface::entity))
     }

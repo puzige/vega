@@ -17,9 +17,33 @@ pub(super) struct UserDisclosure {
 pub(super) struct UserPreview {
     pub(super) model: StreamModel,
     pub(super) collapsible: bool,
-    pub(super) content_width: f32,
+    content_width: f32,
     pub(super) height: f32,
     full_height: f32,
+}
+
+impl UserPreview {
+    pub(super) fn content_width(&self, window: &Window) -> f32 {
+        if !self.collapsible {
+            return self.content_width;
+        }
+        [false, true]
+            .into_iter()
+            .map(|expanded| {
+                let label = native::label(expanded);
+                let run = window.text_style().to_run(label.len());
+                let shaped = window.text_system().shape_line(
+                    label.into(),
+                    px(Typography::BODY),
+                    &[run],
+                    None,
+                );
+                f32::from(shaped.width).ceil()
+                    + Layout::CONVERSATION_INLINE_GAP
+                    + Layout::CONVERSATION_CHEVRON_SIZE
+            })
+            .fold(self.content_width, f32::max)
+    }
 }
 
 pub(super) fn bubble_width(text_width: f32) -> f32 {

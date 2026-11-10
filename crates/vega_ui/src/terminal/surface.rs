@@ -15,6 +15,7 @@ const PAD: f32 = 8.;
 pub(super) struct Projection {
     pub snapshot: Option<Arc<TerminalSnapshot>>,
     pub cell_width: Option<f32>,
+    pub menu_dismissal: u64,
     pub epoch: u64,
     pub colors: ThemeColors,
     pub status_label: String,
@@ -462,11 +463,21 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                 for (index, item) in menu_items.into_iter().enumerate() {
                     item.on_focus_in(move || menu_selection.set(index));
                 }
-                let leave_menu = move || {
+                let leave_menu = move |restore_focus: bool| {
                     menu_open.set(false);
                     menu_focused.set(false);
-                    native_input.focus();
+                    if restore_focus {
+                        native_input.focus();
+                    }
                 };
+                let last_dismissal =
+                    std::cell::Cell::new(projection.get_untracked().menu_dismissal);
+                effect(move || {
+                    let requested = projection.with(|value| value.menu_dismissal);
+                    if last_dismissal.replace(requested) != requested && menu_open.get_untracked() {
+                        leave_menu(false);
+                    }
+                });
                 let text_value = signal(String::new());
                 let commit = queue.clone();
                 let paste = queue.clone();
@@ -481,7 +492,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                     if !menu_open.get_untracked() {
                         return;
                     }
-                    leave_menu();
+                    leave_menu(true);
                     if index == 0 {
                         if let Some(snapshot) = projection.get_untracked().snapshot {
                             set_clipboard(copy_text(&snapshot, selection.get_untracked()));
@@ -561,7 +572,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                     menu_items[next].focus();
                                 });
                             }
-                            on_key_with("escape", options(), move |_| leave_menu());
+                            on_key_with("escape", options(), move |_| leave_menu(true));
                             for key in ["enter", "space"] {
                                 let choose = choose.clone();
                                 on_key_with(key, options(), move |_| {
@@ -640,13 +651,17 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                             .open(move || Some(menu_open.get()))
                             .disabled(move || composing.get())
                             .on_open_change(move |event: &nsh_base::MenuEvent| {
-                                if let nsh_base::MenuEvent::OpenChange(open, _) = event {
+                                if let nsh_base::MenuEvent::OpenChange(open, reason) = event {
                                     if *open {
                                         menu_selection.set(0);
                                         menu_focused.set(false);
                                         menu_open.set(true);
                                     } else if menu_open.get_untracked() {
-                                        leave_menu();
+                                        leave_menu(matches!(
+                                            reason,
+                                            nsh_base::OpenChangeReason::Cancel
+                                                | nsh_base::OpenChangeReason::Select
+                                        ));
                                     }
                                 }
                             })

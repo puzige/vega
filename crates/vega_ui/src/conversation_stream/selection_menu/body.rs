@@ -2564,6 +2564,7 @@ fn native_blocks(
                             .child(code_icon(crate::icons::Icon::Code, state))
                             .child(
                                 text(language)
+                                    .select_none()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()

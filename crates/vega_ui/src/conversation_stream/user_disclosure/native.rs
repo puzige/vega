@@ -640,7 +640,7 @@ fn palette(colors: ThemeColors) -> [Rgba; 3] {
     ]
 }
 
-fn label(expanded: bool) -> String {
+pub(super) fn label(expanded: bool) -> String {
     vega_i18n::t(if expanded {
         "ui.show_less"
     } else {
