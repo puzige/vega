@@ -33,19 +33,85 @@ struct Chrome {
     failed: bool,
 }
 
+type SidebarView = gpui_kit::Entity<nsh_platform_gpui::AppView>;
+
+#[derive(Clone, Default)]
+struct SidebarRetirement(Rc<RetiredViews>);
+impl gpui_kit::Global for SidebarRetirement {}
+
+#[derive(Default)]
+struct RetiredViews {
+    queue: std::cell::RefCell<std::collections::VecDeque<SidebarView>>,
+    draining: std::cell::Cell<bool>,
+    mounted: std::cell::Cell<usize>,
+    peak_mounted: std::cell::Cell<usize>,
+}
+
+impl RetiredViews {
+    fn on_mount(&self, cx: &App) {
+        let mounted = self.mounted.get() + 1;
+        self.mounted.set(mounted);
+        let peak = self.peak_mounted.get().max(mounted);
+        self.peak_mounted.set(peak);
+        // Leave room for a full collapse and immediate reopen, even for a large
+        // list. Repeated mounts beyond that capacity pay back one retirement each.
+        let old = if self.queue.borrow().len() > peak.max(64) {
+            self.queue.borrow_mut().pop_front()
+        } else {
+            None
+        };
+        if let Some(old) = old {
+            old.read(cx).stop();
+        }
+    }
+
+    fn retire(self: &Rc<Self>, view: SidebarView, app: &gpui_kit::AsyncApp) {
+        self.mounted.set(self.mounted.get() - 1);
+        self.queue.borrow_mut().push_back(view);
+        if self.draining.replace(true) {
+            return;
+        }
+        let owner = Rc::downgrade(self);
+        app.spawn(async move |cx| {
+            loop {
+                let Some(retired) = owner.upgrade() else {
+                    return;
+                };
+                let next = retired.queue.borrow_mut().pop_front();
+                let Some(view) = next else {
+                    retired.draining.set(false);
+                    return;
+                };
+                drop(retired);
+                view.update(cx, |view, _| view.stop());
+                drop(view);
+                // Give the main event loop time for input between blocking engine joins.
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(4))
+                    .await;
+            }
+        })
+        .detach();
+    }
+}
+
 pub(super) struct ChromeLease {
-    view: gpui_kit::WeakEntity<nsh_platform_gpui::AppView>,
+    view: SidebarView,
+    retirement: Weak<RetiredViews>,
     app: gpui_kit::AsyncApp,
 }
 
 impl ChromeLease {
-    pub(super) fn new<S, C>(surface: &Surface<S, C>, cx: &App) -> Self
+    pub(super) fn new<S, C>(surface: &Surface<S, C>, cx: &mut App) -> Self
     where
         S: Clone + Send + Sync + 'static,
         C: Send + 'static,
     {
+        let retirement = cx.default_global::<SidebarRetirement>().0.clone();
+        retirement.on_mount(cx);
         Self {
-            view: surface.entity().downgrade(),
+            view: surface.entity(),
+            retirement: Rc::downgrade(&retirement),
             app: cx.to_async(),
         }
     }
@@ -53,14 +119,9 @@ impl ChromeLease {
 
 impl Drop for ChromeLease {
     fn drop(&mut self) {
-        let view = self.view.clone();
-        let mut app = self.app.clone();
-        self.app
-            .foreground_executor()
-            .spawn(async move {
-                let _ = view.update(&mut app, |view, _| view.stop());
-            })
-            .detach();
+        if let Some(retirement) = self.retirement.upgrade() {
+            retirement.retire(self.view.clone(), &self.app);
+        }
     }
 }
 
@@ -177,12 +238,10 @@ impl gpui_kit::RenderOnce for Decoration {
             };
             surface.sync_environment(cx);
             surface.publish_if_changed(this.snapshot.clone());
-            let lease = this.lease.upgrade().unwrap_or_else(|| {
-                Rc::new(ChromeLease {
-                    view: surface.entity().downgrade(),
-                    app: cx.to_async(),
-                })
-            });
+            let lease = this
+                .lease
+                .upgrade()
+                .unwrap_or_else(|| Rc::new(ChromeLease::new(surface, cx)));
             this.lease = Rc::downgrade(&lease);
             let outset = if self.kind == Kind::Popup {
                 SHADOW_OUTSET
