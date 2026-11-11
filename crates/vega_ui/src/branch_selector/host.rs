@@ -207,16 +207,11 @@ impl BranchSelector {
             draft.page = Some(id.clone());
         }
         let snapshot = self.snapshot(id.clone(), false, cx);
-        let (surface, requests) = Surface::new(
-            snapshot.clone(),
-            if popup {
-                nsh_view::popup
-            } else {
-                nsh_view::trigger
-            },
-            window,
-            cx,
-        );
+        let (surface, requests) = if popup {
+            Surface::new(snapshot.clone(), nsh_view::popup, window, cx)
+        } else {
+            Surface::new_transparent(snapshot.clone(), nsh_view::trigger, window, cx)
+        };
         self.watch_requests(requests, window, cx);
         let mut errors = surface.errors();
         let owner = id.clone();
@@ -676,8 +671,12 @@ impl BranchSelector {
                 page.surface.publish(snapshot.clone());
             }
             if page.failed && page.recovery.is_none() {
-                let (recovery, requests) =
-                    Surface::new(snapshot.clone(), nsh_view::trigger, window, cx);
+                let create = if popup {
+                    Surface::new
+                } else {
+                    Surface::new_transparent
+                };
+                let (recovery, requests) = create(snapshot.clone(), nsh_view::trigger, window, cx);
                 self.watch_requests(requests, window, cx);
                 page.recovery = Some(recovery);
             }
