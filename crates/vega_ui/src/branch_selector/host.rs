@@ -208,7 +208,7 @@ impl BranchSelector {
         }
         let snapshot = self.snapshot(id.clone(), false, cx);
         let (surface, requests) = if popup {
-            Surface::new(snapshot.clone(), nsh_view::popup, window, cx)
+            Surface::new_transparent(snapshot.clone(), nsh_view::popup, window, cx)
         } else {
             Surface::new_transparent(snapshot.clone(), nsh_view::trigger, window, cx)
         };
@@ -402,7 +402,6 @@ impl BranchSelector {
                 if self.model.is_open() {
                     self.request_close(cx);
                 } else if self.request_open(cx) {
-                    self.presentation.keyboard = true;
                     window.focus(&self.focus, cx);
                 }
             }
@@ -610,7 +609,6 @@ impl BranchSelector {
                 &self.focus.clone(),
                 window,
                 |this, window, cx| {
-                    this.presentation.keyboard = true;
                     if !this.presentation.input_focused && this.focus.contains_focused(window, cx) {
                         window.focus(&this.focus, cx);
                     }
@@ -620,10 +618,7 @@ impl BranchSelector {
             self.presentation.subscriptions.push(cx.on_focus_out(
                 &self.focus.clone(),
                 window,
-                |this, _, _, cx| {
-                    this.presentation.keyboard = false;
-                    cx.notify();
-                },
+                |_, _, _, cx| cx.notify(),
             ));
         }
         let non_git = matches!(
@@ -635,6 +630,8 @@ impl BranchSelector {
             self.presentation.close_popup();
             return div().hidden().into_any_element();
         }
+        self.presentation.keyboard =
+            self.focus.is_focused(window) && window.last_input_was_keyboard();
         self.refresh_projection(cx);
         if self
             .presentation
@@ -717,9 +714,12 @@ impl BranchSelector {
                 .shape_line(label, px(Typography::SIDEBAR), &[run], None)
                 .width,
         );
-        let width = (label_width
+        let width = (label_width.ceil()
+            + 2.
             + if self.chip_chrome {
-                Layout::ICON_SIZE + 8. + Layout::COMPOSER_UTILITY_CHIP_PADDING_X * 2.
+                Layout::ICON_SIZE
+                    + Layout::COMPOSER_UTILITY_CHIP_GAP
+                    + Layout::COMPOSER_UTILITY_CHIP_PADDING_X * 2.
             } else {
                 16.
             })
@@ -729,7 +729,6 @@ impl BranchSelector {
             .id("branch-selector-trigger-host")
             .key_context("BranchSelector")
             .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
-                this.presentation.keyboard = false;
                 window.focus(&this.focus, cx);
             }))
             .w(px(width))

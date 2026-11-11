@@ -266,7 +266,7 @@ pub(super) fn trigger(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) ->
                 .disabled(observed.disabled || observed.pending.is_some())
                 .flex_row()
                 .items_center()
-                .gap_2()
+                .gap(px(Layout::COMPOSER_UTILITY_CHIP_GAP))
                 .h_full()
                 .w_full()
                 .px(px(if chip {
@@ -310,7 +310,7 @@ pub(super) fn trigger(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) ->
                     text(observed.label.clone())
                         .flex_1()
                         .min_w(px(0.))
-                        .number_of_lines(1),
+                        .truncate(),
                 )
                 .on_press(move || {
                     send.send(Request::Action(
@@ -427,66 +427,89 @@ pub(super) fn popup(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                     .w_full()
                     .h_full()
                     .child(
-                        nsh_base::input()
-                            .element_ref(&search)
-                            .label(move || state.with(|_| vega_i18n::t("ui.search_branches")))
-                            .placeholder(move || {
-                                state.with(|_| vega_i18n::t("ui.search_branches").to_owned())
-                            })
-                            .value(move || query.get())
-                            .readonly(move || state.get().pending.is_some())
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .flex_shrink_0()
                             .h(px(crate::menu_list::MENU_ROW_HEIGHT))
                             .mb(px(4.))
                             .mx(px(4.))
                             .px(px(crate::menu_list::MENU_ROW_PADDING_X))
-                            .text_color(move || ink(state.get().colors.text_primary))
-                            .on_layout(move |_: &Bounds<Points>| {
-                                if state.get_untracked().focus_input {
-                                    search.focus();
-                                }
-                            })
-                            .on_focus(move |_: &()| {
-                                input_focus.send(Request::InputFocused(state.get().page));
-                            })
-                            .on_change(move |text: &str| {
-                                query.set(text.to_owned());
-                                let current = state.get();
-                                if let Ok(mut draft) = current.draft.0.lock() {
-                                    if !draft
-                                        .page
-                                        .as_ref()
-                                        .is_some_and(|page| page.matches(&current.page))
-                                    {
-                                        return;
-                                    }
-                                    draft.text = text.to_owned();
-                                    draft.composing = composing.get();
-                                    draft.revision = draft.revision.saturating_add(1);
-                                    change.send(Request::Filter(
-                                        current.page.clone(),
-                                        draft.revision,
-                                    ));
-                                }
-                            })
-                            .on_composition_change(move |event: &Composition| {
-                                composing.set(event.composing);
-                                let current = state.get();
-                                if let Ok(mut draft) = current.draft.0.lock() {
-                                    if !draft
-                                        .page
-                                        .as_ref()
-                                        .is_some_and(|page| page.matches(&current.page))
-                                    {
-                                        return;
-                                    }
-                                    draft.composing = event.composing;
-                                    draft.revision = draft.revision.saturating_add(1);
-                                    composition.send(Request::Filter(
-                                        current.page.clone(),
-                                        draft.revision,
-                                    ));
-                                }
-                            }),
+                            .gap_2()
+                            .child(
+                                svg(ImageSrc::svg_markup(
+                                    &crate::icons::nsh_source(crate::icons::Icon::Search)
+                                        .unwrap_or_default(),
+                                ))
+                                .size(px(Layout::ICON_SIZE))
+                                .flex_shrink_0()
+                                .accessible(false)
+                                .text_color(move || ink(state.get().colors.text_tertiary)),
+                            )
+                            .child(
+                                nsh_base::input()
+                                    .element_ref(&search)
+                                    .label(move || {
+                                        state.with(|_| vega_i18n::t("ui.search_branches"))
+                                    })
+                                    .placeholder(move || {
+                                        state
+                                            .with(|_| vega_i18n::t("ui.search_branches").to_owned())
+                                    })
+                                    .value(move || query.get())
+                                    .readonly(move || state.get().pending.is_some())
+                                    .h(px(crate::menu_list::MENU_ROW_HEIGHT))
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_color(move || ink(state.get().colors.text_primary))
+                                    .on_layout(move |_: &Bounds<Points>| {
+                                        if state.get_untracked().focus_input {
+                                            search.focus();
+                                        }
+                                    })
+                                    .on_focus(move |_: &()| {
+                                        input_focus.send(Request::InputFocused(state.get().page));
+                                    })
+                                    .on_change(move |text: &str| {
+                                        query.set(text.to_owned());
+                                        let current = state.get();
+                                        if let Ok(mut draft) = current.draft.0.lock() {
+                                            if !draft
+                                                .page
+                                                .as_ref()
+                                                .is_some_and(|page| page.matches(&current.page))
+                                            {
+                                                return;
+                                            }
+                                            draft.text = text.to_owned();
+                                            draft.composing = composing.get();
+                                            draft.revision = draft.revision.saturating_add(1);
+                                            change.send(Request::Filter(
+                                                current.page.clone(),
+                                                draft.revision,
+                                            ));
+                                        }
+                                    })
+                                    .on_composition_change(move |event: &Composition| {
+                                        composing.set(event.composing);
+                                        let current = state.get();
+                                        if let Ok(mut draft) = current.draft.0.lock() {
+                                            if !draft
+                                                .page
+                                                .as_ref()
+                                                .is_some_and(|page| page.matches(&current.page))
+                                            {
+                                                return;
+                                            }
+                                            draft.composing = event.composing;
+                                            draft.revision = draft.revision.saturating_add(1);
+                                            composition.send(Request::Filter(
+                                                current.page.clone(),
+                                                draft.revision,
+                                            ));
+                                        }
+                                    }),
+                            ),
                     )
                     .child(when(
                         move || {
