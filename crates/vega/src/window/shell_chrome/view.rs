@@ -36,7 +36,7 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
     let content = signal_with(incoming.get_untracked(), SignalEquals::Never);
     effect(move || {
         let next = incoming.get();
-        if !content.get_untracked().matches(&next) {
+        if !content.get_untracked().same_frame(&next) {
             content.set(next);
         }
     });
@@ -125,7 +125,7 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
             }
             for control in &snapshot.observation.controls {
                 let action = control.action;
-                let focused = snapshot.focused == Some(action);
+                let focused = snapshot.show_focus_ring && snapshot.focused == Some(action);
                 let enabled = control.enabled;
                 let selected = control.selected;
                 let background = if action == Action::Update {

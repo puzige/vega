@@ -59,6 +59,7 @@ struct Snapshot {
     revision: ProjectionId,
     observation: Observation,
     focused: Option<Action>,
+    show_focus_ring: bool,
     colors: ThemeColors,
     appearance: Appearance,
     language: &'static str,
@@ -71,6 +72,10 @@ impl Snapshot {
             && self.focused == other.focused
             && self.appearance == other.appearance
             && self.language == other.language
+    }
+    fn same_frame(&self, other: &Self) -> bool {
+        self.matches(other)
+            && (self.focused.is_none() || self.show_focus_ring == other.show_focus_ring)
     }
     fn allows(&self, action: Action) -> bool {
         !self.observation.settings
@@ -349,6 +354,7 @@ impl Host {
         Some(Snapshot {
             revision: self.revision.clone(),
             observation,
+            show_focus_ring: window.last_input_was_keyboard(),
             focused: self
                 .focuses
                 .iter()
@@ -550,7 +556,7 @@ impl Render for Host {
         let publish = self
             .published
             .as_ref()
-            .is_none_or(|previous| !previous.matches(&snapshot));
+            .is_none_or(|previous| !previous.same_frame(&snapshot));
         self.published = Some(snapshot.clone());
         let child = self.surface.as_mut().map(|surface| {
             surface.sync_environment(cx);
