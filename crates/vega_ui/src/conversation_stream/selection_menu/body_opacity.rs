@@ -165,26 +165,11 @@ impl Mapping {
                                 || part.key.1 != start
                                 || !matches!(part.key.3, TextPart::Marker | TextPart::Checkbox)
                         });
-                        let (part, expected) = line.checked.map_or_else(
-                            || (TextPart::Marker, line.marker.clone()),
-                            |checked| {
-                                (
-                                    TextPart::Checkbox,
-                                    if checked { "[x]" } else { "[ ]" }.to_owned(),
-                                )
-                            },
-                        );
-                        let expected = if part == TextPart::Marker {
-                            format!("{expected} ")
-                        } else {
-                            expected
-                        };
-                        if part == TextPart::Marker
-                            && expected.strip_suffix(' ') == Some(&fragment.text)
-                        {
+                        let expected = format!("{} ", line.marker);
+                        if expected.strip_suffix(' ') == Some(&fragment.text) {
                             let text: Arc<str> = expected.into();
                             self.0.push(Part {
-                                key: (block, start, 0, part),
+                                key: (block, start, 0, TextPart::Marker),
                                 text,
                                 segments: vec![Segment {
                                     fragment: id.clone(),
@@ -192,12 +177,16 @@ impl Mapping {
                                     part: 0..fragment.text.len(),
                                 }],
                             });
-                        } else {
+                        }
+                        if let Some(checked) = line.checked
+                            && let Some(id) = node.attributes.get("checkbox-binding")
+                        {
+                            let expected = if checked { "[x]" } else { "[ ]" };
                             self.add(
                                 content,
-                                (block, start, 0, part),
-                                expected,
-                                vec![(id.clone(), 0..fragment.text.len())],
+                                (block, start, 0, TextPart::Checkbox),
+                                expected.to_owned(),
+                                vec![(id.clone(), 0..expected.len())],
                             );
                         }
                     }

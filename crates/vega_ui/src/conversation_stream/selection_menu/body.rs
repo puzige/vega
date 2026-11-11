@@ -224,14 +224,70 @@ impl Builder {
             .collect()
     }
 
-    fn blocks(&mut self, nodes: &[RenderNode]) -> Vec<Block> {
+    fn contributes_copy_block(node: &RenderNode) -> bool {
+        match node {
+            RenderNode::ThematicBreak => false,
+            RenderNode::BlockQuote { children } => {
+                children.iter().any(Self::contributes_copy_block)
+            }
+            _ => true,
+        }
+    }
+
+    fn starts_with_list_line(children: &[RenderNode]) -> bool {
+        match children.first() {
+            Some(RenderNode::Paragraph { .. }) => true,
+            Some(RenderNode::BlockQuote { children }) => Self::starts_with_list_line(children),
+            Some(RenderNode::List(list)) => list
+                .items
+                .first()
+                .is_some_and(|item| Self::starts_with_list_line(&item.children)),
+            _ => false,
+        }
+    }
+
+    fn ends_with_list_line(children: &[RenderNode], first_is_marker: bool) -> bool {
+        let last = children.iter().rposition(Self::contributes_copy_block);
+        let only_marked_line = first_is_marker && last == Some(0);
+        match last.map(|index| &children[index]) {
+            Some(RenderNode::List(list)) => list
+                .items
+                .last()
+                .is_some_and(|item| Self::ends_with_list_line(&item.children, true)),
+            Some(RenderNode::BlockQuote { children }) => {
+                Self::ends_with_list_line(children, only_marked_line)
+            }
+            Some(RenderNode::Paragraph { .. }) => only_marked_line,
+            _ => false,
+        }
+    }
+
+    fn blocks(
+        &mut self,
+        nodes: &[RenderNode],
+        list_depth: usize,
+        first_is_marker: bool,
+    ) -> Vec<Block> {
+        let mut has_copy_block = false;
         nodes
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                if index > 0 {
-                    self.separator("\n\n");
+                let contributes_text = Self::contributes_copy_block(node);
+                if contributes_text && has_copy_block {
+                    self.separator(
+                        if list_depth > 0
+                            && matches!(node, RenderNode::List(_))
+                            && Self::ends_with_list_line(&nodes[..index], first_is_marker)
+                            && Self::starts_with_list_line(std::slice::from_ref(node))
+                        {
+                            "\n"
+                        } else {
+                            "\n\n"
+                        },
+                    );
                 }
+                has_copy_block |= contributes_text;
                 match node {
                     RenderNode::Paragraph { spans } => Block::Paragraph {
                         content: self.inlines(spans),
@@ -248,7 +304,7 @@ impl Builder {
                         Block::CodeBlock(block)
                     }
                     RenderNode::BlockQuote { children } => Block::Blockquote {
-                        children: self.blocks(children),
+                        children: self.blocks(children, list_depth, first_is_marker && index == 0),
                         alert: None,
                     },
                     RenderNode::List(list) => {
@@ -258,32 +314,43 @@ impl Builder {
                             .enumerate()
                             .map(|(index, item)| {
                                 if index > 0 {
-                                    self.separator("\n");
+                                    self.separator(
+                                        if Self::ends_with_list_line(
+                                            &list.items[index - 1].children,
+                                            true,
+                                        ) && Self::starts_with_list_line(&item.children)
+                                        {
+                                            "\n"
+                                        } else {
+                                            "\n\n"
+                                        },
+                                    );
                                 }
-                                let marker = item.checked.map_or_else(
-                                    || {
-                                        if list.ordered {
-                                            format!("{}.", list.start.saturating_add(index as u64))
-                                        } else {
-                                            "•".to_owned()
-                                        }
-                                    },
-                                    |checked| {
-                                        if checked {
-                                            "[x]".to_owned()
-                                        } else {
-                                            "[ ]".to_owned()
-                                        }
-                                    },
-                                );
+                                self.separator(&"  ".repeat(list_depth));
+                                let marker = if list.ordered {
+                                    format!("{}.", list.start.saturating_add(index as u64))
+                                } else {
+                                    "•".to_owned()
+                                };
                                 let id = self.fragment(&marker, true, false);
                                 self.separator(" ");
-                                Block::Custom(
-                                    CustomNode::new("vega-reading-list-item")
-                                        .with_text(marker)
-                                        .with_attribute("binding", id)
-                                        .with_children(self.blocks(&item.children)),
-                                )
+                                let mut node = CustomNode::new("vega-reading-list-item")
+                                    .with_text(marker)
+                                    .with_attribute("binding", id);
+                                if let Some(checked) = item.checked {
+                                    let checkbox = if checked { "[x]" } else { "[ ]" };
+                                    node =
+                                        node.with_attribute("checkbox", checkbox).with_attribute(
+                                            "checkbox-binding",
+                                            self.fragment(checkbox, true, false),
+                                        );
+                                    self.separator(" ");
+                                }
+                                Block::Custom(node.with_children(self.blocks(
+                                    &item.children,
+                                    list_depth + 1,
+                                    true,
+                                )))
                             })
                             .collect();
                         Block::Custom(CustomNode::new("vega-reading-list").with_children(children))
@@ -380,7 +447,7 @@ impl Content {
             builder.prefix = format!("vega-reading-{source}-{id}-{version}");
             builder.row = *id;
             builder.ordinal = 0;
-            let row = builder.blocks(nodes);
+            let row = builder.blocks(nodes, 0, false);
             blocks.extend(row.clone());
             rows.push((*id, *version, row));
         }
@@ -2143,7 +2210,7 @@ fn pixels(
         move |row, _| {
             let commands = content_commands.clone();
             view().child(dynamic(move || {
-                native_blocks(&row.get().2, incoming, commands.clone())
+                native_blocks(&row.get().2, incoming, commands.clone(), false)
             }))
         },
     );
@@ -2463,10 +2530,28 @@ fn native_inlines(
         .collect()
 }
 
+fn list_boundary(block: &Block, first: bool) -> &Block {
+    if let Block::Custom(node) = block
+        && matches!(
+            node.name.as_str(),
+            "vega-reading-list" | "vega-reading-list-item"
+        )
+        && let Some(child) = if first {
+            node.children.first()
+        } else {
+            node.children.last()
+        }
+    {
+        return list_boundary(child, first);
+    }
+    block
+}
+
 fn native_blocks(
     blocks: &[Block],
     state: nsh_core::prelude::Signal<Projection>,
     commands: crate::nsh::OrderedCommands<Request>,
+    in_quote: bool,
 ) -> nsh_core::prelude::AnyElement {
     use nsh_core::prelude::*;
     let children = blocks
@@ -2500,12 +2585,17 @@ fn native_blocks(
                 .border_color(move || {
                     state.with(|projection| crate::nsh::color(projection.colors.border_subtle))
                 })
-                .child(native_blocks(children, state, commands.clone()))
+                .child(native_blocks(children, state, commands.clone(), true))
                 .into_element(),
             Block::Custom(node) if node.name == "vega-reading-list" => {
-                native_blocks(&node.children, state, commands.clone())
+                native_blocks(&node.children, state, commands.clone(), in_quote)
             }
             Block::Custom(node) if node.name == "vega-reading-list-item" => {
+                let bullet = node.text == "•";
+                let line_height = nsh_core::LineHeight::Multiple(
+                    vega_theme::Typography::CONVERSATION_LINE_HEIGHT,
+                );
+                let thinking = state.with_untracked(|projection| projection.thinking);
                 let marker = text("")
                     .child(
                         text(node.text.clone()).test_id(
@@ -2515,17 +2605,93 @@ fn native_blocks(
                                 .unwrap_or_default(),
                         ),
                     )
-                    .select_text();
-                view()
+                    .select_text()
+                    .line_height(line_height)
+                    .font_weight(if bullet && !thinking {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .text_color(move || {
+                        state.with(|projection| {
+                            crate::nsh::color(if bullet || projection.thinking {
+                                projection.colors.text_primary
+                            } else {
+                                projection.colors.text_secondary
+                            })
+                        })
+                    });
+                let checkbox = node
+                    .attributes
+                    .get("checkbox")
+                    .zip(node.attributes.get("checkbox-binding"))
+                    .map(|(label, id)| {
+                        let checked = label == "[x]";
+                        text("")
+                            .child(text(label.clone()).test_id(id))
+                            .select_text()
+                            .line_height(line_height)
+                            .mr(px(4.))
+                            .text_color(move || {
+                                state.with(|projection| {
+                                    crate::nsh::color(if projection.thinking {
+                                        projection.colors.text_primary
+                                    } else if checked {
+                                        projection.colors.success
+                                    } else {
+                                        projection.colors.text_tertiary
+                                    })
+                                })
+                            })
+                    });
+                let row = view()
                     .flex_row()
-                    .gap(px(vega_theme::Layout::MARKDOWN_INLINE_CODE_PADDING_X))
-                    .child(marker)
-                    .child(view().min_w(px(0.)).flex_1().child(native_blocks(
-                        &node.children,
-                        state,
-                        commands.clone(),
-                    )))
-                    .into_element()
+                    .child(
+                        view()
+                            .w(px(vega_theme::Layout::MARKDOWN_LIST_INDENT))
+                            .flex_shrink(0.)
+                            .child(marker),
+                    )
+                    .children(checkbox);
+                let (first, rest) = node.children.split_at(node.children.len().min(1));
+                let row = row.child(view().min_w(px(0.)).flex_1().child(native_blocks(
+                    first,
+                    state,
+                    commands.clone(),
+                    in_quote,
+                )));
+                if rest.is_empty() {
+                    row.into_element()
+                } else {
+                    view()
+                        .flex_col()
+                        .child(row)
+                        .children(rest.iter().enumerate().map(|(index, block)| {
+                            let previous = &node.children[index];
+                            let first = list_boundary(block, true);
+                            let last = list_boundary(previous, false);
+                            let gap = if matches!(first, Block::Blockquote { .. }) || matches!(last, Block::Blockquote { .. }) {
+                                vega_theme::Layout::MARKDOWN_BLOCK_GAP
+                            } else if matches!(block, Block::Custom(node) if node.name == "vega-reading-list")
+                                && matches!(first, Block::Paragraph { .. }) {
+                                vega_theme::Layout::MARKDOWN_LIST_ITEM_GAP
+                            } else if in_quote {
+                                vega_theme::Layout::MARKDOWN_BLOCK_GAP
+                            } else {
+                                vega_theme::Layout::MARKDOWN_LIST_PARAGRAPH_GAP
+                            };
+                            view()
+                                .pl(px(vega_theme::Layout::MARKDOWN_LIST_INDENT))
+                                .pt(px(gap))
+                                .child(native_blocks(
+                                    std::slice::from_ref(block),
+                                    state,
+                                    commands.clone(),
+                                    in_quote,
+                                ))
+                        }))
+                        .into_element()
+                }
             }
             Block::CodeBlock(code) => {
                 let binding = code.meta.clone().unwrap_or_default();
@@ -2581,7 +2747,7 @@ fn native_blocks(
             Block::Custom(node) if node.name == "vega-reading-table" => {
                 let weights = node.attributes.clone();
                 provide_context(TableWeights(weights));
-                native_blocks(&node.children, state, commands.clone())
+                native_blocks(&node.children, state, commands.clone(), in_quote)
             }
             Block::Table(table) => {
                 let weights = use_context::<TableWeights>()
