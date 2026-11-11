@@ -65,7 +65,11 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                 .on_layout(move |bounds: &Bounds<Points>| root.set(Some(rect(bounds))))
                 .flex_row()
                 .items_center()
-                .gap(px(Layout::TITLEBAR_CONTROL_GAP))
+                .gap(px(if snapshot.observation.kind == Kind::Slots {
+                    Layout::SHELL_SLOT_GAP
+                } else {
+                    Layout::TITLEBAR_CONTROL_GAP
+                }))
                 .text_color(color(colors.text_primary));
             match snapshot.observation.kind {
                 Kind::Header => {
@@ -155,13 +159,7 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                     .text_color(color(foreground))
                     .flex_row()
                     .items_center()
-                    .justify_center()
-                    .on_layout(move |bounds: &Bounds<Points>| {
-                        let mut values = controls.get_untracked();
-                        values.retain(|(owned, _)| *owned != action);
-                        values.push((action, rect(bounds)));
-                        controls.set(values);
-                    });
+                    .justify_center();
                 if action == Action::PermissionSettings {
                     button = button
                         .px_2()
@@ -210,12 +208,22 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                                 .run(|| sender.send(Request::Activate(observed.clone(), action)))
                         });
                 }
-                body = body.child(
-                    view()
-                        .accessible(false)
-                        .accessibility_elements_hidden(enabled)
-                        .child(button),
-                );
+                let record_bounds = move |bounds: &Bounds<Points>| {
+                    let mut values = controls.get_untracked();
+                    values.retain(|(owned, _)| *owned != action);
+                    values.push((action, rect(bounds)));
+                    controls.set(values);
+                };
+                let wrapper = view()
+                    .accessible(false)
+                    .accessibility_elements_hidden(enabled);
+                // Slot buttons fill their wrappers. Only the wrapper's layout
+                // reports its offset in the row shared by the native hit targets.
+                body = body.child(if snapshot.observation.kind == Kind::Slots {
+                    wrapper.on_layout(record_bounds).child(button)
+                } else {
+                    wrapper.child(button.on_layout(record_bounds))
+                });
             }
             body.into_element()
         }))

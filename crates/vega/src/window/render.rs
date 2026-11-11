@@ -934,7 +934,7 @@ impl VegaWindow {
             .child(
                 div()
                     .w(px(
-                        3. * Layout::TITLEBAR_CONTROL_SIZE + 2. * Layout::TITLEBAR_CONTROL_GAP
+                        3. * Layout::TITLEBAR_CONTROL_SIZE + 2. * Layout::SHELL_SLOT_GAP
                     ))
                     .h(px(Layout::TITLEBAR_CONTROL_SIZE))
                     .child(self.render_shell_chrome(shell_chrome::Kind::Slots, window, cx)),
