@@ -129,6 +129,20 @@ pub(crate) struct Fragment {
     code: bool,
 }
 
+fn displayed_code(code: &str) -> &str {
+    code.strip_suffix('\n').unwrap_or(code)
+}
+
+impl Fragment {
+    fn rendered_text(&self) -> &str {
+        if self.code {
+            displayed_code(&self.text)
+        } else {
+            &self.text
+        }
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct ReadingRow {
     id: u64,
@@ -137,7 +151,7 @@ struct ReadingRow {
     gap_before: f32,
 }
 
-fn is_empty_heading(node: &RenderNode) -> bool {
+fn is_empty_reading_block(node: &RenderNode) -> bool {
     fn has_span(inline: &vega_markdown::Inline) -> bool {
         use vega_markdown::Inline;
         match inline {
@@ -151,7 +165,11 @@ fn is_empty_heading(node: &RenderNode) -> bool {
             } => children.iter().any(has_span),
         }
     }
-    matches!(node, RenderNode::Heading { spans, .. } if !spans.iter().any(has_span))
+    match node {
+        RenderNode::Heading { spans, .. } => !spans.iter().any(has_span),
+        RenderNode::CodeBlock { code, .. } => code.is_empty(),
+        _ => false,
+    }
 }
 
 fn reading_block_gap(previous: Option<&Block>, current: &Block) -> f32 {
@@ -216,7 +234,8 @@ impl Builder {
         let id = format!("{}:{}", self.prefix, self.ordinal);
         self.ordinal += 1;
         let start = self.text.len();
-        self.text.push_str(value);
+        self.text
+            .push_str(if code { displayed_code(value) } else { value });
         self.fragments.push(Fragment {
             id: id.clone(),
             text: value.to_owned(),
@@ -483,10 +502,10 @@ impl Content {
         let mut rows = Vec::new();
         for (id, version, nodes) in retained {
             let filtered;
-            let nodes = if nodes.iter().any(is_empty_heading) {
+            let nodes = if nodes.iter().any(is_empty_reading_block) {
                 filtered = nodes
                     .iter()
-                    .filter(|node| !is_empty_heading(node))
+                    .filter(|node| !is_empty_reading_block(node))
                     .cloned()
                     .collect::<Vec<_>>();
                 filtered.as_slice()
@@ -701,7 +720,7 @@ impl Content {
         let mut expected = self
             .fragments
             .iter()
-            .filter(|fragment| !fragment.text.is_empty());
+            .filter(|fragment| fragment.code || !fragment.text.is_empty());
         for text in &snapshot.texts {
             for tag in &text.content.test_ids {
                 let Some(fragment) = expected.next() else {
@@ -716,7 +735,7 @@ impl Content {
                 let Some(end) = utf16_byte(&text.content.text, tag.end) else {
                     return false;
                 };
-                if text.content.text.get(start..end) != Some(fragment.text.as_str()) {
+                if text.content.text.get(start..end) != Some(fragment.rendered_text()) {
                     return false;
                 }
             }
@@ -740,7 +759,7 @@ impl Content {
             let end = utf16_byte(&mounted.content.text, tag.end)?;
             (byte >= start
                 && byte <= end
-                && mounted.content.text.get(start..end) == Some(fragment.text.as_str()))
+                && mounted.content.text.get(start..end) == Some(fragment.rendered_text()))
             .then(|| fragment.range.start + byte - start)
         })
     }
@@ -760,11 +779,11 @@ impl Content {
                 }
                 let start = utf16_byte(&mounted.content.text, tag.start)?;
                 let end = utf16_byte(&mounted.content.text, tag.end)?;
-                if mounted.content.text.get(start..end) != Some(fragment.text.as_str()) {
+                if mounted.content.text.get(start..end) != Some(fragment.rendered_text()) {
                     return None;
                 }
                 let local = byte - fragment.range.start;
-                let prefix = fragment.text.get(..local)?;
+                let prefix = fragment.rendered_text().get(..local)?;
                 let units = u32::try_from(prefix.encode_utf16().count()).ok()?;
                 return Some((index, tag.start.checked_add(units)?));
             }
@@ -793,7 +812,7 @@ impl Content {
                 };
                 let tag_start = utf16_byte(&mounted.content.text, tag.start)?;
                 let tag_end = utf16_byte(&mounted.content.text, tag.end)?;
-                if mounted.content.text.get(tag_start..tag_end)? != fragment.text {
+                if mounted.content.text.get(tag_start..tag_end)? != fragment.rendered_text() {
                     return None;
                 }
                 let from = start.max(tag_start);
@@ -2482,21 +2501,22 @@ fn native_code(
     state: nsh_core::prelude::Signal<Projection>,
 ) -> Vec<nsh_core::prelude::AnyElement> {
     use nsh_core::prelude::*;
+    let visible = displayed_code(&code.code);
     let tokens = code
         .language
         .as_deref()
-        .and_then(|language| vega_markdown::highlight(&code.code, language))
+        .and_then(|language| vega_markdown::highlight(visible, language))
         .unwrap_or_default();
     let mut spans = Vec::new();
     let mut cursor = 0;
     for token in tokens {
-        if token.start_byte < cursor || token.end_byte > code.code.len() {
+        if token.start_byte < cursor || token.end_byte > visible.len() {
             continue;
         }
-        if let Some(plain) = code.code.get(cursor..token.start_byte) {
+        if let Some(plain) = visible.get(cursor..token.start_byte) {
             spans.push(text(plain.to_owned()).into_element());
         }
-        if let Some(value) = code.code.get(token.start_byte..token.end_byte) {
+        if let Some(value) = visible.get(token.start_byte..token.end_byte) {
             let kind = token.kind;
             let span = text(value.to_owned()).text_color(move || {
                 state.with(|projection| {
@@ -2513,7 +2533,7 @@ fn native_code(
         }
         cursor = token.end_byte;
     }
-    if let Some(plain) = code.code.get(cursor..) {
+    if let Some(plain) = visible.get(cursor..) {
         spans.push(text(plain.to_owned()).into_element());
     }
     spans
@@ -2798,6 +2818,8 @@ fn native_blocks(
                     .line_height(nsh_core::LineHeight::Multiple(
                         vega_theme::Typography::CODE_LINE_HEIGHT,
                     ))
+                    .min_h(px(vega_theme::Typography::CODE * vega_theme::Typography::CODE_LINE_HEIGHT
+                        + vega_theme::Layout::COPY_ACTION_GAP + vega_theme::Layout::MARKDOWN_CODE_PADDING))
                     .app_class(Some("whitespace-nowrap".into()))
                     .px(px(vega_theme::Layout::MARKDOWN_CODE_PADDING))
                     .pt(px(vega_theme::Layout::COPY_ACTION_GAP))

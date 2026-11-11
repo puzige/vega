@@ -170,10 +170,12 @@ impl Anchor {
                     })?;
                     let start = super::utf16_byte(&text.content.text, tag.start)?;
                     let end = super::utf16_byte(&text.content.text, tag.end)?;
-                    if text.content.text.get(start..end) != Some(fragment.text.as_str()) {
+                    if text.content.text.get(start..end) != Some(fragment.rendered_text()) {
                         return None;
                     }
-                    let prefix = fragment.text.get(..byte - fragment.range.start)?;
+                    let prefix = fragment
+                        .rendered_text()
+                        .get(..byte - fragment.range.start)?;
                     let units = u32::try_from(prefix.encode_utf16().count()).ok()?;
                     Some((index, tag.start.checked_add(units)?))
                 })
