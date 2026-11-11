@@ -651,101 +651,108 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         )
         .child(
             super::super::nsh_form::card(move || state.get().colors)
-                .child(super::super::nsh_form::preference(
-                    move || state.get().colors,
-                    text(move || state.with(|_| vega_i18n::t("settings.updater.version"))),
-                    Some(text(move || state.get().checked).into_element()),
-                    view()
-                        .gap_1()
-                        .child(text(move || {
-                            vega_i18n::t_args(
-                                "settings.updater.current_version",
-                                &[("version", &state.get().version)],
-                            )
-                        }))
-                        .child(when(
-                            move || state.get().latest.is_some(),
-                            move || {
-                                text(move || {
-                                    vega_i18n::t_args(
-                                        "settings.updater.latest_version",
-                                        &[("version", &state.get().latest.unwrap_or_default())],
+                .child(
+                    super::super::nsh_form::preference(
+                        move || state.get().colors,
+                        text(move || state.with(|_| vega_i18n::t("settings.updater.version"))),
+                        Some(text(move || state.get().checked).into_element()),
+                        view()
+                            .gap_1()
+                            .child(text(move || {
+                                vega_i18n::t_args(
+                                    "settings.updater.current_version",
+                                    &[("version", &state.get().version)],
+                                )
+                            }))
+                            .child(when(
+                                move || state.get().latest.is_some(),
+                                move || {
+                                    text(move || {
+                                        vega_i18n::t_args(
+                                            "settings.updater.latest_version",
+                                            &[("version", &state.get().latest.unwrap_or_default())],
+                                        )
+                                    })
+                                    .text_color(move || {
+                                        crate::nsh::color(state.get().colors.text_secondary)
+                                    })
+                                },
+                            )),
+                    )
+                    .border_b_1(),
+                )
+                .child(
+                    super::super::nsh_form::preference(
+                        move || state.get().colors,
+                        text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
+                        None,
+                        view()
+                            .relative()
+                            .self_start()
+                            .accessible(false)
+                            .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                            .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                            .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                            .border(px(1.))
+                            .border_color(move || {
+                                state.with(|s| {
+                                    crate::nsh::color(
+                                        if s.focused_control == Some(Control::Automatic)
+                                            && Control::Automatic.enabled(s)
+                                        {
+                                            s.colors.text_primary
+                                        } else if s.automatic {
+                                            s.colors.brand_primary
+                                        } else {
+                                            s.colors.border_subtle
+                                        },
                                     )
                                 })
-                                .text_color(move || {
-                                    crate::nsh::color(state.get().colors.text_secondary)
-                                })
-                            },
-                        )),
-                ))
-                .child(super::super::nsh_form::preference(
-                    move || state.get().colors,
-                    text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
-                    None,
-                    view()
-                        .relative()
-                        .self_start()
-                        .accessible(false)
-                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                        .border(px(1.))
-                        .border_color(move || {
-                            state.with(|s| {
-                                crate::nsh::color(
-                                    if s.focused_control == Some(Control::Automatic)
-                                        && Control::Automatic.enabled(s)
-                                    {
-                                        s.colors.text_primary
-                                    } else if s.automatic {
-                                        s.colors.brand_primary
-                                    } else {
-                                        s.colors.border_subtle
-                                    },
-                                )
                             })
-                        })
-                        .bg(move || {
-                            state.with(|s| {
-                                let hovered = Control::Automatic.enabled(s)
-                                    && !actions.waiting.get()
-                                    && switch_pointer.hovered(s);
-                                crate::nsh::color(match (s.automatic, hovered) {
-                                    (true, true) => s.colors.brand_primary_strong,
-                                    (true, false) => s.colors.brand_primary,
-                                    (false, _) if hovered && switch_pointer.pressed(s) => {
-                                        s.colors.bg_active
-                                    }
-                                    (false, true) => s.colors.border_subtle,
-                                    (false, false) => s.colors.bg_hover,
-                                })
-                            })
-                        })
-                        .opacity(move || -> f32 {
-                            if actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase))
-                            {
-                                0.5
-                            } else {
-                                1.
-                            }
-                        })
-                        .child(
-                            view()
-                                .absolute()
-                                .top(px(1.))
-                                .left(move || {
-                                    px(if state.get().automatic {
-                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
-                                    } else {
-                                        1.
+                            .bg(move || {
+                                state.with(|s| {
+                                    let hovered = Control::Automatic.enabled(s)
+                                        && !actions.waiting.get()
+                                        && switch_pointer.hovered(s);
+                                    crate::nsh::color(match (s.automatic, hovered) {
+                                        (true, true) => s.colors.brand_primary_strong,
+                                        (true, false) => s.colors.brand_primary,
+                                        (false, _) if hovered && switch_pointer.pressed(s) => {
+                                            s.colors.bg_active
+                                        }
+                                        (false, true) => s.colors.border_subtle,
+                                        (false, false) => s.colors.bg_hover,
                                     })
                                 })
-                                .size(px(Layout::ICON_SIZE))
-                                .rounded(px(Layout::ICON_SIZE / 2.))
-                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
-                        )
-                        .child(Control::Automatic.target(actions, automatic, switch_pointer)),
-                ))
+                            })
+                            .opacity(move || -> f32 {
+                                if actions.waiting.get()
+                                    || state.with(|s| s.pending || busy(&s.phase))
+                                {
+                                    0.5
+                                } else {
+                                    1.
+                                }
+                            })
+                            .child(
+                                view()
+                                    .absolute()
+                                    .top(px(1.))
+                                    .left(move || {
+                                        px(if state.get().automatic {
+                                            Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
+                                        } else {
+                                            1.
+                                        })
+                                    })
+                                    .size(px(Layout::ICON_SIZE))
+                                    .rounded(px(Layout::ICON_SIZE / 2.))
+                                    .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
+                            )
+                            .child(Control::Automatic.target(actions, automatic, switch_pointer)),
+                    )
+                    .border_b_1(),
+                )
                 .child(when(
                     move || {
                         state.get().message.as_ref().is_some_and(|message| {

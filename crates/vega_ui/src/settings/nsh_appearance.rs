@@ -380,7 +380,11 @@ fn control(
         .into_element()
 }
 
-fn field_row(state: Signal<Snapshot>, key: &'static str, control: AnyElement) -> AnyElement {
+fn field_row(
+    state: Signal<Snapshot>,
+    key: &'static str,
+    control: AnyElement,
+) -> nsh_core::element::View {
     super::nsh_form::preference(
         move || state.get().colors,
         text(move || state.with(|_| vega_i18n::t(key))),
@@ -426,54 +430,60 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         )
         .child(
             super::nsh_form::card(move || state.get().colors)
-                .child(field_row(
-                    state,
-                    "settings.appearance.theme",
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(control(
-                            actions,
-                            commands.clone(),
-                            Action::Theme("light"),
-                            "settings.appearance.light",
-                        ))
-                        .child(control(
-                            actions,
-                            commands.clone(),
-                            Action::Theme("dark"),
-                            "settings.appearance.dark",
-                        ))
-                        .child(control(
-                            actions,
-                            commands.clone(),
-                            Action::Theme("system"),
-                            "settings.appearance.system",
-                        ))
-                        .into_element(),
-                ))
-                .child(field_row(
-                    state,
-                    "settings.language",
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(control(
-                            actions,
-                            commands.clone(),
-                            Action::Language("en"),
-                            "settings.language.english",
-                        ))
-                        .child(control(
-                            actions,
-                            commands,
-                            Action::Language("zh-CN"),
-                            "settings.language.chinese",
-                        ))
-                        .into_element(),
-                ))
+                .child(
+                    field_row(
+                        state,
+                        "settings.appearance.theme",
+                        view()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(control(
+                                actions,
+                                commands.clone(),
+                                Action::Theme("light"),
+                                "settings.appearance.light",
+                            ))
+                            .child(control(
+                                actions,
+                                commands.clone(),
+                                Action::Theme("dark"),
+                                "settings.appearance.dark",
+                            ))
+                            .child(control(
+                                actions,
+                                commands.clone(),
+                                Action::Theme("system"),
+                                "settings.appearance.system",
+                            ))
+                            .into_element(),
+                    )
+                    .border_b_1(),
+                )
+                .child(
+                    field_row(
+                        state,
+                        "settings.language",
+                        view()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(control(
+                                actions,
+                                commands.clone(),
+                                Action::Language("en"),
+                                "settings.language.english",
+                            ))
+                            .child(control(
+                                actions,
+                                commands,
+                                Action::Language("zh-CN"),
+                                "settings.language.chinese",
+                            ))
+                            .into_element(),
+                    )
+                    .border_b_1(),
+                )
                 .child(field_row(
                     state,
                     "settings.appearance.sidebar",

@@ -21,6 +21,8 @@ pub(super) fn field(
     control: impl IntoElement,
 ) -> AnyElement {
     field_layout(colors, label, description, control, false)
+        .border_b_1()
+        .into_element()
 }
 
 pub(super) fn preference(
@@ -28,7 +30,7 @@ pub(super) fn preference(
     label: impl IntoElement,
     description: Option<AnyElement>,
     control: impl IntoElement,
-) -> AnyElement {
+) -> nsh_core::element::View {
     field_layout(colors, label, description, control, true)
 }
 
@@ -38,7 +40,7 @@ fn field_layout(
     description: Option<AnyElement>,
     control: impl IntoElement,
     trailing: bool,
-) -> AnyElement {
+) -> nsh_core::element::View {
     let label_column = if trailing {
         view().flex_1().basis(px(Layout::SETTINGS_LABEL_WIDTH))
     } else {
@@ -69,7 +71,6 @@ fn field_layout(
         .gap_x(px(Layout::SETTINGS_FIELD_GAP))
         .gap_y_2()
         .py(px(Layout::SETTINGS_ROW_PADDING_Y))
-        .border_b_1()
         .border_color(move || crate::nsh::color(colors().border_subtle))
         .child(labels)
         .child(
@@ -79,7 +80,6 @@ fn field_layout(
                 .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
                 .child(control),
         )
-        .into_element()
 }
 
 pub(super) fn status(

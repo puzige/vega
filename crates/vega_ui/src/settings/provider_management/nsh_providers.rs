@@ -68,6 +68,7 @@ struct Editor {
 }
 #[derive(Clone)]
 struct Snapshot {
+    dirty: bool,
     id: ProjectionId,
     version: ProjectionId,
     visible: bool,
@@ -82,6 +83,7 @@ impl PartialEq for Snapshot {
     fn eq(&self, other: &Self) -> bool {
         self.id.matches(&other.id)
             && self.version.matches(&other.version)
+            && self.dirty == other.dirty
             && self.visible == other.visible
             && self.guard_focused == other.guard_focused
             && self.authority == other.authority
@@ -438,9 +440,7 @@ fn allowed(s: &Snapshot, action: &Action) -> bool {
                     || s.authority.delete.is_some())
         }
         Action::Move(from, to) => {
-            !s.authority.unavailable
-                && !s.authority.saving
-                && (!s.narrow || !s.authority.detail)
+            reorder_enabled(s)
                 && from != to
                 && s.authority.rows.iter().any(|r| &r.name == from)
                 && s.authority.rows.iter().any(|r| &r.name == to)
@@ -460,6 +460,25 @@ fn allowed(s: &Snapshot, action: &Action) -> bool {
 }
 fn provider_visible(section: usize, open: bool) -> bool {
     section == 0 && open
+}
+
+fn reorder_enabled(s: &Snapshot) -> bool {
+    s.visible
+        && s.authority.path
+        && !s.authority.unavailable
+        && !s.dirty
+        && !s.authority.saving
+        && (!s.narrow || !s.authority.detail)
+}
+
+fn reorder_shortcut(s: &Snapshot) -> bool {
+    reorder_enabled(s)
+        && s.authority.selected.is_some()
+        && s.authority.rows.len() > 1
+        && s.editor.is_none()
+        && s.authority.delete.is_none()
+        && s.authority.candidates.is_none()
+        && !s.guard_focused
 }
 
 fn accepts(current: &Snapshot, observed: &Snapshot, action: &Action) -> bool {
@@ -530,6 +549,7 @@ impl SettingsView {
         let state = &self.provider_management;
         let page = state.presentation.as_ref();
         Snapshot {
+            dirty: self.provider_has_draft(cx),
             id: page.map(|p| p.id.clone()).unwrap_or_default(),
             version: page.map(|p| p.version.clone()).unwrap_or_default(),
             guard_focused: self.navigation_guard_control_focused(),
@@ -944,6 +964,13 @@ impl SettingsView {
                     ) else {
                         return false;
                     };
+                    let name = self.config.providers[from].name.clone();
+                    if self.provider_management.selected.as_ref() != Some(&name) {
+                        self.provider_command(Command::Select(name), cx);
+                        if observed.narrow {
+                            self.provider_management.detail_open = false;
+                        }
+                    }
                     self.move_provider(from, to, cx);
                 }
                 _ => return false,
@@ -1340,6 +1367,19 @@ fn button(
         });
     if let Some((name, enabled)) = provider {
         return control
+            .hint(move || {
+                let s = rendered.get();
+                if reorder_shortcut(&s) && !actions.popup.get() && item.get().selected == Some(true)
+                {
+                    format!(
+                        "Alt+↑ {} / Alt+↓ {}",
+                        t("settings.provider.move_up"),
+                        t("settings.provider.move_down")
+                    )
+                } else {
+                    item.get().reason
+                }
+            })
             .flex_1()
             .min_w(px(0.))
             .items_start()
@@ -2248,11 +2288,32 @@ fn provider_detail(
     }
     body.into_element()
 }
-fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement {
+fn provider_list_viewport(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+) -> nsh_core::element::Scroll {
+    let viewport = element_ref();
+    let revision = signal(0_u64);
+    scroll()
+        .element_ref(&viewport)
+        .on_layout(move |_: &Bounds<Points>| revision.update(|value| *value += 1))
+        .on_scroll(move |_: &nsh_core::element::ScrollEvent| revision.update(|value| *value += 1))
+        .h_full()
+        .child(provider_list(actions, commands, viewport, revision))
+}
+
+fn provider_list(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+    viewport: ElementRef,
+    layout_revision: Signal<u64>,
+) -> AnyElement {
     let s = actions.snapshot();
-    let geometry = signal(Vec::<(String, f32, f32)>::new());
+    let can_move = reorder_enabled(&s);
+    let list_ref = element_ref();
+    let geometry = signal(Vec::<(String, Bounds<Points>)>::new());
     let dragged = signal(None::<String>);
-    let mut list = view().w_full().gap_2().child(
+    let mut list = view().element_ref(&list_ref).w_full().gap_2().child(
         view()
             .flex_row()
             .flex_wrap()
@@ -2277,144 +2338,108 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
     for row in &s.authority.rows {
         let name = row.name.clone();
         let layout_name = name.clone();
-        let start_name = name.clone();
         let end_name = name.clone();
-        let authority = s.authority.clone();
-        let version = s.version.clone();
         let drag_commands = commands.clone();
-        let active = signal(false);
-        let handle = element_ref();
-        let handle_focused = signal(false);
-        handle.on_focus_in(move || handle_focused.set(true));
-        handle.on_focus_out(move || handle_focused.set(false));
-        let keyboard_name = name.clone();
-        let keyboard_order: Vec<_> = s.authority.rows.iter().map(|r| r.name.clone()).collect();
-        let keyboard_authority = s.authority.clone();
-        let keyboard_version = s.version.clone();
-        let keyboard_commands = commands.clone();
+        let press = signal(None);
         let target_name = name.clone();
         list = list.child(
             view()
                 .flex_row()
                 .items_center()
-                .gap_1()
+                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                .bg(move || {
+                    let colors = actions.state.get().colors;
+                    crate::nsh::color(if dragged.get().as_ref() == Some(&target_name) {
+                        colors.bg_active
+                    } else {
+                        colors.bg_base.opacity(0.)
+                    })
+                })
                 .on_layout(move |bounds: &Bounds<Points>| {
+                    layout_revision.update(|revision| *revision += 1);
                     geometry.update(|rows| {
-                        rows.retain(|(n, _, _)| *n != layout_name);
-                        rows.push((layout_name.clone(), bounds.origin.y.0, bounds.size.height.0));
+                        rows.retain(|(n, _)| *n != layout_name);
+                        rows.push((layout_name.clone(), *bounds));
                     });
                 })
-                .children((s.authority.rows.len() > 1).then(|| {
-                    view()
-                        .element_ref(&handle)
-                        .role(AccessibilityRole::Button)
-                        .focusable(true)
-                        .child(when(
-                            move || handle_focused.get(),
-                            move || {
-                                for (key, delta) in [("up", -1_isize), ("down", 1_isize)] {
-                                    let order = keyboard_order.clone();
-                                    let name = keyboard_name.clone();
-                                    let authority = keyboard_authority.clone();
-                                    let version = keyboard_version.clone();
-                                    let commands = keyboard_commands.clone();
-                                    on_key_with(
-                                        key,
-                                        KeyOptions {
-                                            when: nsh_core::keymap::When::NotEditing,
-                                            ..Default::default()
-                                        },
-                                        move |_| {
-                                            if let Some(index) =
-                                                order.iter().position(|p| *p == name)
-                                                && let Some(to) = index
-                                                    .checked_add_signed(delta)
-                                                    .and_then(|i| order.get(i))
-                                            {
-                                                actions.send(
-                                                    commands.clone(),
-                                                    authority.clone(),
-                                                    version.clone(),
-                                                    Action::Move(name.clone(), to.clone()),
-                                                    None,
-                                                );
-                                            }
-                                        },
+                .on_touch(move |event: &nsh_core::TouchEvent| {
+                    use nsh_core::TouchPhase;
+                    if !can_move {
+                        return;
+                    }
+                    let [point] = event.points.as_slice() else {
+                        press.set(None);
+                        dragged.set(None);
+                        return;
+                    };
+                    match event.phase {
+                        TouchPhase::Start => {
+                            let s = actions.snapshot();
+                            press.set(Some((point.id, point.page, s.authority, s.version)));
+                        }
+                        TouchPhase::Move => {
+                            if press.get_untracked().is_some_and(|(id, start, _, _)| {
+                                id == point.id
+                                    && (point.page.y - start.y).abs() > PanActivation::MIN_DISTANCE
+                            }) {
+                                dragged.set(Some(end_name.clone()));
+                            }
+                        }
+                        TouchPhase::Cancel => {
+                            press.set(None);
+                            dragged.set(None);
+                        }
+                        TouchPhase::End => {
+                            let start = press.get_untracked();
+                            press.set(None);
+                            dragged.set(None);
+                            let Some((id, origin, authority, version)) = start else {
+                                return;
+                            };
+                            if id != point.id
+                                || (point.page.y - origin.y).abs() <= PanActivation::MIN_DISTANCE
+                            {
+                                return;
+                            }
+                            let release_revision = layout_revision.get_untracked();
+                            let page = point.page;
+                            let commands = drag_commands.clone();
+                            let from = end_name.clone();
+                            spawn(async move {
+                                let (Some(list), Some(clip)) =
+                                    (list_ref.measure().await, viewport.measure().await)
+                                else {
+                                    return;
+                                };
+                                if release_revision != layout_revision.get_untracked() {
+                                    return;
+                                }
+                                if !(Bounds {
+                                    origin: clip.page,
+                                    size: clip.frame.size,
+                                })
+                                .contains(&page)
+                                {
+                                    return;
+                                }
+                                let local = page - list.page;
+                                if let Some((to, _)) = geometry
+                                    .get_untracked()
+                                    .into_iter()
+                                    .find(|(_, bounds)| bounds.contains(&local))
+                                {
+                                    actions.send(
+                                        commands,
+                                        authority,
+                                        version,
+                                        Action::Move(from, to),
+                                        None,
                                     );
                                 }
-                                view()
-                            },
-                        ))
-                        .label(format!(
-                            "{}: {} / {}",
-                            name,
-                            t("settings.provider.move_up"),
-                            t("settings.provider.move_down")
-                        ))
-                        .hint(format!(
-                            "↑ {} / ↓ {}",
-                            t("settings.provider.move_up"),
-                            t("settings.provider.move_down")
-                        ))
-                        .disabled(s.authority.saving)
-                        .claim_touches(TouchClaim::on_pan(PanActivation::default()))
-                        .keep_touches(true)
-                        .on_responder_grant(move |_: &ResponderEvent| {
-                            active.set(true);
-                            dragged.set(Some(start_name.clone()));
-                        })
-                        .on_responder_release(move |event: &ResponderEvent| {
-                            active.set(false);
-                            dragged.set(None);
-                            let rows = geometry.get_untracked();
-                            let origin = rows
-                                .iter()
-                                .find(|(n, _, _)| *n == end_name)
-                                .map(|(_, y, h)| y + h / 2.);
-                            if let Some(y) = origin.map(|y| y + event.gesture.delta.y.0)
-                                && let Some((to, _, _)) =
-                                    rows.iter().min_by(|(_, ay, ah), (_, by, bh)| {
-                                        (ay + ah / 2. - y)
-                                            .abs()
-                                            .total_cmp(&(by + bh / 2. - y).abs())
-                                    })
-                            {
-                                actions.send(
-                                    drag_commands.clone(),
-                                    authority.clone(),
-                                    version.clone(),
-                                    Action::Move(end_name.clone(), to.clone()),
-                                    None,
-                                );
-                            }
-                        })
-                        .on_responder_terminate(move |_: &ResponderEvent| {
-                            active.set(false);
-                            dragged.set(None);
-                        })
-                        .border(px(1.))
-                        .border_color(move || {
-                            crate::nsh::color(if handle_focused.get() {
-                                actions.state.get().colors.accent
-                            } else {
-                                actions.state.get().colors.border_subtle
-                            })
-                        })
-                        .bg(move || {
-                            crate::nsh::color(
-                                if active.get() || dragged.get().as_ref() == Some(&target_name) {
-                                    actions.state.get().colors.bg_active
-                                } else {
-                                    actions.state.get().colors.bg_elevated
-                                },
-                            )
-                        })
-                        .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-                        .flex_shrink_0()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(crate::icons::Icon::ArrowUpDown, actions.state))
-                }))
+                            });
+                        }
+                    }
+                })
                 .child(button(
                     actions,
                     commands.clone(),
@@ -2449,13 +2474,14 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         let snapshot = state.get();
         let mut authority = (*snapshot.authority).clone();
         authority.checked.clear();
-        (authority, snapshot.narrow)
+        (authority, snapshot.narrow, snapshot.dirty)
     });
     let root = element_ref();
     let within = signal(false);
     root.on_focus_in(move || within.set(true));
     root.on_focus_out(move || within.set(false));
     let escape_commands = commands.clone();
+    let reorder_commands = commands.clone();
     view()
         .element_ref(&root)
         .w_full()
@@ -2470,6 +2496,41 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .text_size(px(Typography::BODY))
         .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
+        .child(when(
+            move || {
+                let s = state.get();
+                reorder_shortcut(&s) && !actions.popup.get()
+            },
+            move || {
+                for (key, delta) in [("alt+up", -1_isize), ("alt+down", 1)] {
+                    let channel = reorder_commands.clone();
+                    on_key_with(
+                        key,
+                        KeyOptions {
+                            when: nsh_core::keymap::When::NotEditing,
+                            ..Default::default()
+                        },
+                        move |_| {
+                            let s = actions.snapshot();
+                            let Some(from) = &s.authority.selected else {
+                                return;
+                            };
+                            let rows = &s.authority.rows;
+                            if let Some(to) = rows
+                                .iter()
+                                .position(|r| &r.name == from)
+                                .and_then(|i| i.checked_add_signed(delta))
+                                .and_then(|i| rows.get(i))
+                            {
+                                let action = Action::Move(from.clone(), to.name.clone());
+                                actions.send(channel.clone(), s.authority, s.version, action, None);
+                            }
+                        },
+                    );
+                }
+                view().absolute()
+            },
+        ))
         .child(when(
             move || {
                 within.get()
@@ -2556,9 +2617,8 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                         .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
                                         .h_full()
                                         .child(
-                                            scroll()
-                                                .size_full()
-                                                .child(provider_list(actions, commands.clone())),
+                                            provider_list_viewport(actions, commands.clone())
+                                                .w_full(),
                                         )
                                 })
                             },
@@ -2597,9 +2657,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         .items_start()
                         .gap(px(Layout::SETTINGS_PROVIDER_COLUMN_GAP));
                     if !s.narrow || !s.authority.detail {
-                        let list = scroll()
-                            .h_full()
-                            .child(provider_list(actions, commands.clone()));
+                        let list = provider_list_viewport(actions, commands.clone());
                         body = body.child(if s.narrow {
                             list.w_full()
                         } else {

@@ -454,7 +454,7 @@ fn field_row(
     key: &'static str,
     description: Option<&'static str>,
     control: AnyElement,
-) -> AnyElement {
+) -> nsh_core::element::View {
     super::nsh_form::preference(
         move || state.get().colors,
         text(move || state.with(|_| vega_i18n::t(key))),
@@ -492,45 +492,48 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 });
             }
         })
-        .child(field_row(
-            state,
-            "settings.defaults.predictions",
-            Some("settings.defaults.predictions_hint"),
-            control(state, Action::Predictions)
-                .self_start()
-                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                .child(
-                    view()
-                        .relative()
-                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                        .bg(move || {
-                            crate::nsh::color(if state.get().predictions {
-                                state.get().colors.brand_primary
-                            } else {
-                                state.get().colors.bg_hover
-                            })
-                        })
-                        .child(
-                            view()
-                                .absolute()
-                                .top(px(2.))
-                                .left(move || {
-                                    px(if state.get().predictions {
-                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
-                                    } else {
-                                        2.
-                                    })
+        .child(
+            field_row(
+                state,
+                "settings.defaults.predictions",
+                Some("settings.defaults.predictions_hint"),
+                control(state, Action::Predictions)
+                    .self_start()
+                    .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                    .child(
+                        view()
+                            .relative()
+                            .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                            .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                            .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                            .bg(move || {
+                                crate::nsh::color(if state.get().predictions {
+                                    state.get().colors.brand_primary
+                                } else {
+                                    state.get().colors.bg_hover
                                 })
-                                .size(px(Layout::ICON_SIZE))
-                                .rounded(px(Layout::ICON_SIZE / 2.))
-                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
-                        ),
-                )
-                .child(target(actions, predictions, Action::Predictions, None))
-                .into_element(),
-        ))
+                            })
+                            .child(
+                                view()
+                                    .absolute()
+                                    .top(px(2.))
+                                    .left(move || {
+                                        px(if state.get().predictions {
+                                            Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
+                                        } else {
+                                            2.
+                                        })
+                                    })
+                                    .size(px(Layout::ICON_SIZE))
+                                    .rounded(px(Layout::ICON_SIZE / 2.))
+                                    .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
+                            ),
+                    )
+                    .child(target(actions, predictions, Action::Predictions, None))
+                    .into_element(),
+            )
+            .border_b_1(),
+        )
         .child(field_row(
             state,
             "settings.defaults.running_message",
