@@ -472,3 +472,12 @@ macOS 15.8.2 arm64，生产源码 1b07b5a7a702a5dacca1bdc813d6b999dfa4e22c，rel
 - R309、R313 在思考档位卡选择 High，经标题进入模型列表，选择“使用默认思考强度”后重开卡片，模型仍为 gpt-6.1-sol，档位恢复 Default。该操作只在有显式档位时出现在模型列表。实窗中间构建 R313 点击轨道后直接按 Home/End，AX 仍报告 High，此操作未验证为成功。
 - R312 在隔离价格文件加入 local-external-reentry 后，重开设置进入价格库即出现新记录。点“返回提供方”后，部分提供方操作仍显示 disabled，在关闭、重开设置后可用；R309 亦可复现。真实网络目录刷新、写操作与回读同时失败、VoiceOver、Windows/Linux 本轮未运行。设置与 Composer 保持 PARTIAL。
 - 最终 19 文件独立复核差异 SHA-256 ed3775393f914b6bbd1e6d6edafb611bf0e10ada0f91c6ae66b5a3e06d60093e。Rust/Cargo 1.98.0，release --locked --offline -j 2，fmt、严格 Clippy 与 Python 5/15/40 项通过。nextest 扫描 16 个测试二进制，0 发现、0 执行。实机图片位于同机 performance 目录的 composer-chip-settings-*-r317 和 model-card-r309-high。新 head CI 在 Draft PR #913 单独验证。
+
+## 点击时 Composer 控件短暂消失
+
+macOS 15.8.2 arm64，源码 8822888c8cdfeea3677098ebc703a59dface8e75，release 程序 SHA-256 9e34f91c3a7d6dbed5ac965e4d7e5016914a56d991bd4a8c49a31b237c121aca，UUID E8AAC579-D4C1-3F3A-80A2-FEE1D46622E6。给本次隔离 Vega 窗口单独使用 ScreenCaptureKit，以最高 60Hz 请求完整变化帧，不录音，逐帧比较缩小画面中权限和模型标签的位置。
+
+- 在 1b07b5a7 的新任务窗口，点击和焦点切换期间两个固定标签一起变空后恢复两次，间隔为 83.7ms、102.6ms。第一段中画面上方没有对应变化。申请的采样频率与实际收到的完整帧数不同，间隔按实测时间戳计算。这一结果只定位到 Composer 的两个按钮。
+- 先前固定按钮在窗口激活、位置变化和交互来源变化时都会销毁 NSH 视图，新的视图异步绘制。同一任务及输入框内改为复用已挂载的固定按钮，更新内容并使旧点击请求失效；任务、挂载或可见性边界仍校验。按下时同步记录滚动版本，异步测量结束后再检查控件身份和可见区域。
+- 最终构建在同分辨率、同离线模型的新任务窗口，连续两轮点击空白处、附件、模型和档位，并用键盘切换焦点。实际看到附件菜单、High、恢复默认操作和 Default；随后输入 1234，输入框、权限和模型标签均可读。144 个完整变化帧中，两处标签同时全空的区间为 0。中间构建同条件 56 帧，0 个区间。原始采样、时间戳和比较脚本在本机 performance/r317-flash-run2、r319-flash-run1、r321-flash-run1 和 measure-composer-labels.py。设置返回历史正文的延迟及其他控件的闪烁仍待单独定位。
+- 源码两文件独立终审差异 SHA-256 ac3480f9ebf87baed15a5190b123aefc370ff4d794248eb5892155b56dc6e0bb。Rust/Cargo 1.98.0，release --locked --offline -j 2，fmt、严格 Clippy 与 Python 5/15/40 项通过。nextest 扫描 16 个测试二进制，0 发现、0 执行。核对进程身份后退出本轮隔离应用，直接启动器亦完成独立目录与可执行文件核验。全量矩阵状态继续为部分验证。
