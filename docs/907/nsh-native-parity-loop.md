@@ -481,3 +481,11 @@ macOS 15.8.2 arm64，源码 8822888c8cdfeea3677098ebc703a59dface8e75，release �
 - 先前固定按钮在窗口激活、位置变化和交互来源变化时都会销毁 NSH 视图，新的视图异步绘制。同一任务及输入框内改为复用已挂载的固定按钮，更新内容并使旧点击请求失效；任务、挂载或可见性边界仍校验。按下时同步记录滚动版本，异步测量结束后再检查控件身份和可见区域。
 - 最终构建在同分辨率、同离线模型的新任务窗口，连续两轮点击空白处、附件、模型和档位，并用键盘切换焦点。实际看到附件菜单、High、恢复默认操作和 Default；随后输入 1234，输入框、权限和模型标签均可读。144 个完整变化帧中，两处标签同时全空的区间为 0。中间构建同条件 56 帧，0 个区间。原始采样、时间戳和比较脚本在本机 performance/r317-flash-run2、r319-flash-run1、r321-flash-run1 和 measure-composer-labels.py。设置返回历史正文的延迟及其他控件的闪烁仍待单独定位。
 - 源码两文件独立终审差异 SHA-256 ac3480f9ebf87baed15a5190b123aefc370ff4d794248eb5892155b56dc6e0bb。Rust/Cargo 1.98.0，release --locked --offline -j 2，fmt、严格 Clippy 与 Python 5/15/40 项通过。nextest 扫描 16 个测试二进制，0 发现、0 执行。核对进程身份后退出本轮隔离应用，直接启动器亦完成独立目录与可执行文件核验。全量矩阵状态继续为部分验证。
+
+## 设置分区的鼠标选中与键盘焦点
+
+macOS 15.8.2 arm64，生产源码 9c3aefa0e76199344de01e6ca7dc084a8f8bae6f，release SHA-256 d40f8cc838d8cfd94f081cc20cdc37a25fe5abb6c0e33d5156e9b54a0c220e81，UUID C2401D58-0465-347F-A9EF-8BFB3012D8BD。
+
+- 用户截图中 General 的选中背景外有蓝框。旧版 0.1.413 实窗通过鼠标打开设置时仅显示灰底，Tab 到 Providers 后才显示蓝框。8822888c 同样用鼠标打开时多出 General 的焦点框。新版曾根据导航焦点绘制边框，未区分鼠标和键盘。修复后仅在键盘操作时给实际焦点绘制蓝框。
+- 新构建鼠标打开设置，General 灰底无蓝框；Tab 后 Providers 显示蓝框，回车进入提供方；Shift-Tab 的蓝框返回 General，再点击 General 后蓝框消失。截图在本机 performance/composer-chip-navfocus{321,323,旧版对应 -old}-*。旧版和新构建 Tab 后蓝框同在截图 y=268–331，鼠标打开两者均未检出蓝色描边。提供方→价格库→返回提供方后第二次点击价格库无效，当前构建仍可用坐标点击复现，属于独立问题。
+- 单文件非作者独立复核差异 SHA-256 dc0c22122482866445d7a1e993dc545df2450b04c6f7d7fc7a9927345445ee03。Rust/Cargo 1.98.0 release --locked --offline -j 2、fmt、严格 Clippy、Python 5/15/40 项通过。nextest 16 个测试程序共运行 0 项。测试实例已退出。VoiceOver 及 Windows/Linux 本轮未运行。
