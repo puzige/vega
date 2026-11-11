@@ -1203,16 +1203,34 @@ fn button(
     focus_key: Option<String>,
     secret: Option<Signal<String>>,
 ) -> AnyElement {
+    let provider = match &action {
+        Action::Command(Command::Select(name)) => actions
+            .snapshot()
+            .authority
+            .rows
+            .iter()
+            .find(|row| &row.name == name)
+            .map(|row| (row.name.clone(), row.enabled)),
+        _ => None,
+    };
+    let configure = matches!(&action, Action::Command(Command::EditModel(_)));
+    let glyph = match &action {
+        Action::Command(Command::Add) => Some(crate::icons::Icon::Plus),
+        Action::Command(Command::PriceLibrary) => Some(crate::icons::Icon::BookOpen),
+        _ => None,
+    };
     let primary = matches!(
         &action,
         Action::Submit(_) | Action::Command(Command::SaveModel)
     );
 
-    let quiet = matches!(
-        &action,
-        Action::Command(Command::Add | Command::PriceLibrary)
-    ) || (matches!(&action, Action::Command(Command::Cancel))
-        && actions.state.get_untracked().authority.form);
+    let quiet = provider.is_some()
+        || matches!(
+            &action,
+            Action::Command(Command::Add | Command::PriceLibrary)
+        )
+        || (matches!(&action, Action::Command(Command::Cancel))
+            && actions.state.get_untracked().authority.form);
     let rendered = computed(move || {
         actions.state.get();
         actions.edits.get();
@@ -1320,7 +1338,42 @@ fn button(
                 secret,
             );
         });
-    control.child(text(move || item.get().label)).into_element()
+    if let Some((name, enabled)) = provider {
+        return control
+            .flex_1()
+            .min_w(px(0.))
+            .items_start()
+            .flex_col()
+            .child(text(name.clone()).truncate().tooltip(text(name)))
+            .child(
+                text(t(if enabled {
+                    "settings.state.enabled"
+                } else {
+                    "settings.state.disabled"
+                }))
+                .text_size(px(Typography::METADATA))
+                .text_color(move || crate::nsh::color(actions.state.get().colors.text_secondary)),
+            )
+            .into_element();
+    }
+    let control = if glyph.is_some() {
+        control.w_full().min_w(px(0.)).justify_start()
+    } else if configure {
+        control.flex_shrink_0().self_center()
+    } else {
+        control
+    };
+    control
+        .gap_1()
+        .children(glyph.map(|kind| icon(kind, actions.state)))
+        .child(text(move || {
+            if configure {
+                t("settings.provider.configure").to_owned()
+            } else {
+                item.get().label
+            }
+        }))
+        .into_element()
 }
 
 fn field(
@@ -1993,7 +2046,15 @@ fn provider_detail(
                 .flex_wrap()
                 .gap_2()
                 .items_center()
-                .child(heading(row.name.clone()))
+                .child(
+                    view().flex_1().min_w(px(0.)).child(
+                        text(row.name.clone())
+                            .truncate()
+                            .tooltip(text(row.name.clone()))
+                            .text_size(px(Typography::HEADING_BLOCK))
+                            .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
+                    ),
+                )
                 .child(button(
                     actions,
                     commands.clone(),
@@ -2012,6 +2073,12 @@ fn provider_detail(
         )
         .child(
             view()
+                .w_full()
+                .px(px(Layout::SETTINGS_GROUP_PADDING))
+                .pt(px(Layout::SETTINGS_GROUP_PADDING))
+                .bg(move || crate::nsh::color(actions.state.get().colors.bg_subtle))
+                .rounded(px(Layout::PANEL_RADIUS))
+                .child(heading(t("settings.provider.connection_group")))
                 .child(field_row(
                     actions.state,
                     "settings.provider.address",
@@ -2042,7 +2109,12 @@ fn provider_detail(
                 .flex_wrap()
                 .gap_2()
                 .items_center()
-                .child(heading(t("settings.field.model")))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(heading(t("settings.provider.models_group"))),
+                )
                 .child(button(
                     actions,
                     commands.clone(),
@@ -2071,16 +2143,36 @@ fn provider_detail(
     for (model, summary) in &row.models {
         let mut item = view()
             .w_full()
-            .gap_1()
+            .min_w(px(0.))
+            .py_2()
+            .border_b_1()
+            .border_color(move || crate::nsh::color(actions.state.get().colors.border_subtle))
             .child(
                 view()
+                    .w_full()
                     .flex_row()
-                    .flex_wrap()
-                    .gap_2()
                     .items_center()
+                    .gap_2()
                     .child(
-                        text(model.clone())
-                            .font_weight(FontWeight(Typography::HEADING_CARD_WEIGHT.0 as u16)),
+                        view()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_1()
+                            .child(
+                                text(model.clone())
+                                    .truncate()
+                                    .tooltip(text(model.clone()))
+                                    .font_weight(FontWeight(
+                                        Typography::HEADING_CARD_WEIGHT.0 as u16,
+                                    )),
+                            )
+                            .child(
+                                text(summary.clone())
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(move || {
+                                        crate::nsh::color(actions.state.get().colors.text_secondary)
+                                    }),
+                            ),
                     )
                     .child(button(
                         actions,
@@ -2090,13 +2182,6 @@ fn provider_detail(
                         None,
                     ))
                     .child(menu(actions, commands.clone(), Some(model.clone()))),
-            )
-            .child(
-                text(summary.clone())
-                    .text_size(px(Typography::METADATA))
-                    .text_color(move || {
-                        crate::nsh::color(actions.state.get().colors.text_secondary)
-                    }),
             );
         if let Some((_, status)) = a.statuses.iter().find(|(name, _)| name == model) {
             item = item.child(text(status.clone()));
@@ -2219,7 +2304,7 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
                         rows.push((layout_name.clone(), bounds.origin.y.0, bounds.size.height.0));
                     });
                 })
-                .child(
+                .children((s.authority.rows.len() > 1).then(|| {
                     view()
                         .element_ref(&handle)
                         .role(AccessibilityRole::Button)
@@ -2324,10 +2409,12 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
                                 },
                             )
                         })
-                        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-                        .px_2()
-                        .child(text("↕")),
-                )
+                        .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(crate::icons::Icon::ArrowUpDown, actions.state))
+                }))
                 .child(button(
                     actions,
                     commands.clone(),
@@ -2337,13 +2424,13 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
                 )),
         );
     }
-    list.child(button(
+    list.child(view().w_full().pt_2().child(button(
         actions,
         commands,
         Action::Command(Command::PriceLibrary),
         None,
         None,
-    ))
+    )))
     .into_element()
 }
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {

@@ -603,8 +603,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>, heading: boo
         .w_full()
         .h_full()
         .bg(move || crate::nsh::color(state.get().colors.bg_sidebar))
-        .border_r_1()
-        .border_r_color(move || crate::nsh::color(state.get().colors.border_subtle))
         .child(
             view()
                 .w_full()
@@ -620,7 +618,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>, heading: boo
                 ))
                 .child(view().h(px(24.)))
                 .children(SECTIONS.into_iter().map(|section| {
-                    button(
+                    let entry = button(
                         state,
                         commands.clone(),
                         pending,
@@ -634,7 +632,12 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>, heading: boo
                             6 => Icon::Blocks,
                             _ => Icon::Bot,
                         },
-                    )
+                    );
+                    if matches!(section, 0 | 4) {
+                        view().w_full().pt_2().child(entry).into_element()
+                    } else {
+                        entry
+                    }
                 }))
                 .child(when(
                     move || failed.get(),

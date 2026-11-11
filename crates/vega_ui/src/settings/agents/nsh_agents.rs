@@ -479,6 +479,35 @@ fn field_row(
     )
 }
 
+fn setup_row(
+    state: Signal<Snapshot>,
+    key: &'static str,
+    status: impl Fn() -> &'static str + 'static,
+    action: AnyElement,
+) -> AnyElement {
+    view()
+        .w_full()
+        .py_2()
+        .flex_row()
+        .items_center()
+        .flex_wrap()
+        .gap_2()
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.))
+                .gap_1()
+                .child(translated(state, key))
+                .child(
+                    text(status)
+                        .text_size(px(Typography::METADATA))
+                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+                ),
+        )
+        .child(action)
+        .into_element()
+}
+
 fn heading(state: Signal<Snapshot>, key: &'static str) -> AnyElement {
     text(move || state.with(|_| vega_i18n::t(key)))
         .text_size(px(Typography::HEADING_BLOCK))
@@ -576,63 +605,93 @@ fn toggle(actions: Actions, commands: mpsc::Sender<Request>, desktop: bool) -> A
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
-    field_row(
-        actions.state,
-        key,
-        Some(if desktop {
-            "settings.agents.desktop.description"
-        } else {
-            "settings.agents.browser.description"
-        }),
-        view()
-            .element_ref(&target)
-            .role(AccessibilityRole::Switch)
-            .focusable(true)
-            .label(move || actions.state.with(|_| vega_i18n::t(key)))
-            .accessibility_state(move || AccessibilityState {
-                checked: Some(if enabled() {
-                    Checked::True
-                } else {
-                    Checked::False
-                }),
-                ..Default::default()
-            })
-            .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
-            .border(px(1.))
-            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-            .self_start()
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-            .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
-            .py_1()
-            .border_color(move || {
-                crate::nsh::color(if focused.get() {
-                    actions.state.get().colors.accent
-                } else {
-                    actions.state.get().colors.border_subtle
-                })
-            })
-            .bg(move || {
-                crate::nsh::color(if enabled() {
-                    actions.state.get().colors.bg_active
-                } else {
-                    actions.state.get().colors.bg_elevated
-                })
-            })
-            .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
-            .child(text(move || {
-                actions.state.with(|_| {
-                    vega_i18n::t(if enabled() {
-                        "settings.state.on"
+    let state = actions.state;
+    view()
+        .w_full()
+        .min_w(px(0.))
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .py_2()
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.))
+                .gap_1()
+                .child(translated(state, key))
+                .child(
+                    text(move || {
+                        state.with(|_| {
+                            vega_i18n::t(if desktop {
+                                "settings.agents.desktop.description"
+                            } else {
+                                "settings.agents.browser.description"
+                            })
+                        })
+                    })
+                    .text_size(px(Typography::METADATA))
+                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
+                ),
+        )
+        .child(
+            view()
+                .element_ref(&target)
+                .role(AccessibilityRole::Switch)
+                .focusable(true)
+                .label(move || actions.state.with(|_| vega_i18n::t(key)))
+                .accessibility_state(move || AccessibilityState {
+                    checked: Some(if enabled() {
+                        Checked::True
                     } else {
-                        "settings.state.off"
+                        Checked::False
+                    }),
+                    ..Default::default()
+                })
+                .disabled(move || actions.pending.get() || !allowed(&actions.snapshot(), action))
+                .relative()
+                .flex_shrink_0()
+                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                .border(px(1.))
+                .border_color(move || {
+                    crate::nsh::color(if focused.get() {
+                        state.get().colors.accent
+                    } else {
+                        state.get().colors.border_subtle
                     })
                 })
-            }))
-            .into_element(),
-    )
+                .bg(move || {
+                    crate::nsh::color(if enabled() {
+                        state.get().colors.brand_primary
+                    } else {
+                        state.get().colors.text_tertiary
+                    })
+                })
+                .on_press(move |_: &PressEvent| actions.send(commands.clone(), action))
+                .child(
+                    view()
+                        .absolute()
+                        .top(px(1.))
+                        .left(move || {
+                            px(if enabled() {
+                                Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
+                            } else {
+                                1.
+                            })
+                        })
+                        .size(px(Layout::ICON_SIZE))
+                        .rounded(px(Layout::ICON_SIZE / 2.))
+                        .bg(move || {
+                            crate::nsh::color(if enabled() {
+                                state.get().colors.brand_on_accent
+                            } else {
+                                state.get().colors.bg_elevated
+                            })
+                        }),
+                ),
+        )
+        .into_element()
 }
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
@@ -679,19 +738,28 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 )
                 .child(toggle(actions, commands.clone(), true))
                 .child(toggle(actions, commands.clone(), false))
+                .child(button(
+                    actions,
+                    commands.clone(),
+                    Action::Native(NativeAgentAction::Extension),
+                    "settings.agents.browser.install_extension",
+                )),
+        )
+        .child(
+            group(state)
                 .child(
                     view()
-                        .mt_3()
+                        .w_full()
                         .flex_row()
                         .flex_wrap()
                         .items_center()
                         .gap_2()
-                        .child(button(
-                            actions,
-                            commands.clone(),
-                            Action::Native(NativeAgentAction::Prepare),
-                            "settings.agents.desktop.prepare",
-                        ))
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(heading(state, "settings.agents.desktop.setup")),
+                        )
                         .child(button(
                             actions,
                             commands.clone(),
@@ -715,52 +783,38 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             })
                     },
                 ))
-                .child(field_row(
+                .child(setup_row(
                     state,
                     "settings.agents.desktop.component",
-                    None,
-                    text(move || state.with(|snapshot| vega_i18n::t(snapshot.authority.component)))
-                        .into_element(),
+                    move || state.with(|s| vega_i18n::t(s.authority.component)),
+                    button(
+                        actions,
+                        commands.clone(),
+                        Action::Native(NativeAgentAction::Prepare),
+                        "settings.agents.desktop.prepare",
+                    ),
                 ))
-                .child(field_row(
+                .child(setup_row(
                     state,
                     "settings.agents.accessibility",
-                    None,
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(text(move || {
-                            state.with(|snapshot| vega_i18n::t(snapshot.authority.accessibility))
-                        }))
-                        .child(button(
-                            actions,
-                            commands.clone(),
-                            Action::Native(NativeAgentAction::Accessibility),
-                            "settings.agents.accessibility.settings",
-                        ))
-                        .into_element(),
+                    move || state.with(|s| vega_i18n::t(s.authority.accessibility)),
+                    button(
+                        actions,
+                        commands.clone(),
+                        Action::Native(NativeAgentAction::Accessibility),
+                        "settings.agents.accessibility.settings",
+                    ),
                 ))
-                .child(field_row(
+                .child(setup_row(
                     state,
                     "settings.agents.screen_recording",
-                    None,
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(text(move || {
-                            state.with(|snapshot| vega_i18n::t(snapshot.authority.screen_recording))
-                        }))
-                        .child(button(
-                            actions,
-                            commands.clone(),
-                            Action::Native(NativeAgentAction::ScreenRecording),
-                            "settings.agents.screen_recording.settings",
-                        ))
-                        .into_element(),
+                    move || state.with(|s| vega_i18n::t(s.authority.screen_recording)),
+                    button(
+                        actions,
+                        commands.clone(),
+                        Action::Native(NativeAgentAction::ScreenRecording),
+                        "settings.agents.screen_recording.settings",
+                    ),
                 ))
                 .child(
                     text(move || {
@@ -774,21 +828,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     "settings.agents.capture",
                     None,
                     translated(state, "settings.state.unverified"),
-                ))
-                .child(
-                    view()
-                        .mt_3()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(button(
-                            actions,
-                            commands.clone(),
-                            Action::Native(NativeAgentAction::Extension),
-                            "settings.agents.browser.install_extension",
-                        )),
-                ),
+                )),
         )
         .child(
             group(state)

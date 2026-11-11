@@ -165,7 +165,7 @@ struct Snapshot {
     items: Vec<Item>,
     colors: ThemeColors,
     selected: Option<usize>,
-    thread_title_focus_visible: bool,
+    keyboard_focus_visible: bool,
     recovery: bool,
     // Keep each native button actionable while its offscreen text awaits first paint.
     row_was_visible: bool,
@@ -809,7 +809,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 items: Vec::new(),
                 colors: theme(cx).colors,
                 selected: None,
-                thread_title_focus_visible: false,
+                keyboard_focus_visible: false,
                 recovery: false,
                 row_was_visible: false,
                 presentation,
@@ -949,12 +949,8 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                 })
             })
             .flatten();
-        this.snapshot.thread_title_focus_visible = this.snapshot.selected.is_some_and(|index| {
-            this.snapshot
-                .items
-                .get(index)
-                .is_some_and(|item| item.thread_title.is_some())
-        }) && window.last_input_was_keyboard();
+        this.snapshot.keyboard_focus_visible =
+            this.snapshot.selected.is_some() && window.last_input_was_keyboard();
         this.mount(window, cx);
         let Some(surface) = &mut this.surface else {
             return div().into_any_element();
@@ -1335,11 +1331,13 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                         ..Default::default()
                     })
                     .border(ns::px(1.))
-                    .border_color(crate::nsh::color(if snapshot.selected == Some(index) {
-                        colors.accent
-                    } else {
-                        colors.bg_base.opacity(0.)
-                    }))
+                    .border_color(crate::nsh::color(
+                        if snapshot.keyboard_focus_visible && snapshot.selected == Some(index) {
+                            colors.accent
+                        } else {
+                            colors.bg_base.opacity(0.)
+                        },
+                    ))
                     .bg(move || {
                         crate::nsh::color(if selected {
                             colors.bg_active
@@ -1366,7 +1364,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                 if item.thread_title.is_some() {
                     // The GPUI row owns the leading gutter for drag and context-menu events.
                     button = button.border(ns::px(0.)).pl(ns::px(0.)).pr(ns::px(8.));
-                    if snapshot.selected == Some(index) && snapshot.thread_title_focus_visible {
+                    if snapshot.selected == Some(index) && snapshot.keyboard_focus_visible {
                         button = button
                             .outline(ns::px(1.))
                             .outline_offset(ns::px(-1.))
