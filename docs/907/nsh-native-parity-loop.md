@@ -489,3 +489,11 @@ macOS 15.8.2 arm64，生产源码 9c3aefa0e76199344de01e6ca7dc084a8f8bae6f，rel
 - 用户截图中 General 的选中背景外有蓝框。旧版 0.1.413 实窗通过鼠标打开设置时仅显示灰底，Tab 到 Providers 后才显示蓝框。8822888c 同样用鼠标打开时多出 General 的焦点框。新版曾根据导航焦点绘制边框，未区分鼠标和键盘。修复后仅在键盘操作时给实际焦点绘制蓝框。
 - 新构建鼠标打开设置，General 灰底无蓝框；Tab 后 Providers 显示蓝框，回车进入提供方；Shift-Tab 的蓝框返回 General，再点击 General 后蓝框消失。截图在本机 performance/composer-chip-navfocus{321,323,旧版对应 -old}-*。旧版和新构建 Tab 后蓝框同在截图 y=268–331，鼠标打开两者均未检出蓝色描边。提供方→价格库→返回提供方后第二次点击价格库无效，当前构建仍可用坐标点击复现，属于独立问题。
 - 单文件非作者独立复核差异 SHA-256 dc0c22122482866445d7a1e993dc545df2450b04c6f7d7fc7a9927345445ee03。Rust/Cargo 1.98.0 release --locked --offline -j 2、fmt、严格 Clippy、Python 5/15/40 项通过。nextest 16 个测试程序共运行 0 项。测试实例已退出。VoiceOver 及 Windows/Linux 本轮未运行。
+
+## 价格库返回提供方后的控件恢复
+
+macOS 15.8.2 arm64，生产源码 6845719e95cf02fe7e964ab46a077ce987ce6a35，release SHA-256 46fa79d141e6f729e0a6583fde17fde2968d453fb92157fc8468b52507d752b2，UUID 0B605F28-D6A8-38BC-9E9E-B6E8514B5604。
+
+- 在 9c3aefa0，鼠标打开价格库、返回提供方，第二次点击价格库没有反应，辅助功能树同时将“添加提供方”和“模型价格库”列为禁用。另一个仅加日志的隔离构建记录到导航请求被接受、回执已到达、pending=false、eligible=true。先前关于回执丢失的解释无法解释此次故障。
+- 修复普通提供方列表和详情的生命周期，使其随实际设置分区挂载。实窗通过原生按钮往返三次，每次返回两个动作均已启用。再用屏幕坐标进入价格库、返回并打开添加提供方表单，空表单保存按钮保持禁用，取消可用。未写入提供方或凭据。窄窗、VoiceOver 和其他平台本轮未运行。开发诊断日志没有进入生产程序。
+- 单文件独立终审差异 SHA-256 83c97471250a849e70b0fb9a5a2ae3cfa1b6f20bf08f15191f30da6fdd731237。Rust/Cargo 1.98.0 release --locked --offline -j 2、fmt、严格 Clippy、Python 5/15/40 项通过。nextest 16 个测试程序共执行 0 项。已核验直接启动器并退出隔离实例，最终 head CI 在 Draft PR #913 验证。
