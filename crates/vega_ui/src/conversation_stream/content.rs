@@ -802,7 +802,6 @@ impl ConversationStream {
         self.run_notices.clear();
         self.response_checkpoint = None;
         self.network_retry = None;
-        self.controller_runtime_error = None;
         self.entry_identities.clear();
         self.timestamps = Default::default();
         self.measured_entry_heights.clear();
