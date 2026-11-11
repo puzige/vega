@@ -164,7 +164,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let row_revision = native_revision.clone();
             let selected = snapshot.selected == Some(index);
             let permission_option = snapshot.kind == Kind::PermissionMenu;
-            let show_ring = selected && (!permission_option || snapshot.keyboard_focus_visible);
+            let thinking = snapshot.kind == Kind::Thinking;
+            let show_ring =
+                selected && (!(permission_option || thinking) || snapshot.keyboard_focus_visible);
             let checked_permission = permission_option && row.checked;
             let enabled = row.enabled;
             let foreground = if !enabled {
@@ -248,7 +250,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         colors.bg_hover
                     } else if checked_permission {
                         crate::menu_list::selected_row_bg(colors)
-                    } else if selected && !permission_option {
+                    } else if selected && !permission_option && !thinking {
                         colors.bg_active
                     } else {
                         colors.bg_elevated.opacity(0.)
@@ -301,6 +303,80 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         })
                     });
                 });
+            if thinking && index == 0 {
+                let group_hover = ns::signal(false);
+                let line = control
+                    .w(nsh_core::geometry::auto())
+                    .min_h(ns::px(20.))
+                    .p(ns::px(0.))
+                    .bg(crate::nsh::color(colors.bg_elevated.opacity(0.)))
+                    .h(ns::px(20.))
+                    .flex_row()
+                    .items_center()
+                    .justify_center()
+                    .gap(ns::px(4.))
+                    .child(
+                        ns::text(row.label.clone())
+                            .truncate()
+                            .text_size(ns::px(Typography::METADATA))
+                            .text_color(crate::nsh::color(foreground)),
+                    )
+                    .child(icon(crate::icons::Icon::ChevronRight, colors.text_tertiary));
+                controls.push(
+                    ns::view()
+                        .items_center()
+                        .px_2()
+                        .on_mouse_enter(move |_: &nsh_core::MouseEvent| group_hover.set(true))
+                        .on_mouse_leave(move |_: &nsh_core::MouseEvent| group_hover.set(false))
+                        .bg(move || {
+                            crate::nsh::color(if group_hover.get() {
+                                colors.bg_hover
+                            } else {
+                                colors.bg_elevated.opacity(0.)
+                            })
+                        })
+                        .w(nsh_core::geometry::auto())
+                        .max_w(ns::px(super::super::thinking_slider::THINKING_TRACK_WIDTH))
+                        .flex_col()
+                        .gap(ns::px(8.))
+                        .py(ns::px(0.))
+                        .rounded(ns::px(6.))
+                        .child(line)
+                        .child(
+                            ns::view()
+                                .h(ns::px(20.))
+                                .max_w(ns::px(
+                                    super::super::thinking_slider::THINKING_TRACK_WIDTH - 18.,
+                                ))
+                                .justify_center()
+                                .child(
+                                    ns::text(snapshot.source.slider.model_name.clone())
+                                        .truncate()
+                                        .text_size(ns::px(Typography::SIDEBAR))
+                                        .text_color(crate::nsh::color(colors.text_secondary)),
+                                ),
+                        )
+                        .into_element(),
+                );
+                continue;
+            }
+            if matches!(row.action, Action::Default) {
+                controls.push(
+                    control
+                        .absolute()
+                        .right(ns::px(1.))
+                        .top(ns::px(0.))
+                        .size(ns::px(24.))
+                        .min_h(ns::px(24.))
+                        .p(ns::px(0.))
+                        .justify_center()
+                        .rounded_full()
+                        .tooltip(ns::text(row.label.clone()))
+                        .child(icon(crate::icons::Icon::Refresh, foreground))
+                        .into_element(),
+                );
+                continue;
+            }
             if permission_option && show_ring {
                 control = control
                     .outline(ns::px(1.))
@@ -379,84 +455,75 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         if snapshot.kind == Kind::Thinking {
             let title = controls.remove(0);
             let default = controls.pop();
-            content = content
-                .child(title)
-                .child(
-                    ns::text(snapshot.source.slider.model_name.clone())
-                        .text_size(ns::px(Typography::SIDEBAR))
-                        .text_color(crate::nsh::color(snapshot.colors.text_secondary)),
-                )
-                .child({
-                    let target = track_target;
-                    let drag_commands = commands.clone();
-                    let observed = snapshot.clone();
-                    let accessibility_commands = commands.clone();
-                    let accessibility_observed = snapshot.clone();
-                    super::super::thinking_slider::native::track(
-                        &snapshot.source.slider,
-                        snapshot.colors,
-                        snapshot.source.appearance == vega_theme::Appearance::Light,
-                        snapshot.rows.first().is_some_and(|row| row.enabled),
-                        snapshot.selected.is_some_and(|index| {
+            let mut track_row = ns::view().relative().w_full().items_center().child({
+                let target = track_target;
+                let drag_commands = commands.clone();
+                let observed = snapshot.clone();
+                let accessibility_commands = commands.clone();
+                let accessibility_observed = snapshot.clone();
+                super::super::thinking_slider::native::track(
+                    &snapshot.source.slider,
+                    snapshot.colors,
+                    snapshot.source.appearance == vega_theme::Appearance::Light,
+                    snapshot.rows.first().is_some_and(|row| row.enabled),
+                    snapshot.keyboard_focus_visible
+                        && snapshot.selected.is_some_and(|index| {
                             snapshot
                                 .rows
                                 .get(index)
                                 .is_some_and(|row| matches!(row.action, Action::Tier(_)))
                         }),
-                        target,
-                        super::super::thinking_slider::native::Actions {
-                            pointer: Rc::new(move |position| {
-                                let commands = drag_commands.clone();
-                                let observed = observed.clone();
-                                command_owner.run(|| {
-                                    ns::spawn(async move {
-                                        let observation = revision.get_untracked();
-                                        let native =
-                                            observed.native_revision.action.load(Ordering::Acquire);
-                                        let (Some(control), Some(container)) =
-                                            (target.measure().await, viewport.measure().await)
-                                        else {
-                                            return;
-                                        };
-                                        if presentation_owner.is_live()
-                                            && revision.get_untracked() == observation
-                                            && observed
-                                                .native_revision
-                                                .action
-                                                .load(Ordering::Acquire)
-                                                == native
-                                            && visible(control, container)
-                                        {
-                                            commands.send(Request::Activate(
-                                                Box::new(observed),
-                                                position + 1,
-                                                Origin::Pointer,
-                                                native,
-                                            ));
-                                        }
-                                    })
-                                });
-                            }),
-                            accessibility: Rc::new(move |position| {
-                                command_owner.run(|| {
-                                    accessibility_commands.send(Request::Intent(
-                                        Box::new(accessibility_observed.clone()),
-                                        position + 1,
-                                        Origin::Accessibility,
-                                        accessibility_observed
-                                            .native_revision
-                                            .action
-                                            .load(Ordering::Acquire),
-                                    ));
-                                });
-                            }),
-                        },
-                    )
-                });
+                    target,
+                    super::super::thinking_slider::native::Actions {
+                        pointer: Rc::new(move |position| {
+                            let commands = drag_commands.clone();
+                            let observed = observed.clone();
+                            command_owner.run(|| {
+                                ns::spawn(async move {
+                                    let observation = revision.get_untracked();
+                                    let native =
+                                        observed.native_revision.action.load(Ordering::Acquire);
+                                    let (Some(control), Some(container)) =
+                                        (target.measure().await, viewport.measure().await)
+                                    else {
+                                        return;
+                                    };
+                                    if presentation_owner.is_live()
+                                        && revision.get_untracked() == observation
+                                        && observed.native_revision.action.load(Ordering::Acquire)
+                                            == native
+                                        && visible(control, container)
+                                    {
+                                        commands.send(Request::Activate(
+                                            Box::new(observed),
+                                            position + 1,
+                                            Origin::Pointer,
+                                            native,
+                                        ));
+                                    }
+                                })
+                            });
+                        }),
+                        accessibility: Rc::new(move |position| {
+                            command_owner.run(|| {
+                                accessibility_commands.send(Request::Intent(
+                                    Box::new(accessibility_observed.clone()),
+                                    position + 1,
+                                    Origin::Accessibility,
+                                    accessibility_observed
+                                        .native_revision
+                                        .action
+                                        .load(Ordering::Acquire),
+                                ));
+                            });
+                        }),
+                    },
+                )
+            });
             if let Some(default) = default {
-                content = content.child(default);
+                track_row = track_row.child(default);
             }
-            content = content.child(ns::view().flex_col().children(controls));
+            content = content.child(title).child(track_row);
         } else if snapshot.kind == Kind::PermissionMenu {
             content = content.child(ns::view().flex_col().p_1().children(controls));
         } else {
@@ -470,12 +537,18 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             Kind::PermissionMenu | Kind::ModelMenu | Kind::Thinking
         );
         if popup {
-            if snapshot.kind != Kind::PermissionMenu {
+            if snapshot.kind == Kind::Thinking {
+                content = content.pt(ns::px(12.)).pb(ns::px(14.));
+            } else if snapshot.kind != Kind::PermissionMenu {
                 content = content.p_1();
             }
             content = content
                 .bg(crate::nsh::color(snapshot.colors.bg_elevated))
-                .rounded(ns::px(Layout::MENU_RADIUS))
+                .rounded(ns::px(if snapshot.kind == Kind::Thinking {
+                    Layout::COMPOSER_RADIUS
+                } else {
+                    Layout::MENU_RADIUS
+                }))
                 .border(ns::px(1.))
                 .border_color(crate::nsh::color(snapshot.colors.border_subtle));
         }

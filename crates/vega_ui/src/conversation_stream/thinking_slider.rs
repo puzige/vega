@@ -1,6 +1,7 @@
 use gpui_kit::prelude::*;
 use gpui_kit::{EventEmitter, Render, Rgba, Window};
 
+pub(super) const SHADOW_MARGIN: f32 = 52.;
 pub const THINKING_CARD_WIDTH: f32 = 254.5;
 pub const THINKING_TRACK_WIDTH: f32 = 203.0;
 pub const THINKING_TRACK_HEIGHT: f32 = 24.0;

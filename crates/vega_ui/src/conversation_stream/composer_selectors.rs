@@ -864,6 +864,10 @@ impl Render for Host {
                 self.snapshot.activation = None;
             }
         }
+        if self.snapshot.kind == Kind::Thinking {
+            self.snapshot.keyboard_focus_visible =
+                self.focus.is_focused(window) && window.last_input_was_keyboard();
+        }
         self.sync_geometry(&lease);
         self.mount(window, cx);
         let Some(surface) = &mut self.surface else {
@@ -895,6 +899,23 @@ impl Render for Host {
                 element.track_focus(&self.focus)
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(self.snapshot.kind == Kind::Thinking, |host| {
+                let edge = px(-super::thinking_slider::SHADOW_MARGIN);
+                host.child(
+                    div()
+                        .id("thinking-card-shadow")
+                        .role(gpui_kit::Role::Group)
+                        .a11y_synthetic_children(|tree| tree.parent_node().set_hidden())
+                        .absolute()
+                        .top(edge)
+                        .bottom(edge)
+                        .left(edge)
+                        .right(edge)
+                        .child(super::foreground_chrome::decoration(
+                            super::foreground_chrome::Decoration::ThinkingCardShadow,
+                        )),
+                )
+            })
             .child(surface.entity());
         if popup {
             element = element

@@ -14,12 +14,14 @@ pub(super) enum Decoration {
     Base,
     ConversationBase,
     UserBubble,
+    ThinkingCardShadow,
 }
 
 #[derive(Clone, PartialEq)]
 struct Background {
     color: Rgba,
     fade: bool,
+    card_shadow: bool,
     radius: f32,
 }
 
@@ -50,6 +52,7 @@ impl RenderOnce for BackgroundElement {
             } else {
                 colors.bg_base
             },
+            card_shadow: self.kind == Decoration::ThinkingCardShadow,
             fade: self.kind == Decoration::Fade,
             radius: if self.kind == Decoration::UserBubble {
                 vega_theme::Layout::USER_MESSAGE_RADIUS
@@ -58,6 +61,7 @@ impl RenderOnce for BackgroundElement {
             },
         };
         let key = match self.kind {
+            Decoration::ThinkingCardShadow => "nsh-thinking-card-shadow",
             Decoration::Fade => "nsh-foreground-fade",
             Decoration::Base => "nsh-foreground-base",
             Decoration::ConversationBase => "nsh-conversation-base",
@@ -96,6 +100,30 @@ fn background_pixels(
     state: ns::Signal<Background>,
     _: tokio::sync::mpsc::Sender<()>,
 ) -> ns::AnyElement {
+    if state.get_untracked().card_shadow {
+        let inset = ns::px(super::thinking_slider::SHADOW_MARGIN);
+        let shadows =
+            [(10., 30., -3.), (4., 12., -4.)].map(|(offset, blur, spread)| ns::BoxShadow {
+                offset_x: ns::px(0.),
+                offset_y: ns::px(offset),
+                blur: ns::px(blur),
+                spread: ns::px(spread),
+                color: crate::nsh::color(gpui_kit::rgba(0x0000001a)).into(),
+                inset: false,
+            });
+        return ns::view()
+            .size_full()
+            .p(inset)
+            .accessibility_elements_hidden(true)
+            .pointer_events(nsh_core::PointerEvents::None)
+            .child(
+                ns::view()
+                    .flex_1()
+                    .rounded(ns::px(vega_theme::Layout::COMPOSER_RADIUS))
+                    .shadow(shadows.to_vec()),
+            )
+            .into_element();
+    }
     ns::view()
         .size_full()
         .accessibility_elements_hidden(true)
