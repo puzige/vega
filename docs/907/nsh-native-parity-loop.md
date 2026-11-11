@@ -585,3 +585,11 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 - 设置行 PARTIAL。以离线测试提供方分别进入英文浅色、中文深色 Agents，两组开关均报告 off，组件/权限显示未检查，捕获未验证。实际窗口截图在本机 performance/settings-layout/agents-before.png、agents-final-en.png、agents-final-zh.png。未启用电脑或浏览器权限，未安装扩展。鼠标设置入口已测；旧构建此次采帧未稳定捕获用户描述的瞬时蓝框。
 - 提供方名称与启用状态分行，单项无排序柄，多项有排序柄。两项同前缀超长模型的操作均在右侧可见，点击第二项打开的模型 ID 以 Beta 结尾。R387 同一布局实点「添加提供方」及价格库右边缘，分别打开表单和价格库，取消表单无数据更改。双提供方合成目录拖动排序后仍显示原顺序，排序未验证通过。最小窗口、全页键盘顺序及其他平台待验。Composer 此轮未取得可重复的单击/双击收起证据。
 - rustc/Cargo 1.98.0，release 使用 --locked --offline -j 2。fmt、workspace Clippy -D warnings、三组 Python 5/15/40 通过；nextest 0 发现/0 执行。独立审查覆盖 settings/providers 差异（含 locale）45d948d64d56f4faddcab0ae5efceabf579d892005c13056e75961380cdcc10a、Agents 最终增量与语言文件 3323c9b653aeb1008b0082a0284e3e849ff4ae63ab8a34b3d34ce5dbeb438242，以及侧栏鼠标焦点修改。隔离启动器核对可执行文件和新建数据库成功。
+
+## 通用与 Agents 设置分组（Codex 设置截图对照）
+
+设置行 PARTIAL。生产提交 `592b8dd5458720f1bd0701cbf141ba1e8bb0d1d3`，macOS 15.8.2 arm64 release SHA-256 `e0036509268a29555bab8e0531dca070008d8a134054c38bdf55aff5ccd33f04`。通用的外观、默认项、更新和 Agents 的三组内容采用卡外标题与主题底色；通用的紧凑控件靠右，左侧说明使用剩余宽度。设置侧栏保留原结构。
+
+- 隔离生产窗口重开后保留中文深色，进入通用、切换 Agents 再返回。后台发送点击时外观和语言没有变化，窗口接收 Tab 后实点浅色、English，两项即时生效。未归因为布局缺陷。截到一次进入设置正文尚在绘制的中间帧，随后正文完整，本轮未量化闪烁。
+- 实窗缩至 960pt 宽检查通用的主题、语言、权限、模型和发送方式。Agents 实际向下滚动至名称、可执行文件、参数和保存按钮。未执行系统权限授予或配置保存。截图在本机 performance/settings-layout/general-final-narrow.png、agents-final-scrolled.png，另有同设计候选在英文浅色与中文深色下的两页全窗截图。
+- 构建源码与独立审查的九文件差异对应，diff SHA-256 166385a98f2f5c8ba7b117fa67f68b9b54bfdbd7b3729a922c6b8f45d9d4f91f。Rust/Cargo 1.98.0，fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器重新核对路径、哈希和新数据库。排序候选另行保留，草稿、目标身份和异步落点待修，未收入此二进制。Windows/Linux 未运行。
