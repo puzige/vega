@@ -593,3 +593,11 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 - 隔离生产窗口重开后保留中文深色，进入通用、切换 Agents 再返回。后台发送点击时外观和语言没有变化，窗口接收 Tab 后实点浅色、English，两项即时生效。未归因为布局缺陷。截到一次进入设置正文尚在绘制的中间帧，随后正文完整，本轮未量化闪烁。
 - 实窗缩至 960pt 宽检查通用的主题、语言、权限、模型和发送方式。Agents 实际向下滚动至名称、可执行文件、参数和保存按钮。未执行系统权限授予或配置保存。截图在本机 performance/settings-layout/general-final-narrow.png、agents-final-scrolled.png，另有同设计候选在英文浅色与中文深色下的两页全窗截图。
 - 构建源码与独立审查的九文件差异对应，diff SHA-256 166385a98f2f5c8ba7b117fa67f68b9b54bfdbd7b3729a922c6b8f45d9d4f91f。Rust/Cargo 1.98.0，fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器重新核对路径、哈希和新数据库。排序候选另行保留，草稿、目标身份和异步落点待修，未收入此二进制。Windows/Linux 未运行。
+
+## General 末行分隔线与提供方直接拖动
+
+生产提交 `3e7442d5a292e048d0425cc05a7ab51144b36719`。macOS 15.8.2 arm64，Rust/Cargo 1.98.0，release SHA-256 `72d6eac67e1c33ea4eabc4ce7fd73a71c885944da07277d410cdf4961f8607e2`。设置行 PARTIAL。
+
+- 浅色 1404pt 窗口在同一位置复拍并检查 2808×1720 原图。修前 Sidebar 底部横线占据 y=552–553、562–563 两条带，修后只有 560–561。Defaults 底部由 1194–1195、1226–1227 变为 1222–1223。主题、语言、输入预测之间仍有内部分隔线。对应原图与原尺寸局部在 performance/settings-layout/general-r419-final.png、appearance-lines-before.png、sidebar-r419-final.png。
+- 26 项离线提供方的行直接从名称拖动，不再绘制箭头或为手柄留空。将 A 拖到 B 之后，实点 B 再连续两次 Option+↓，重启后顺序为 A、03、B、04。编辑 B 的名称后再次拖动，顺序保持且表单保留改动。截图在 performance/settings-layout/providers-direct-final.png。窄窗回退与发现候选勾选后的拖动仍缺实窗证据。
+- 临时配置缺必需字段时出现启动恢复页，换回完整合成配置后按 Retry 进入生产应用。单独原生键盘代理候选出现选中后控件持续禁用，已撤掉；最终版复用提供方页面动作。五文件独立审查的差异 SHA-256 为 dac17c24f4e0a2d8b93897547234cda9f23fd90e67451968268a1b2544ee1a03。fmt、严格 Clippy、Python 5/15/40 项通过，nextest 执行 0 项。隔离启动器核对路径和数据库通过。其他平台未运行。
