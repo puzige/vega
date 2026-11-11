@@ -312,7 +312,7 @@ pub struct McpServerSettingsService {
 
 #[derive(Default)]
 struct ConfigurationRetryBudget {
-    started: Option<Instant>,
+    contention_elapsed: Duration,
     attempts: u64,
     wait_ms: u64,
     last_failure: Option<CredentialReadError>,
@@ -320,12 +320,9 @@ struct ConfigurationRetryBudget {
 }
 
 impl ConfigurationRetryBudget {
-    fn check_acquisition(&mut self, now: Instant) -> Result<(), CredentialReadError> {
+    fn check_acquisition(&mut self, elapsed: Duration) -> Result<(), CredentialReadError> {
         if let Some(error) = self.last_failure
-            && (self.exhausted
-                || self.started.is_some_and(|started| {
-                    now.saturating_duration_since(started) >= Duration::from_millis(500)
-                }))
+            && (self.exhausted || self.contention_elapsed + elapsed >= Duration::from_millis(500))
         {
             self.exhausted = true;
             return Err(error);
@@ -336,9 +333,9 @@ impl ConfigurationRetryBudget {
     fn next_delay(
         &mut self,
         busy: vega_store::yaml_config::ConfigurationLockBusy,
-        now: Instant,
+        elapsed: Duration,
     ) -> Result<Duration, CredentialReadError> {
-        let elapsed = now.saturating_duration_since(*self.started.get_or_insert(now));
+        let elapsed = self.contention_elapsed + elapsed;
         self.attempts += 1;
         let attempts = self.attempts;
         let previous_wait_ms = self.wait_ms;
@@ -396,7 +393,9 @@ impl McpServerSettingsService {
         {
             return;
         }
-        let operation = self.configuration_operation();
+        let operation = self
+            .clone()
+            .with_configuration_cancel(CancellationToken::new());
         let running = self.reconciliation_running.clone();
         if let Err(error) = crate::submission_diagnostics::background::submit(move || {
             let result = operation.reconcile_declarations();
@@ -438,6 +437,7 @@ impl McpServerSettingsService {
             .configuration_budget
             .clone()
             .unwrap_or_else(|| Arc::new(Mutex::new(ConfigurationRetryBudget::default())));
+        let mut waiting_since: Option<Instant> = None;
         loop {
             if self.configuration_cancel.is_cancelled() {
                 return Err(crate::credential_errors::state_error(
@@ -447,7 +447,9 @@ impl McpServerSettingsService {
             let mut retry = budget
                 .lock()
                 .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
-            if let Err(error) = retry.check_acquisition(Instant::now()) {
+            if let Err(error) = retry
+                .check_acquisition(waiting_since.map_or(Duration::ZERO, |start| start.elapsed()))
+            {
                 drop(retry);
                 return Err(self.configuration_exhausted(error));
             }
@@ -469,6 +471,8 @@ impl McpServerSettingsService {
                                     "configuration lock acquisition recovered"
                                 );
                             }
+                            retry.contention_elapsed +=
+                                waiting_since.map_or(Duration::ZERO, |start| start.elapsed());
                             return Ok((state, document));
                         }
                         Err(error) => {
@@ -495,7 +499,10 @@ impl McpServerSettingsService {
                     ));
                 }
             };
-            let result = retry.next_delay(busy, Instant::now());
+            let result = retry.next_delay(
+                busy,
+                waiting_since.get_or_insert_with(Instant::now).elapsed(),
+            );
             drop(retry);
             let delay = match result {
                 Ok(delay) => delay,
@@ -548,7 +555,7 @@ impl McpServerSettingsService {
         let store = Store::open_read_only(&self.database_path)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
         let (mut state, document) = self.configuration_guard()?;
-        if let Err(error) = vega_store::mcp_config::projection_current(
+        if let Err(error) = vega_store::mcp_config::verify_current_projection(
             store.conn(),
             &self.config_root.join("config.yaml"),
         ) {

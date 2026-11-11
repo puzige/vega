@@ -312,17 +312,33 @@ pub fn admitted(
     Ok(())
 }
 
+pub fn verify_current_projection(conn: &Connection, path: &Path) -> Result<(), McpStoreError> {
+    let bytes = crate::yaml_config::read(path).map_err(io_error)?;
+    if matches_accepted_projection(conn, bytes.as_deref())? {
+        return Ok(());
+    }
+    parse(bytes.as_deref())?;
+    Err(McpStoreError::Conflict)
+}
+
+fn matches_accepted_projection(
+    conn: &Connection,
+    bytes: Option<&[u8]>,
+) -> Result<bool, McpStoreError> {
+    let (accepted, pending): (Option<Vec<u8>>, bool) = conn.query_row(
+        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(!pending && accepted.as_deref() == Some(digest(bytes).as_slice()))
+}
+
 pub fn projection_current(
     conn: &Connection,
     path: &Path,
 ) -> Result<Vec<Declaration>, McpStoreError> {
     let bytes = crate::yaml_config::read(path).map_err(io_error)?;
     let declarations = parse(bytes.as_deref())?;
-    let (accepted, pending): (Option<Vec<u8>>, bool) = conn.query_row(
-        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if pending || accepted.as_deref() != Some(digest(bytes.as_deref()).as_slice()) {
+    if !matches_accepted_projection(conn, bytes.as_deref())? {
         return Err(McpStoreError::Conflict);
     }
     Ok(declarations)
