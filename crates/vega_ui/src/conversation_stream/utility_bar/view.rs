@@ -302,6 +302,17 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         }
         ns::view().w_full().children(rows)
     });
+    let on_layout = move |_: &ns::Bounds<ns::Points>| {
+        state.get_untracked().scroll.fetch_add(1, Ordering::AcqRel);
+        revision.update(|revision| *revision = revision.wrapping_add(1));
+    };
+    if !popup {
+        return content
+            .element_ref(&viewport)
+            .on_layout(on_layout)
+            .child(rows)
+            .into_element();
+    }
     content
         .child(
             ns::scroll()
@@ -309,10 +320,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 .flex_1()
                 .min_h(ns::px(0.))
                 .w_full()
-                .on_layout(move |_: &ns::Bounds<ns::Points>| {
-                    state.get_untracked().scroll.fetch_add(1, Ordering::AcqRel);
-                    revision.update(|revision| *revision = revision.wrapping_add(1));
-                })
+                .on_layout(on_layout)
                 .child(rows),
         )
         .into_element()

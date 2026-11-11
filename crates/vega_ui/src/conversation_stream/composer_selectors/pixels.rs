@@ -197,10 +197,12 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 .gap_2()
                 .px_2()
                 .py_1()
-                .min_h(ns::px(if snapshot.kind == Kind::PermissionMenu {
-                    44.
-                } else {
-                    Typography::SIDEBAR_LINE_HEIGHT
+                .min_h(ns::px(match snapshot.kind {
+                    Kind::PermissionTrigger | Kind::ModelTrigger => {
+                        Layout::COMPOSER_TEXT_TRIGGER_HEIGHT
+                    }
+                    Kind::PermissionMenu => 44.,
+                    _ => Typography::SIDEBAR_LINE_HEIGHT,
                 }))
                 .rounded(ns::px(
                     if matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger) {
@@ -318,7 +320,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let mut label = ns::text(row.label.clone())
                 .text_size(ns::px(Typography::SIDEBAR))
                 .text_color(crate::nsh::color(foreground));
-            if snapshot.kind == Kind::PermissionMenu {
+            if matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger) {
+                label = label.truncate();
+            } else if snapshot.kind == Kind::PermissionMenu {
                 label =
                     label.line_height(ns::px(Typography::SIDEBAR * Typography::BODY_LINE_HEIGHT));
             }
@@ -495,6 +499,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 });
             }
         });
+        if !popup {
+            return content.element_ref(&viewport).size_full().into_element();
+        }
         ns::scroll()
             .element_ref(&viewport)
             .w_full()

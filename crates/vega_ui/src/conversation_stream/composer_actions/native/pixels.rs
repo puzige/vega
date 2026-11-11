@@ -368,6 +368,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 command_owner.run(|| layout_commands.send(Request::Layout(id.clone(), height)));
             }
         });
+        if stop {
+            return content.element_ref(&viewport).size_full().into_element();
+        }
         ns::scroll()
             .element_ref(&viewport)
             .w_full()
