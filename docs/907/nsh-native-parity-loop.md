@@ -601,3 +601,10 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 - 浅色 1404pt 窗口在同一位置复拍并检查 2808×1720 原图。修前 Sidebar 底部横线占据 y=552–553、562–563 两条带，修后只有 560–561。Defaults 底部由 1194–1195、1226–1227 变为 1222–1223。主题、语言、输入预测之间仍有内部分隔线。对应原图与原尺寸局部在 performance/settings-layout/general-r419-final.png、appearance-lines-before.png、sidebar-r419-final.png。
 - 26 项离线提供方的行直接从名称拖动，不再绘制箭头或为手柄留空。将 A 拖到 B 之后，实点 B 再连续两次 Option+↓，重启后顺序为 A、03、B、04。编辑 B 的名称后再次拖动，顺序保持且表单保留改动。截图在 performance/settings-layout/providers-direct-final.png。窄窗回退与发现候选勾选后的拖动仍缺实窗证据。
 - 临时配置缺必需字段时出现启动恢复页，换回完整合成配置后按 Retry 进入生产应用。单独原生键盘代理候选出现选中后控件持续禁用，已撤掉；最终版复用提供方页面动作。五文件独立审查的差异 SHA-256 为 dac17c24f4e0a2d8b93897547234cda9f23fd90e67451968268a1b2544ee1a03。fmt、严格 Clippy、Python 5/15/40 项通过，nextest 执行 0 项。隔离启动器核对路径和数据库通过。其他平台未运行。
+
+## Composer 权限与模型列表的弹层阴影
+
+生产提交 `8a5f301f3f12c91207d37bc8d847b1b238d88232`，macOS 15.8.2 arm64 release SHA-256 `c9d43da74df52325ca4315ba222a68d4ab1fdf926907845ff8e1c438ae2c6bb1`。Composer PARTIAL。旧版 v0.1.413 和两个 NSH 构建分别用同一合成模型配置的隔离目录启动。
+- 原图确认修前权限菜单描边完整，外侧阴影缺失。修后同位置截图，左侧外沿三个像素的灰度由 255/255/255 恢复为 243/240/236，旧版为 243/240/237。权限弹层上缘相对旧版仍低约 3pt。权限原图、模型列表原图及局部见本机 performance/picker-shadow。
+- 两版点权限→模型→权限均切换。菜单已展开时，双击触发器在旧版仍展开，最终 NSH 构建收起，符合用户要求。修后点击左边框外 3 个物理像素的阴影收起菜单，AX 触发器从 on 变为 off。未选择危险选项。另在修前 NSH 和旧版观察到 Escape 后菜单仍在；本轮没有调整键盘行为。模型列表点开时新版选中行的蓝色轮廓仍有差异。
+- Rust/Cargo 1.98.0，release 构建、fmt、严格 Clippy、Python 5/15/40 项通过，nextest 0 执行。独立审查三文件差异 SHA-256 `bd68a5c28fe2dc324dab5681ba91b9dc16f4a7b146537d8b92434be58d7ee28e`。隔离启动器复核路径和数据库通过。VoiceOver、Windows/Linux 未运行。
