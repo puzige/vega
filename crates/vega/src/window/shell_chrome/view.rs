@@ -178,17 +178,9 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                         .text_size(px(Typography::BODY))
                         .child(text(control.label.clone()));
                 } else {
-                    button =
-                        button
-                            .w(px(Layout::TITLEBAR_CONTROL_SIZE))
-                            .child(glyph(action, foreground))
-                            .tooltip(view().px_2().py_1().bg(color(colors.bg_elevated)).child(
-                                text(if action == Action::Terminal {
-                                    format!("{}  ⌘J", control.label)
-                                } else {
-                                    control.label.clone()
-                                }),
-                            ));
+                    button = button
+                        .w(px(Layout::TITLEBAR_CONTROL_SIZE))
+                        .child(glyph(action, foreground));
                 }
                 if enabled {
                     let observed = snapshot.clone();

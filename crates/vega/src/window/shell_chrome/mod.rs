@@ -651,7 +651,7 @@ impl Render for Host {
         if let Some((root, controls)) = self.positions.clone() {
             let shown = snapshot.clone();
             for (action, rect) in controls {
-                if !shown.allows(action) || !self.geometry.borrow().visible(root, rect, window) {
+                if !self.geometry.borrow().visible(root, rect, window) {
                     continue;
                 }
                 let Some((_, focus)) = self.focuses.iter().find(|(owned, _)| *owned == action)
@@ -678,14 +678,38 @@ impl Render for Host {
                     host_bounds.origin + point(px(rect[0] - root[0]), px(rect[1] - root[1])),
                     size(px(rect[2]), px(rect[3])),
                 );
+                let target = div()
+                    .id(if control.enabled {
+                        format!("shell-chrome-{action:?}")
+                    } else {
+                        format!("shell-chrome-disabled-tooltip-{action:?}")
+                    })
+                    .absolute()
+                    .left(px(rect[0] - root[0]))
+                    .top(px(rect[1] - root[1]))
+                    .w(px(rect[2]))
+                    .h(px(rect[3]))
+                    .when(self.kind == Kind::Slots, |target| {
+                        let label: SharedString = control.label.clone().into();
+                        target.tooltip(move |_, cx| {
+                            vega_ui::icons::tooltip_with_shortcut(
+                                label.clone(),
+                                (action == Action::Terminal).then(|| "⌘J".into()),
+                                cx,
+                            )
+                        })
+                    });
+                if !shown.allows(action) {
+                    if self.kind == Kind::Slots
+                        && !shown.observation.blocked
+                        && !shown.observation.settings
+                    {
+                        host = host.child(target);
+                    }
+                    continue;
+                }
                 host = host.child(
-                    div()
-                        .id(format!("shell-chrome-{action:?}"))
-                        .absolute()
-                        .left(px(rect[0] - root[0]))
-                        .top(px(rect[1] - root[1]))
-                        .w(px(rect[2]))
-                        .h(px(rect[3]))
+                    target
                         .track_focus(&focus)
                         .tab_stop(true)
                         .role(Role::Button)

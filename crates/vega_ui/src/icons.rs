@@ -315,8 +315,15 @@ pub fn tooltip(
     label: impl Into<gpui_kit::SharedString>,
     cx: &mut gpui_kit::App,
 ) -> gpui_kit::AnyView {
-    let label = label.into();
-    cx.new(|_| IconTooltip(label, None)).into()
+    tooltip_with_shortcut(label.into(), None, cx)
+}
+
+pub fn tooltip_with_shortcut(
+    label: gpui_kit::SharedString,
+    shortcut: Option<gpui_kit::SharedString>,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::AnyView {
+    cx.new(|_| IconTooltip(label, shortcut)).into()
 }
 
 pub fn shell_icon_button(
@@ -352,10 +359,7 @@ pub fn shell_icon_button(
             button.focus_visible(move |style| style.border_2().border_color(colors.accent))
         })
         .when(enabled && !selected, |button| button.cursor_pointer())
-        .tooltip(move |_, cx| {
-            cx.new(|_| IconTooltip(tooltip_label.clone(), shortcut.clone()))
-                .into()
-        })
+        .tooltip(move |_, cx| tooltip_with_shortcut(tooltip_label.clone(), shortcut.clone(), cx))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             gpui_kit::base::GlobalState::init(cx);
             gpui_kit::base::GlobalState::suppress_text_selection(cx);
