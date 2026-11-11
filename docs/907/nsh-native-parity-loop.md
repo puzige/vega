@@ -534,3 +534,9 @@ macOS 15.8.2 arm64，源码 32612dab99fd19565479d4301c486acdcccafdb8，release S
 在宽窗回归了右上关闭、重开、项目行和本地终端。中间构建的关闭按钮比旧版宽 4pt，终端行因焦点边框的占位向右偏 1pt；最终构建修正。960pt 窄窗、侧栏可见时，旧版浮层仅卡片遮住下方内容，中间构建则将卡片以下整列刷白。最终应用在同尺寸下展示完整欢迎标题、项目栏、模型和发送按钮；点击浮层本地终端后浮层消失并出现 Terminal 1。测试实例已退出。原图位于本机 performance/environment-card。真实子 Agent 错误重试、VoiceOver、其他平台本轮未实测，工作区与跨切面保持 PARTIAL。隔离历史任务首次打开曾提示加载失败，未用该状态判定正文呈现或浮层通过；窄窗比较使用项目新任务。
 
 双文件独立终审差异 SHA-256 a4a300131dad24e2a5a1644a70eefbb2f5ccdad648cbc56285df168d92bb45fc。Rust/Cargo 1.98.0 release --locked --offline -j 2、fmt、严格 Clippy 与 Python 5/15/40 项通过，nextest 0 发现、0 执行。已核验隔离启动器。
+
+## 标题栏环境按钮的鼠标与键盘焦点
+
+macOS 15.8.2 arm64，生产提交 fc146ccd3b31820960f6076860e4eef9941975df，release SHA-256 534d59a38875ee7c6f7c0beb596c4414fe23834093332897a9fd28b6f0c19b4c。相同隔离项目中鼠标展开环境卡，旧版 0.1.413 顶部右侧 300×85 像素区域有 0 个蓝色描边像素，32612dab 有 388 个，修复后为 0 个。保持按钮焦点按 Left，环境卡仍开，蓝色像素恢复到 388。空格收起、Enter 展开。一次连续键鼠切换后点击观察仍为原状态，后续单击可展开；快速连续点击的可靠性仍需对照。截图位于本机 performance/shell-focus-r351。主窗口和跨切面保持 PARTIAL。
+
+宿主与 NSH 同时比较呈现状态，激活动作继续校验原焦点、路由、可用性和可见区域。独立复核差异 SHA-256 c8926c3d9885c28be22c2c5faf429832047a6ae1401ad40ee4abf953cd82a51f。Rust/Cargo 1.98.0，release 构建、fmt、严格 Clippy、Python 5/15/40 项通过；nextest 16 个测试程序共执行 0 项。已核验隔离启动器并关闭测试实例。VoiceOver 和其他平台未验证。
