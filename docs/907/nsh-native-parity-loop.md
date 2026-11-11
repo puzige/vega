@@ -462,3 +462,13 @@ macOS 15.8.2 arm64，生产源码 f48157f53fdb3a2d0ae9273ab11d9fda36ffd03e，rel
 - 同机对照时默认值为 Default，灰色轨道无选中滑块。选择 High 后两版均显示蓝色填充和白色滑块。截图为 performance/model-card-old-tier.png、model-card-r307-tier.png。中间构建的焦点框、模型名点击范围和阴影差异均在实窗比较后修订。
 - 源码冻结后四文件非作者终审差异 SHA-256 48fa60a4894995ed6c3c0ff031823eda6c5e44da2e515af4ad7a5b63c986357e。Rust/Cargo 1.98.0，fmt、严格全目标 Clippy 与 Python 5/15/40 项通过。nextest 0 发现/0 执行。Composer 整行为 PARTIAL；真实服务、VoiceOver 播报与整应用验收另行核对。
 - 用户随后明确要求移除常驻圆箭头。此处对 f48157f5 的记录保留为前一轮证据，后续修订以常态无刷新图标为目标。另用较长测试模型名在真实窗口通过 Tab 和空格打开弹层，单行显示，AX 文本保留完整原名。长列表滚轮与快速切换的成功结果尚未核实。
+
+## 设置常态刷新与思考档位恢复
+
+macOS 15.8.2 arm64，生产源码 1b07b5a7a702a5dacca1bdc813d6b999dfa4e22c，release 程序 SHA-256 eea1739591d2e3f9dae1fd472ee4a3535793bd0ee7577c25abb02bb86e3d17f3，UUID 0D994AF3-8BE5-38B7-BC04-E0D5AFBAEC13。使用新建的隔离目录、离线测试提供方和完整生产窗口。
+
+- 在 f48157f5 的健康页面上实际看到提供方、MCP、技能、用量都有手动刷新。0.1.413 源码已有这四个入口。模型思考档位旁的圆箭头则是上轮为恢复默认值新增的控件。本轮移除这四页、模型能力和价格库正常态的刷新控件。模型目录展开后仍可主动向远端获取数据。MCP 页进入时只读本地服务器与权限请求列表。
+- 在独立生产进程切换四页，逐页确认可用内容与主要操作；验证用量和 MCP 读取失败、恢复及再次操作。故障只注入本次生成的测试数据库，先暂时改名 token_usage 或 mcp_servers 表，再改回并点击对应的恢复操作。中间 R309 在错误下仍显示空状态，R313 重试后 Add local 持续禁用。错误和控件卸载时的命令回执分别修复。
+- R309、R313 在思考档位卡选择 High，经标题进入模型列表，选择“使用默认思考强度”后重开卡片，模型仍为 gpt-6.1-sol，档位恢复 Default。该操作只在有显式档位时出现在模型列表。实窗中间构建 R313 点击轨道后直接按 Home/End，AX 仍报告 High，此操作未验证为成功。
+- R312 在隔离价格文件加入 local-external-reentry 后，重开设置进入价格库即出现新记录。点“返回提供方”后，部分提供方操作仍显示 disabled，在关闭、重开设置后可用；R309 亦可复现。真实网络目录刷新、写操作与回读同时失败、VoiceOver、Windows/Linux 本轮未运行。设置与 Composer 保持 PARTIAL。
+- 最终 19 文件独立复核差异 SHA-256 ed3775393f914b6bbd1e6d6edafb611bf0e10ada0f91c6ae66b5a3e06d60093e。Rust/Cargo 1.98.0，release --locked --offline -j 2，fmt、严格 Clippy 与 Python 5/15/40 项通过。nextest 扫描 16 个测试二进制，0 发现、0 执行。实机图片位于同机 performance 目录的 composer-chip-settings-*-r317 和 model-card-r309-high。新 head CI 在 Draft PR #913 单独验证。
