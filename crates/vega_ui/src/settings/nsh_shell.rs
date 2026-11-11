@@ -45,6 +45,7 @@ struct Snapshot {
     error: Option<String>,
     colors: ThemeColors,
     keyboard: Option<Action>,
+    keyboard_focus_visible: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
@@ -112,6 +113,7 @@ impl SettingsView {
             error: self.error.as_ref().map(|error| error.render()),
             colors: vega_theme::theme(cx).colors,
             keyboard: None,
+            keyboard_focus_visible: false,
         }
     }
     pub(super) fn sync_shell_presentations(&self, cx: &App) {
@@ -276,6 +278,7 @@ impl SettingsView {
                 &page.keyboard_session,
                 &enabled(&projected),
             );
+            projected.keyboard_focus_visible = window.last_input_was_keyboard();
             if page.focus.is_focused(window) {
                 projected.keyboard = page.keyboard.as_ref().and_then(|selection| {
                     selection.action(&page.keyboard_session, &enabled(&projected))
@@ -465,7 +468,10 @@ fn button(
 ) -> AnyElement {
     let target = element_ref();
     let focused = computed(move || {
-        state.get().keyboard == Some(section.map_or(Action::Back, Action::Section))
+        state.with(|snapshot| {
+            snapshot.keyboard_focus_visible
+                && snapshot.keyboard == Some(section.map_or(Action::Back, Action::Section))
+        })
     });
     let action = section.map_or(Action::Back, Action::Section);
     let label = move || {
