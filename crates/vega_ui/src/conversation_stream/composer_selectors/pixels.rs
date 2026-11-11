@@ -167,6 +167,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let thinking = snapshot.kind == Kind::Thinking;
             let show_ring =
                 selected && (!(permission_option || thinking) || snapshot.keyboard_focus_visible);
+            let is_trigger = matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger);
+            let suppress_repeat_open = is_trigger && !row.checked;
             let checked_permission = permission_option && row.checked;
             let enabled = row.enabled;
             let foreground = if !enabled {
@@ -273,8 +275,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 })
                 .on_press_down(move || pressed.set(true))
                 .on_press_up(move || pressed.set(false))
-                .on_press(move || {
-                    if !enabled {
+                .on_press(move |event: &nsh_core::PressEvent| {
+                    if !enabled || (suppress_repeat_open && event.clicks > 1) {
                         return;
                     }
                     let commands = press_commands.clone();

@@ -372,7 +372,7 @@ struct Host {
     focus: FocusHandle,
     height: Option<f32>,
     activation_focus: Option<FocusHandle>,
-    menu: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
+    paired_host: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -529,8 +529,11 @@ impl Host {
         let Some(owner) = self.owner.upgrade() else {
             return;
         };
-        if action == Action::ModelTrigger && observed.source.level == ModelPickerLevel::List {
-            let target = self.menu.borrow().clone();
+        if action == Action::ModelTrigger
+            && observed.source.level == ModelPickerLevel::List
+            && origin == Origin::Keyboard
+        {
+            let target = self.paired_host.borrow().clone();
             if let Some(target) = target {
                 let _ = target.update(cx, |host, cx| {
                     host.request(observed.source.highlight, origin, window, cx);
@@ -562,6 +565,11 @@ impl Host {
                     cx.notify();
                 }
                 Action::Permission(mode) => stream.select_permission_mode(mode, window, cx),
+                Action::ModelTrigger if stream.model_picker_level.is_open() => {
+                    stream.model_picker_level = ModelPickerLevel::Closed;
+                    window.focus(&stream.model_focus, cx);
+                    cx.notify();
+                }
                 Action::ModelTrigger => stream.on_activate_model(&ActivateModel, window, cx),
                 Action::Model(option) => {
                     if stream.model_options.get(index) == Some(&option) {
@@ -803,7 +811,7 @@ struct Native {
     owner: WeakEntity<ConversationStream>,
     kind: Kind,
     route: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
-    menu: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
+    paired_host: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
 }
 
 impl RenderOnce for Native {
@@ -855,12 +863,12 @@ impl RenderOnce for Native {
                 focus,
                 height: None,
                 activation_focus: None,
-                menu: self.menu.clone(),
+                paired_host: self.paired_host.clone(),
                 _subscriptions: subscriptions,
             }
         });
         host.update(cx, |host, cx| {
-            host.menu = self.menu.clone();
+            host.paired_host = self.paired_host.clone();
             host.sync_snapshot(snapshot, cx);
         });
         *self.route.borrow_mut() = Some(host.downgrade());
@@ -966,8 +974,24 @@ impl Render for Host {
                     },
                 )))
                 .occlude()
-                .on_mouse_down_out(cx.listener(|host, _: &MouseDownEvent, window, cx| {
-                    if !host.valid(&host.snapshot, window, cx) {
+                .on_mouse_down_out(cx.listener(|host, event: &MouseDownEvent, window, cx| {
+                    // The trigger handles its own toggle on release. Dismissing here
+                    // would turn that same click into an open request.
+                    let on_trigger = event.button == MouseButton::Left
+                        && host
+                            .paired_host
+                            .borrow()
+                            .as_ref()
+                            .and_then(WeakEntity::upgrade)
+                            .is_some_and(|trigger| {
+                                let trigger = trigger.read(cx);
+                                trigger.snapshot.rows.first().is_some_and(|row| row.enabled)
+                                    && trigger.valid(&trigger.snapshot, window, cx)
+                                    && trigger.snapshot.geometry.is_some_and(|geometry| {
+                                        geometry.bounds.contains(&event.position)
+                                    })
+                            });
+                    if on_trigger || !host.valid(&host.snapshot, window, cx) {
                         return;
                     }
                     let Some(owner) = host.owner.upgrade() else {
@@ -1291,8 +1315,8 @@ fn selector(owner: WeakEntity<ConversationStream>, kind: Kind, popup: Option<Kin
         .child(Native {
             owner: owner.clone(),
             kind,
-            route: trigger_route,
-            menu: popup_route.clone(),
+            route: trigger_route.clone(),
+            paired_host: popup_route.clone(),
         });
     if let Some(kind) = popup {
         root = root.child(
@@ -1312,8 +1336,8 @@ fn selector(owner: WeakEntity<ConversationStream>, kind: Kind, popup: Option<Kin
                     .child(Native {
                         owner,
                         kind,
-                        route: popup_route.clone(),
-                        menu: popup_route,
+                        route: popup_route,
+                        paired_host: trigger_route,
                     }),
             )
             .with_priority(2),
