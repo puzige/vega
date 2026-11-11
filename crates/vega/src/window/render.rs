@@ -976,7 +976,8 @@ impl VegaWindow {
             .child(
                 div()
                     .absolute()
-                    .bottom_0()
+                    // Paint in the reserved bottom border of the header.
+                    .bottom(px(-1.))
                     .left_0()
                     .w_full()
                     .child(nsh_workspace::separator(
