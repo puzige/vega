@@ -126,11 +126,16 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
             for control in &snapshot.observation.controls {
                 let action = control.action;
                 let focused = snapshot.show_focus_ring && snapshot.focused == Some(action);
+                let pressed = snapshot.pressed == Some(action);
                 let enabled = control.enabled;
                 let selected = control.selected;
                 let background = if action == Action::Update {
-                    colors.brand_primary
-                } else if selected {
+                    if pressed {
+                        colors.brand_primary_strong
+                    } else {
+                        colors.brand_primary
+                    }
+                } else if pressed || selected {
                     colors.bg_active
                 } else {
                     colors.bg_base.opacity(0.)
@@ -192,6 +197,8 @@ pub(super) fn render(incoming: Signal<Snapshot>, sender: mpsc::Sender<Request>) 
                         .hover(move |style| {
                             style.bg(color(if action == Action::Update {
                                 colors.brand_primary_strong
+                            } else if pressed || selected {
+                                colors.bg_active
                             } else {
                                 colors.bg_hover
                             }))

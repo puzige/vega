@@ -60,6 +60,7 @@ struct Snapshot {
     observation: Observation,
     focused: Option<Action>,
     show_focus_ring: bool,
+    pressed: Option<Action>,
     colors: ThemeColors,
     appearance: Appearance,
     language: &'static str,
@@ -75,6 +76,7 @@ impl Snapshot {
     }
     fn same_frame(&self, other: &Self) -> bool {
         self.matches(other)
+            && self.pressed == other.pressed
             && (self.focused.is_none() || self.show_focus_ring == other.show_focus_ring)
     }
     fn allows(&self, action: Action) -> bool {
@@ -151,6 +153,7 @@ struct Host {
     positions: Option<Positions>,
     height: f32,
     focuses: Vec<(Action, FocusHandle)>,
+    pressed: Option<(Action, Bounds<Pixels>)>,
     lease: Weak<()>,
     geometry: Rc<RefCell<Geometry>>,
     subscriptions: Vec<Subscription>,
@@ -301,7 +304,14 @@ impl VegaWindow {
             .entry(kind)
             .or_insert_with(|| {
                 cx.new(|cx| {
-                    let mut subscriptions = Vec::new();
+                    let mut subscriptions = vec![cx.observe_window_activation(
+                        window,
+                        |host: &mut Host, window, cx| {
+                            if !window.is_window_active() {
+                                host.clear_press(cx);
+                            }
+                        },
+                    )];
                     let focuses = if let Some(focus) = notice_focus {
                         subscriptions.push(cx.on_focus(
                             &focus,
@@ -330,6 +340,7 @@ impl VegaWindow {
                         positions: None,
                         height: Typography::METADATA * Typography::BODY_LINE_HEIGHT + 8.,
                         focuses,
+                        pressed: None,
                         lease: Weak::new(),
                         geometry: Rc::new(RefCell::new(Geometry::default())),
                         subscriptions,
@@ -342,7 +353,13 @@ impl VegaWindow {
 }
 
 impl Host {
+    fn clear_press(&mut self, cx: &mut Context<Self>) {
+        if self.pressed.take().is_some() {
+            cx.notify();
+        }
+    }
     fn invalidate(&mut self) {
+        self.pressed = None;
         self.revision = ProjectionId::new();
         self.displayed = None;
     }
@@ -355,6 +372,9 @@ impl Host {
             revision: self.revision.clone(),
             observation,
             show_focus_ring: window.last_input_was_keyboard(),
+            pressed: self.pressed.and_then(|(action, bounds)| {
+                bounds.contains(&window.mouse_position()).then_some(action)
+            }),
             focused: self
                 .focuses
                 .iter()
@@ -551,6 +571,7 @@ impl Render for Host {
         {
             self.invalidate();
             snapshot.revision = self.revision.clone();
+            snapshot.pressed = None;
         }
         self.mount(snapshot.clone(), window, cx);
         let publish = self
@@ -568,6 +589,8 @@ impl Render for Host {
         });
         let geometry = self.geometry.clone();
         let weak = cx.weak_entity();
+        let held = self.pressed;
+        let held_host = weak.clone();
         let mut host = div()
             .id("shell-chrome-native-host")
             .relative()
@@ -575,6 +598,15 @@ impl Render for Host {
             .when(
                 matches!(self.kind, Kind::Error | Kind::PermissionReset),
                 |host| host.h(px(self.height)).flex_shrink_0(),
+            )
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                if event.button == MouseButton::Left {
+                    this.clear_press(cx);
+                }
+            }))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.clear_press(cx)),
             )
             .children(child)
             .child(
@@ -600,7 +632,18 @@ impl Render for Host {
                             });
                         }
                     },
-                    |_, _, _, _| {},
+                    move |_, _, window, _| {
+                        if let Some((_, bounds)) = held {
+                            let was_inside = bounds.contains(&window.mouse_position());
+                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture
+                                    && bounds.contains(&event.position) != was_inside
+                                {
+                                    let _ = held_host.update(cx, |_, cx| cx.notify());
+                                }
+                            });
+                        }
+                    },
                 )
                 .absolute()
                 .size_full(),
@@ -628,6 +671,13 @@ impl Render for Host {
                 let observed = shown.clone();
                 let weak = cx.weak_entity();
                 let focus = focus.clone();
+                let Some(host_bounds) = self.geometry.borrow().bounds else {
+                    continue;
+                };
+                let control_bounds = Bounds::new(
+                    host_bounds.origin + point(px(rect[0] - root[0]), px(rect[1] - root[1])),
+                    size(px(rect[2]), px(rect[3])),
+                );
                 host = host.child(
                     div()
                         .id(format!("shell-chrome-{action:?}"))
@@ -641,6 +691,16 @@ impl Render for Host {
                         .role(Role::Button)
                         .aria_label(control.label.clone())
                         .capture_any_mouse_down(|_, window, _| window.prevent_default())
+                        // This native hit target owns the click. A second press on the
+                        // NSH surface behind it would transfer focus during the gesture.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.pressed = Some((action, control_bounds));
+                                cx.notify();
+                                cx.stop_propagation();
+                            }),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.dispatch(&pointer, action, window, cx)
                         }))
