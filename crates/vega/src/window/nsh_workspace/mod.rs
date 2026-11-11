@@ -150,6 +150,7 @@ pub(in crate::window) struct Snapshot {
     tabs: Vec<Tab>,
     pub(in crate::window) controls: Vec<Control>,
     pub(in crate::window) lines: Vec<Line>,
+    project_label: Option<String>,
     colors: ThemeColors,
     environment: (&'static str, vega_theme::Appearance),
     selected: Option<Action>,
@@ -177,6 +178,7 @@ impl Snapshot {
             && self.tabs == other.tabs
             && self.controls == other.controls
             && self.lines == other.lines
+            && self.project_label == other.project_label
             && self.environment == other.environment
             && self.recovery == other.recovery
     }
@@ -442,6 +444,7 @@ impl VegaWindow {
             tabs: Vec::new(),
             controls: Vec::new(),
             lines: Vec::new(),
+            project_label: None,
             colors: theme(cx).colors,
             environment: (vega_i18n::language(), theme(cx).appearance),
             selected: None,
@@ -515,12 +518,7 @@ impl VegaWindow {
                 ));
             }
             Kind::Environment(_) => {
-                snapshot
-                    .lines
-                    .push(Line::new(vega_i18n::t("app.workspace.environment"), false));
-                if let Some(label) = self.shell_project_label(cx) {
-                    snapshot.lines.push(Line::new(label, false));
-                }
+                snapshot.project_label = self.shell_project_label(cx);
                 snapshot.controls.push(Control::icon(
                     Action::CloseEnvironment,
                     vega_i18n::t("app.workspace.close_environment"),
@@ -906,7 +904,11 @@ impl VegaWindow {
             else {
                 return div().into_any_element();
             };
-            let (surface, requests) = Surface::new(initial.clone(), view::render, window, cx);
+            let (surface, requests) = if kind == Kind::Environment(true) {
+                Surface::new_transparent(initial.clone(), view::render, window, cx)
+            } else {
+                Surface::new(initial.clone(), view::render, window, cx)
+            };
             let focus = cx.focus_handle().tab_stop(true);
             let subscriptions = vec![
                 cx.on_focus_in(&focus, window, move |this: &mut Self, window, cx| {
@@ -986,7 +988,11 @@ impl VegaWindow {
         let failed = page.surface.errors().borrow().is_some();
         if failed && page.recovery.is_none() {
             snapshot.recovery = true;
-            let (recovery, requests) = Surface::new(snapshot.clone(), view::recovery, window, cx);
+            let (recovery, requests) = if kind == Kind::Environment(true) {
+                Surface::new_transparent(snapshot.clone(), view::recovery, window, cx)
+            } else {
+                Surface::new(snapshot.clone(), view::recovery, window, cx)
+            };
             if let Some(page) = self.workspace.nsh.get_mut(&kind) {
                 page.recovery = Some(recovery);
                 page.selected = Some(Action::Reload);

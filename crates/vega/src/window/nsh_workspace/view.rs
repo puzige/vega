@@ -223,15 +223,141 @@ fn button(
     if control.icon_only {
         result = result.w(px(Layout::TAB_HEIGHT)).px_0().justify_center();
     }
-    if let Some(icon) = control.icon {
+    if control.action == Action::CloseEnvironment {
+        result = result.size(px(24.));
+    }
+    let agent_button = observed.mode == Mode::Environment
+        && matches!(control.action, Action::Subagents | Action::RetryAgents);
+    if let Some(icon) = control.icon.filter(|_| !agent_button) {
         result = result.child(glyph(icon, colors.text_secondary));
     }
     if !control.icon_only {
-        result = result
-            .max_w(px(150.))
-            .child(label(control.label, colors.text_primary));
+        if agent_button {
+            result = result.h(auto()).py_1().gap_2().child(
+                text(control.label)
+                    .text_size(px(Typography::BODY))
+                    .text_color(color(colors.text_primary)),
+            );
+            if let Some(icon) = control.icon {
+                result = result.child(glyph(icon, colors.text_secondary));
+            }
+            return result.into_element();
+        }
+        if observed.mode == Mode::Environment {
+            result = result
+                .w_full()
+                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                .px(px(7.)) // Reserve the other 1pt for the focus border.
+                .gap_2();
+        } else {
+            result = result.max_w(px(150.));
+        }
+        result = result.child(label(control.label, colors.text_primary));
     }
     result.into_element()
+}
+
+fn environment_card(
+    state: Signal<Snapshot>,
+    snapshot: &Snapshot,
+    commands: OrderedCommands<Request>,
+    viewport: ScrollViewport,
+) -> AnyElement {
+    let colors = snapshot.colors;
+    let mut heading = view()
+        .w_full()
+        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(label(
+            vega_i18n::t("app.workspace.environment").into(),
+            colors.text_secondary,
+        ));
+    let render_control = |control: &Control| {
+        button(
+            state,
+            snapshot,
+            control.clone(),
+            commands.clone(),
+            Some(viewport),
+        )
+    };
+    if let Some(close) = snapshot
+        .controls
+        .iter()
+        .find(|c| c.action == Action::CloseEnvironment)
+    {
+        heading = heading.child(render_control(close));
+    }
+    let mut card = view()
+        .w_full()
+        .flex_shrink_0()
+        .flex_col()
+        .gap_1()
+        .p_3()
+        .rounded(px(Layout::ENVIRONMENT_CARD_RADIUS))
+        .border(px(1.))
+        .border_color(color(colors.border_subtle))
+        .bg(color(colors.bg_elevated))
+        .shadow_sm()
+        .child(heading);
+    if let Some(project) = &snapshot.project_label {
+        card = card.child(
+            view()
+                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                .flex_row()
+                .items_center()
+                .px_2()
+                .gap_2()
+                .child(glyph(Icon::Folder, colors.brand_primary))
+                .child(
+                    text(project.clone())
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_size(px(Typography::SIDEBAR))
+                        .text_color(color(colors.text_primary)),
+                ),
+        );
+    }
+    for control in &snapshot.controls {
+        match control.action {
+            Action::CloseEnvironment | Action::RetryAgents => continue,
+            Action::Subagents => {
+                let mut section = view()
+                    .flex_col()
+                    .gap_1()
+                    .py_2()
+                    .child(render_control(control));
+                for line in &snapshot.lines {
+                    let message = text(line.text.clone()).text_size(px(Typography::METADATA));
+                    if line.error {
+                        let mut row = view()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(message.text_color(color(colors.danger)));
+                        if let Some(retry) = snapshot
+                            .controls
+                            .iter()
+                            .find(|c| c.action == Action::RetryAgents)
+                        {
+                            row = row.child(render_control(retry));
+                        }
+                        section = section.child(row);
+                    } else {
+                        section =
+                            section.child(message.px_2().text_color(color(colors.text_secondary)));
+                    }
+                }
+                card = card.child(section);
+            }
+            _ => card = card.child(render_control(control)),
+        }
+    }
+    card.into_element()
 }
 
 pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
@@ -318,46 +444,54 @@ pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>
                 let offset = signal((0f32, 0f32));
                 let scroll_commands = commands.clone();
                 let scroll_id = snapshot.id.clone();
-                root = root
-                    .element_ref(&viewport)
-                    .flex_col()
-                    .gap_1()
-                    .p_2()
-                    .on_scroll(move |event: &ScrollEvent| {
-                        offset.set((event.offset.x.0, event.offset.y.0));
-                        scroll_commands.send(Request::Scrolled(scroll_id.clone()));
-                    });
-                for line in &snapshot.lines {
-                    root = root.child(label(
-                        line.text.clone(),
-                        if line.error {
-                            colors.danger
-                        } else {
-                            colors.text_secondary
-                        },
-                    ));
-                }
-                for control in &snapshot.controls {
-                    root = root.child(button(
+                root =
+                    root.element_ref(&viewport)
+                        .flex_col()
+                        .on_scroll(move |event: &ScrollEvent| {
+                            offset.set((event.offset.x.0, event.offset.y.0));
+                            scroll_commands.send(Request::Scrolled(scroll_id.clone()));
+                        });
+                if snapshot.mode == Mode::Environment {
+                    root = root.child(environment_card(
                         state,
                         &snapshot,
-                        control.clone(),
                         commands.clone(),
-                        Some((viewport, offset, false)),
+                        (viewport, offset, false),
                     ));
+                } else {
+                    root = root.gap_1().p_2();
+                    for line in &snapshot.lines {
+                        root = root.child(label(
+                            line.text.clone(),
+                            if line.error {
+                                colors.danger
+                            } else {
+                                colors.text_secondary
+                            },
+                        ));
+                    }
+                    for control in &snapshot.controls {
+                        root = root.child(button(
+                            state,
+                            &snapshot,
+                            control.clone(),
+                            commands.clone(),
+                            Some((viewport, offset, false)),
+                        ));
+                    }
                 }
                 root.into_element()
             };
             view()
                 .size_full()
                 .min_w_0()
-                .bg(color(
-                    if snapshot.mode == Mode::Environment || snapshot.mode == Mode::Menu {
-                        colors.bg_elevated
-                    } else {
-                        colors.bg_base
-                    },
-                ))
+                .bg(color(if snapshot.kind == super::Kind::Environment(true) {
+                    colors.bg_base.alpha(0.)
+                } else if snapshot.mode == Mode::Menu {
+                    colors.bg_elevated
+                } else {
+                    colors.bg_base
+                }))
                 .child(body)
                 .child(when(
                     move || failed.get(),
@@ -381,6 +515,7 @@ pub(super) fn recovery(state: Signal<Snapshot>, commands: mpsc::Sender<Request>)
             let snapshot = state.get();
             view()
                 .flex_col()
+                .bg(color(snapshot.colors.bg_elevated))
                 .p_2()
                 .gap_1()
                 .child(label(
