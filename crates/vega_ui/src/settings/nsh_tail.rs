@@ -60,7 +60,7 @@ pub(super) fn group(colors: ThemeColors, window: &mut Window, cx: &mut App) -> A
         .child(host(
             "settings-defaults-group",
             PixelsInput::Group {
-                fill: colors.bg_subtle,
+                fill: colors.bg_base,
                 border: colors.border_subtle,
             },
             window,

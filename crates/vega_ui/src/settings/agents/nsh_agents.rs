@@ -453,18 +453,6 @@ fn button(
         .into_element()
 }
 
-fn group(state: Signal<Snapshot>) -> nsh_core::element::View {
-    view()
-        .w_full()
-        .min_w(px(0.))
-        .flex_shrink_0()
-        .p(px(Layout::SETTINGS_GROUP_PADDING))
-        .border(px(1.))
-        .rounded(px(Layout::PANEL_RADIUS))
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
-}
-
 fn field_row(
     state: Signal<Snapshot>,
     key: &'static str,
@@ -725,28 +713,39 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             }
         })
         .child(
-            group(state)
+            view()
+                .w_full()
+                .flex_shrink_0()
+                .gap_2()
                 .child(heading(state, "settings.agents.native.title"))
                 .child(
-                    text(move || {
-                        state.with(|_| vega_i18n::t("settings.agents.native.description"))
-                    })
-                    .mt_2()
-                    .text_size(px(Typography::METADATA))
-                    .line_height(px(Typography::METADATA * Typography::BODY_LINE_HEIGHT))
-                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
-                )
-                .child(toggle(actions, commands.clone(), true))
-                .child(toggle(actions, commands.clone(), false))
-                .child(button(
-                    actions,
-                    commands.clone(),
-                    Action::Native(NativeAgentAction::Extension),
-                    "settings.agents.browser.install_extension",
-                )),
+                    super::super::nsh_form::card(move || state.get().colors)
+                        .child(
+                            text(move || {
+                                state.with(|_| vega_i18n::t("settings.agents.native.description"))
+                            })
+                            .mt_2()
+                            .text_size(px(Typography::METADATA))
+                            .line_height(px(Typography::METADATA * Typography::BODY_LINE_HEIGHT))
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
+                            }),
+                        )
+                        .child(toggle(actions, commands.clone(), true))
+                        .child(toggle(actions, commands.clone(), false))
+                        .child(button(
+                            actions,
+                            commands.clone(),
+                            Action::Native(NativeAgentAction::Extension),
+                            "settings.agents.browser.install_extension",
+                        )),
+                ),
         )
         .child(
-            group(state)
+            view()
+                .w_full()
+                .flex_shrink_0()
+                .gap_2()
                 .child(
                     view()
                         .w_full()
@@ -767,110 +766,125 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                             "settings.action.recheck",
                         )),
                 )
-                .child(each(
-                    move || state.get().authority.feedback,
-                    |item| item.clone(),
-                    move |item, _| {
-                        text(move || item.get().0)
-                            .mt_2()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(move || {
-                                crate::nsh::color(if item.get().1 {
-                                    state.get().colors.warning
-                                } else {
-                                    state.get().colors.text_secondary
+                .child(
+                    super::super::nsh_form::card(move || state.get().colors)
+                        .child(each(
+                            move || state.get().authority.feedback,
+                            |item| item.clone(),
+                            move |item, _| {
+                                text(move || item.get().0)
+                                    .mt_2()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(move || {
+                                        crate::nsh::color(if item.get().1 {
+                                            state.get().colors.warning
+                                        } else {
+                                            state.get().colors.text_secondary
+                                        })
+                                    })
+                            },
+                        ))
+                        .child(setup_row(
+                            state,
+                            "settings.agents.desktop.component",
+                            move || state.with(|s| vega_i18n::t(s.authority.component)),
+                            button(
+                                actions,
+                                commands.clone(),
+                                Action::Native(NativeAgentAction::Prepare),
+                                "settings.agents.desktop.prepare",
+                            ),
+                        ))
+                        .child(setup_row(
+                            state,
+                            "settings.agents.accessibility",
+                            move || state.with(|s| vega_i18n::t(s.authority.accessibility)),
+                            button(
+                                actions,
+                                commands.clone(),
+                                Action::Native(NativeAgentAction::Accessibility),
+                                "settings.agents.accessibility.settings",
+                            ),
+                        ))
+                        .child(setup_row(
+                            state,
+                            "settings.agents.screen_recording",
+                            move || state.with(|s| vega_i18n::t(s.authority.screen_recording)),
+                            button(
+                                actions,
+                                commands.clone(),
+                                Action::Native(NativeAgentAction::ScreenRecording),
+                                "settings.agents.screen_recording.settings",
+                            ),
+                        ))
+                        .child(
+                            text(move || {
+                                state.with(|_| {
+                                    vega_i18n::t("settings.agents.screen_recording.restart")
                                 })
                             })
-                    },
-                ))
-                .child(setup_row(
-                    state,
-                    "settings.agents.desktop.component",
-                    move || state.with(|s| vega_i18n::t(s.authority.component)),
-                    button(
-                        actions,
-                        commands.clone(),
-                        Action::Native(NativeAgentAction::Prepare),
-                        "settings.agents.desktop.prepare",
-                    ),
-                ))
-                .child(setup_row(
-                    state,
-                    "settings.agents.accessibility",
-                    move || state.with(|s| vega_i18n::t(s.authority.accessibility)),
-                    button(
-                        actions,
-                        commands.clone(),
-                        Action::Native(NativeAgentAction::Accessibility),
-                        "settings.agents.accessibility.settings",
-                    ),
-                ))
-                .child(setup_row(
-                    state,
-                    "settings.agents.screen_recording",
-                    move || state.with(|s| vega_i18n::t(s.authority.screen_recording)),
-                    button(
-                        actions,
-                        commands.clone(),
-                        Action::Native(NativeAgentAction::ScreenRecording),
-                        "settings.agents.screen_recording.settings",
-                    ),
-                ))
-                .child(
-                    text(move || {
-                        state.with(|_| vega_i18n::t("settings.agents.screen_recording.restart"))
-                    })
-                    .text_size(px(Typography::METADATA))
-                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
-                )
-                .child(field_row(
-                    state,
-                    "settings.agents.capture",
-                    None,
-                    translated(state, "settings.state.unverified"),
-                )),
+                            .text_size(px(Typography::METADATA))
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
+                            }),
+                        )
+                        .child(field_row(
+                            state,
+                            "settings.agents.capture",
+                            None,
+                            translated(state, "settings.state.unverified"),
+                        )),
+                ),
         )
         .child(
-            group(state)
+            view()
+                .w_full()
+                .flex_shrink_0()
+                .gap_2()
                 .child(
                     text("Codex")
                         .text_size(px(Typography::HEADING_BLOCK))
                         .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
                 )
                 .child(
-                    text(move || {
-                        state.with(|snapshot| {
-                            vega_i18n::t(if snapshot.authority.profile.is_some() {
-                                "settings.agents.codex.configured"
-                            } else {
-                                "settings.agents.codex.setup"
+                    super::super::nsh_form::card(move || state.get().colors)
+                        .child(
+                            text(move || {
+                                state.with(|snapshot| {
+                                    vega_i18n::t(if snapshot.authority.profile.is_some() {
+                                        "settings.agents.codex.configured"
+                                    } else {
+                                        "settings.agents.codex.setup"
+                                    })
+                                })
                             })
-                        })
-                    })
-                    .text_size(px(Typography::METADATA))
-                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary)),
-                )
-                .child(field(actions, draft.clone(), 0, "settings.field.name"))
-                .child(field(
-                    actions,
-                    draft.clone(),
-                    1,
-                    "settings.field.executable",
-                ))
-                .child(field(actions, draft, 2, "settings.field.arguments"))
-                .child(
-                    view()
-                        .mt_3()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .child(button(
+                            .text_size(px(Typography::METADATA))
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
+                            }),
+                        )
+                        .child(field(actions, draft.clone(), 0, "settings.field.name"))
+                        .child(field(
                             actions,
-                            commands,
-                            Action::Save,
-                            "settings.agents.codex.save",
-                        )),
+                            draft.clone(),
+                            1,
+                            "settings.field.executable",
+                        ))
+                        .child(field(actions, draft, 2, "settings.field.arguments"))
+                        .child(
+                            view()
+                                .mt_3()
+                                .flex_row()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
+                                .child(button(
+                                    actions,
+                                    commands,
+                                    Action::Save,
+                                    "settings.agents.codex.save",
+                                )),
+                        ),
                 ),
         )
         .child(when(

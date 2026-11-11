@@ -465,7 +465,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         })
         .child(
             control(state, 0)
-                .self_start()
+                .self_end()
                 .max_w(relative(1.))
                 .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
                 .py_1()

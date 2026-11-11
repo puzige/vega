@@ -619,12 +619,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap_0()
-        .p(px(Layout::SETTINGS_GROUP_PADDING))
-        .rounded(px(Layout::PANEL_RADIUS))
-        .border(px(1.))
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
+        .gap_2()
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
         .line_height(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
@@ -654,184 +649,193 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 )
                 .child(update_help(state, help_commands)),
         )
-        .child(super::super::nsh_form::field(
-            move || state.get().colors,
-            text(move || state.with(|_| vega_i18n::t("settings.updater.version"))),
-            Some(text(move || state.get().checked).into_element()),
-            view()
-                .gap_1()
-                .child(text(move || {
-                    vega_i18n::t_args(
-                        "settings.updater.current_version",
-                        &[("version", &state.get().version)],
-                    )
-                }))
-                .child(when(
-                    move || state.get().latest.is_some(),
-                    move || {
-                        text(move || {
-                            vega_i18n::t_args(
-                                "settings.updater.latest_version",
-                                &[("version", &state.get().latest.unwrap_or_default())],
-                            )
-                        })
-                        .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
-                    },
-                )),
-        ))
-        .child(super::super::nsh_form::field(
-            move || state.get().colors,
-            text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
-            None,
-            view()
-                .relative()
-                .self_start()
-                .accessible(false)
-                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                .border(px(1.))
-                .border_color(move || {
-                    state.with(|s| {
-                        crate::nsh::color(
-                            if s.focused_control == Some(Control::Automatic)
-                                && Control::Automatic.enabled(s)
-                            {
-                                s.colors.text_primary
-                            } else if s.automatic {
-                                s.colors.brand_primary
-                            } else {
-                                s.colors.border_subtle
-                            },
-                        )
-                    })
-                })
-                .bg(move || {
-                    state.with(|s| {
-                        let hovered = Control::Automatic.enabled(s)
-                            && !actions.waiting.get()
-                            && switch_pointer.hovered(s);
-                        crate::nsh::color(match (s.automatic, hovered) {
-                            (true, true) => s.colors.brand_primary_strong,
-                            (true, false) => s.colors.brand_primary,
-                            (false, _) if hovered && switch_pointer.pressed(s) => {
-                                s.colors.bg_active
-                            }
-                            (false, true) => s.colors.border_subtle,
-                            (false, false) => s.colors.bg_hover,
-                        })
-                    })
-                })
-                .opacity(move || -> f32 {
-                    if actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase)) {
-                        0.5
-                    } else {
-                        1.
-                    }
-                })
-                .child(
+        .child(
+            super::super::nsh_form::card(move || state.get().colors)
+                .child(super::super::nsh_form::preference(
+                    move || state.get().colors,
+                    text(move || state.with(|_| vega_i18n::t("settings.updater.version"))),
+                    Some(text(move || state.get().checked).into_element()),
                     view()
-                        .absolute()
-                        .top(px(1.))
-                        .left(move || {
-                            px(if state.get().automatic {
-                                Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
-                            } else {
-                                1.
+                        .gap_1()
+                        .child(text(move || {
+                            vega_i18n::t_args(
+                                "settings.updater.current_version",
+                                &[("version", &state.get().version)],
+                            )
+                        }))
+                        .child(when(
+                            move || state.get().latest.is_some(),
+                            move || {
+                                text(move || {
+                                    vega_i18n::t_args(
+                                        "settings.updater.latest_version",
+                                        &[("version", &state.get().latest.unwrap_or_default())],
+                                    )
+                                })
+                                .text_color(move || {
+                                    crate::nsh::color(state.get().colors.text_secondary)
+                                })
+                            },
+                        )),
+                ))
+                .child(super::super::nsh_form::preference(
+                    move || state.get().colors,
+                    text(move || state.with(|_| vega_i18n::t("settings.updater.automatic"))),
+                    None,
+                    view()
+                        .relative()
+                        .self_start()
+                        .accessible(false)
+                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                        .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                        .border(px(1.))
+                        .border_color(move || {
+                            state.with(|s| {
+                                crate::nsh::color(
+                                    if s.focused_control == Some(Control::Automatic)
+                                        && Control::Automatic.enabled(s)
+                                    {
+                                        s.colors.text_primary
+                                    } else if s.automatic {
+                                        s.colors.brand_primary
+                                    } else {
+                                        s.colors.border_subtle
+                                    },
+                                )
                             })
                         })
-                        .size(px(Layout::ICON_SIZE))
-                        .rounded(px(Layout::ICON_SIZE / 2.))
-                        .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
-                )
-                .child(Control::Automatic.target(actions, automatic, switch_pointer)),
-        ))
-        .child(when(
-            move || {
-                state.get().message.as_ref().is_some_and(|message| {
-                    message != vega_i18n::t("settings.updater.verification_notice")
-                })
-            },
-            move || {
-                view().mt_3().child(super::super::nsh_form::status(
-                    move || state.get().colors,
-                    move || {
-                        state.with(|s| match s.phase {
-                            UpdatePhase::Error => s.colors.danger,
-                            UpdatePhase::Ready => s.colors.success,
-                            _ => s.colors.text_secondary,
-                        })
-                    },
-                    text(move || state.get().message.unwrap_or_default()),
-                ))
-            },
-        ))
-        .child(when(
-            move || state.get().progress.is_some(),
-            move || {
-                view()
-                    .mt_2()
-                    .text_color(move || crate::nsh::color(state.get().colors.text_secondary))
-                    .child(text(move || state.get().progress.unwrap_or_default()))
-            },
-        ))
-        .child(
-            view()
-                .mt_3()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .child(action_button(actions, buttons.clone(), Control::Check))
-                .child(action_button(
-                    actions,
-                    buttons.clone(),
-                    Control::ReleasePage,
-                ))
-                .child(when(move || state.get().phase == UpdatePhase::Ready, {
-                    let buttons = buttons.clone();
-                    move || action_button(actions, buttons.clone(), Control::Later)
-                }))
-                .child(when(
-                    move || state.get().phase == UpdatePhase::Ready,
-                    move || action_button(actions, buttons.clone(), Control::Install),
-                )),
-        )
-        .child(when(
-            move || !state.get().notes.is_empty(),
-            move || {
-                let links = links.clone();
-                view()
-                    .gap_2()
-                    .child(
-                        focus_ring(state, false)
-                            .px_3()
-                            .py_2()
-                            .role(AccessibilityRole::Button)
-                            .label(move || {
-                                state.with(|_| {
-                                    vega_i18n::t(if notes_open.get() {
-                                        "settings.updater.hide_notes"
-                                    } else {
-                                        "settings.updater.show_notes"
-                                    })
+                        .bg(move || {
+                            state.with(|s| {
+                                let hovered = Control::Automatic.enabled(s)
+                                    && !actions.waiting.get()
+                                    && switch_pointer.hovered(s);
+                                crate::nsh::color(match (s.automatic, hovered) {
+                                    (true, true) => s.colors.brand_primary_strong,
+                                    (true, false) => s.colors.brand_primary,
+                                    (false, _) if hovered && switch_pointer.pressed(s) => {
+                                        s.colors.bg_active
+                                    }
+                                    (false, true) => s.colors.border_subtle,
+                                    (false, false) => s.colors.bg_hover,
                                 })
                             })
-                            .accessibility_state(move || nsh_core::AccessibilityState {
-                                expanded: Some(notes_open.get()),
-                                ..Default::default()
+                        })
+                        .opacity(move || -> f32 {
+                            if actions.waiting.get() || state.with(|s| s.pending || busy(&s.phase))
+                            {
+                                0.5
+                            } else {
+                                1.
+                            }
+                        })
+                        .child(
+                            view()
+                                .absolute()
+                                .top(px(1.))
+                                .left(move || {
+                                    px(if state.get().automatic {
+                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 3.
+                                    } else {
+                                        1.
+                                    })
+                                })
+                                .size(px(Layout::ICON_SIZE))
+                                .rounded(px(Layout::ICON_SIZE / 2.))
+                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
+                        )
+                        .child(Control::Automatic.target(actions, automatic, switch_pointer)),
+                ))
+                .child(when(
+                    move || {
+                        state.get().message.as_ref().is_some_and(|message| {
+                            message != vega_i18n::t("settings.updater.verification_notice")
+                        })
+                    },
+                    move || {
+                        view().mt_3().child(super::super::nsh_form::status(
+                            move || state.get().colors,
+                            move || {
+                                state.with(|s| match s.phase {
+                                    UpdatePhase::Error => s.colors.danger,
+                                    UpdatePhase::Ready => s.colors.success,
+                                    _ => s.colors.text_secondary,
+                                })
+                            },
+                            text(move || state.get().message.unwrap_or_default()),
+                        ))
+                    },
+                ))
+                .child(when(
+                    move || state.get().progress.is_some(),
+                    move || {
+                        view()
+                            .mt_2()
+                            .text_color(move || {
+                                crate::nsh::color(state.get().colors.text_secondary)
                             })
-                            .on_press(move |_: &nsh_core::PressEvent| {
-                                notes_open.update(|open| *open = !*open)
-                            })
-                            .child(text(move || {
-                                state.with(|_| vega_i18n::t("settings.updater.release_notes"))
-                            })),
-                    )
-                    .child(when(
-                        move || notes_open.get(),
-                        move || {
-                            let links = links.clone();
-                            scroll()
+                            .child(text(move || state.get().progress.unwrap_or_default()))
+                    },
+                ))
+                .child(
+                    view()
+                        .mt_3()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(action_button(actions, buttons.clone(), Control::Check))
+                        .child(action_button(
+                            actions,
+                            buttons.clone(),
+                            Control::ReleasePage,
+                        ))
+                        .child(when(move || state.get().phase == UpdatePhase::Ready, {
+                            let buttons = buttons.clone();
+                            move || action_button(actions, buttons.clone(), Control::Later)
+                        }))
+                        .child(when(
+                            move || state.get().phase == UpdatePhase::Ready,
+                            move || action_button(actions, buttons.clone(), Control::Install),
+                        )),
+                )
+                .child(when(
+                    move || !state.get().notes.is_empty(),
+                    move || {
+                        let links = links.clone();
+                        view()
+                            .gap_2()
+                            .child(
+                                focus_ring(state, false)
+                                    .px_3()
+                                    .py_2()
+                                    .role(AccessibilityRole::Button)
+                                    .label(move || {
+                                        state.with(|_| {
+                                            vega_i18n::t(if notes_open.get() {
+                                                "settings.updater.hide_notes"
+                                            } else {
+                                                "settings.updater.show_notes"
+                                            })
+                                        })
+                                    })
+                                    .accessibility_state(move || nsh_core::AccessibilityState {
+                                        expanded: Some(notes_open.get()),
+                                        ..Default::default()
+                                    })
+                                    .on_press(move |_: &nsh_core::PressEvent| {
+                                        notes_open.update(|open| *open = !*open)
+                                    })
+                                    .child(text(move || {
+                                        state.with(|_| {
+                                            vega_i18n::t("settings.updater.release_notes")
+                                        })
+                                    })),
+                            )
+                            .child(when(
+                                move || notes_open.get(),
+                                move || {
+                                    let links = links.clone();
+                                    scroll()
                                 .w_full()
                                 .max_h(px(Layout::SETTINGS_NOTES_MAX_HEIGHT))
                                 .child(
@@ -861,16 +865,17 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                                             },
                                         ),
                                 )
-                        },
-                    ))
-            },
-        ))
-        .child(when(
-            move || actions.failed.get(),
-            move || {
-                text(move || state.with(|_| vega_i18n::t("ui.command_failed")))
-                    .text_color(move || crate::nsh::color(state.get().colors.danger))
-            },
-        ))
+                                },
+                            ))
+                    },
+                ))
+                .child(when(
+                    move || actions.failed.get(),
+                    move || {
+                        text(move || state.with(|_| vega_i18n::t("ui.command_failed")))
+                            .text_color(move || crate::nsh::color(state.get().colors.danger))
+                    },
+                )),
+        )
         .into_element()
 }

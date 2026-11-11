@@ -62,32 +62,36 @@ impl SettingsView {
             .gap(px(Layout::SETTINGS_SECTION_GAP))
             .child(self.render_appearance(window, cx))
             .child(
-                settings_group(colors, window, cx)
+                settings_section()
+                    .gap_2()
                     .child(section_title(
                         t("settings.defaults.title"),
                         colors.text_primary,
                         window,
                         cx,
                     ))
-                    .child(settings_field(
-                        "settings-defaults-permission-field",
-                        t("settings.defaults.permission_mode"),
-                        None,
-                        self.render_permission_picker(window, cx),
-                        colors,
-                        window,
-                        cx,
-                    ))
-                    .child(settings_field(
-                        "settings-defaults-model-field",
-                        t("settings.defaults.model"),
-                        None,
-                        self.render_default_model(window, cx),
-                        colors,
-                        window,
-                        cx,
-                    ))
-                    .child(self.render_input_preferences(window, cx)),
+                    .child(
+                        settings_group(colors, window, cx)
+                            .child(settings_field(
+                                "settings-defaults-permission-field",
+                                t("settings.defaults.permission_mode"),
+                                None,
+                                self.render_permission_picker(window, cx),
+                                colors,
+                                window,
+                                cx,
+                            ))
+                            .child(settings_field(
+                                "settings-defaults-model-field",
+                                t("settings.defaults.model"),
+                                None,
+                                self.render_default_model(window, cx),
+                                colors,
+                                window,
+                                cx,
+                            ))
+                            .child(self.render_input_preferences(window, cx)),
+                    ),
             )
             .child(self.render_updater(window, cx))
             .into_any_element()
@@ -224,7 +228,7 @@ impl Render for SettingsView {
                             .mx_auto()
                             .flex()
                             .flex_col()
-                            .gap(px(Layout::SETTINGS_TITLE_GAP))
+                            .gap(px(Layout::SETTINGS_SECTION_GAP))
                             .child(self.render_shell_heading(window, cx))
                             .children(
                                 self.pending_section

@@ -1,19 +1,50 @@
 use nsh_core::prelude::*;
 use vega_theme::{Layout, ThemeColors, Typography};
 
+pub(super) fn card(colors: impl Fn() -> ThemeColors + Copy + 'static) -> nsh_core::element::View {
+    view()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .px(px(Layout::SETTINGS_GROUP_PADDING))
+        .py_1()
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border(px(1.))
+        .border_color(move || crate::nsh::color(colors().border_subtle))
+        .bg(move || crate::nsh::color(colors().bg_base))
+}
+
 pub(super) fn field(
     colors: impl Fn() -> ThemeColors + Copy + 'static,
     label: impl IntoElement,
     description: Option<AnyElement>,
     control: impl IntoElement,
 ) -> AnyElement {
-    let mut labels = view()
-        .w(px(Layout::SETTINGS_LABEL_WIDTH))
-        .max_w(relative(1.))
-        .flex_shrink_0()
-        .py_1()
-        .gap_1()
-        .child(label);
+    field_layout(colors, label, description, control, false)
+}
+
+pub(super) fn preference(
+    colors: impl Fn() -> ThemeColors + Copy + 'static,
+    label: impl IntoElement,
+    description: Option<AnyElement>,
+    control: impl IntoElement,
+) -> AnyElement {
+    field_layout(colors, label, description, control, true)
+}
+
+fn field_layout(
+    colors: impl Fn() -> ThemeColors + Copy + 'static,
+    label: impl IntoElement,
+    description: Option<AnyElement>,
+    control: impl IntoElement,
+    trailing: bool,
+) -> AnyElement {
+    let label_column = if trailing {
+        view().flex_1().basis(px(Layout::SETTINGS_LABEL_WIDTH))
+    } else {
+        view().w(px(Layout::SETTINGS_LABEL_WIDTH)).flex_shrink_0()
+    };
+    let mut labels = label_column.max_w(relative(1.)).py_1().gap_1().child(label);
     if let Some(description) = description {
         labels = labels.child(
             view()
@@ -23,6 +54,11 @@ pub(super) fn field(
                 .child(description),
         );
     }
+    let value_column = if trailing {
+        view().flex_row().justify_end().items_center()
+    } else {
+        view().flex_1().basis(px(220.)).justify_center()
+    };
     view()
         .w_full()
         .min_w_0()
@@ -37,13 +73,10 @@ pub(super) fn field(
         .border_color(move || crate::nsh::color(colors().border_subtle))
         .child(labels)
         .child(
-            view()
-                .flex_1()
-                .basis(px(220.))
+            value_column
                 .min_w_0()
                 .max_w(relative(1.))
                 .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-                .justify_center()
                 .child(control),
         )
         .into_element()

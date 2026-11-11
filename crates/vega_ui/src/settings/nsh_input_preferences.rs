@@ -455,7 +455,7 @@ fn field_row(
     description: Option<&'static str>,
     control: AnyElement,
 ) -> AnyElement {
-    super::nsh_form::field(
+    super::nsh_form::preference(
         move || state.get().colors,
         text(move || state.with(|_| vega_i18n::t(key))),
         description.map(|key| text(move || state.with(|_| vega_i18n::t(key))).into_element()),

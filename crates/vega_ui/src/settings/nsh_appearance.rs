@@ -381,7 +381,7 @@ fn control(
 }
 
 fn field_row(state: Signal<Snapshot>, key: &'static str, control: AnyElement) -> AnyElement {
-    super::nsh_form::field(
+    super::nsh_form::preference(
         move || state.get().colors,
         text(move || state.with(|_| vega_i18n::t(key))),
         None,
@@ -401,12 +401,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     view()
         .w_full()
         .flex_shrink_0()
-        .gap_0()
-        .p(px(Layout::SETTINGS_GROUP_PADDING))
-        .border(px(1.))
-        .rounded(px(Layout::PANEL_RADIUS))
-        .border_color(move || crate::nsh::color(state.get().colors.border_subtle))
-        .bg(move || crate::nsh::color(state.get().colors.bg_subtle))
+        .gap_2()
         .text_color(move || crate::nsh::color(state.get().colors.text_primary))
         .text_size(px(Typography::BODY))
         .line_height(px((Typography::BODY * Typography::BODY_LINE_HEIGHT).round()))
@@ -429,120 +424,127 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .line_height(px(Typography::HEADING_BLOCK * Typography::BODY_LINE_HEIGHT))
                 .font_weight(FontWeight(Typography::HEADING_BLOCK_WEIGHT.0 as u16)),
         )
-        .child(field_row(
-            state,
-            "settings.appearance.theme",
-            view()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .child(control(
-                    actions,
-                    commands.clone(),
-                    Action::Theme("light"),
-                    "settings.appearance.light",
+        .child(
+            super::nsh_form::card(move || state.get().colors)
+                .child(field_row(
+                    state,
+                    "settings.appearance.theme",
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(control(
+                            actions,
+                            commands.clone(),
+                            Action::Theme("light"),
+                            "settings.appearance.light",
+                        ))
+                        .child(control(
+                            actions,
+                            commands.clone(),
+                            Action::Theme("dark"),
+                            "settings.appearance.dark",
+                        ))
+                        .child(control(
+                            actions,
+                            commands.clone(),
+                            Action::Theme("system"),
+                            "settings.appearance.system",
+                        ))
+                        .into_element(),
                 ))
-                .child(control(
-                    actions,
-                    commands.clone(),
-                    Action::Theme("dark"),
-                    "settings.appearance.dark",
+                .child(field_row(
+                    state,
+                    "settings.language",
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(control(
+                            actions,
+                            commands.clone(),
+                            Action::Language("en"),
+                            "settings.language.english",
+                        ))
+                        .child(control(
+                            actions,
+                            commands,
+                            Action::Language("zh-CN"),
+                            "settings.language.chinese",
+                        ))
+                        .into_element(),
                 ))
-                .child(control(
-                    actions,
-                    commands.clone(),
-                    Action::Theme("system"),
-                    "settings.appearance.system",
-                ))
-                .into_element(),
-        ))
-        .child(field_row(
-            state,
-            "settings.language",
-            view()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .child(control(
-                    actions,
-                    commands.clone(),
-                    Action::Language("en"),
-                    "settings.language.english",
-                ))
-                .child(control(
-                    actions,
-                    commands,
-                    Action::Language("zh-CN"),
-                    "settings.language.chinese",
-                ))
-                .into_element(),
-        ))
-        .child(field_row(
-            state,
-            "settings.appearance.sidebar",
-            view()
-                .relative()
-                .self_start()
-                .border(px(1.))
-                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                .border_color(move || {
-                    crate::nsh::color(if state.get().focused == Some(Action::Sidebar) {
-                        state.get().colors.accent
-                    } else {
-                        state.get().colors.border_subtle
-                    })
-                })
-                .child(
+                .child(field_row(
+                    state,
+                    "settings.appearance.sidebar",
                     view()
                         .relative()
-                        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-                        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                        .self_start()
+                        .border(px(1.))
                         .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
-                        .bg(move || {
-                            crate::nsh::color(if state.get().sidebar {
-                                state.get().colors.brand_primary
+                        .border_color(move || {
+                            crate::nsh::color(if state.get().focused == Some(Action::Sidebar) {
+                                state.get().colors.accent
                             } else {
-                                state.get().colors.bg_hover
+                                state.get().colors.border_subtle
                             })
                         })
                         .child(
                             view()
-                                .absolute()
-                                .top(px(2.))
-                                .left(move || {
-                                    px(if state.get().sidebar {
-                                        Layout::SETTINGS_SWITCH_WIDTH - Layout::ICON_SIZE - 2.
+                                .relative()
+                                .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                                .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                                .rounded(px(Layout::SETTINGS_SWITCH_HEIGHT / 2.))
+                                .bg(move || {
+                                    crate::nsh::color(if state.get().sidebar {
+                                        state.get().colors.brand_primary
                                     } else {
-                                        2.
+                                        state.get().colors.bg_hover
                                     })
                                 })
-                                .size(px(Layout::ICON_SIZE))
-                                .rounded(px(Layout::ICON_SIZE / 2.))
-                                .bg(move || crate::nsh::color(state.get().colors.bg_elevated)),
-                        ),
-                )
-                .child(keyboard::target(
-                    Action::Sidebar,
-                    actions,
-                    sidebar,
-                    move || {
-                        state.with(|snapshot| {
-                            vega_i18n::t(if snapshot.sidebar {
-                                "settings.sidebar.hide"
-                            } else {
-                                "settings.sidebar.show"
-                            })
-                        })
-                    },
+                                .child(
+                                    view()
+                                        .absolute()
+                                        .top(px(2.))
+                                        .left(move || {
+                                            px(if state.get().sidebar {
+                                                Layout::SETTINGS_SWITCH_WIDTH
+                                                    - Layout::ICON_SIZE
+                                                    - 2.
+                                            } else {
+                                                2.
+                                            })
+                                        })
+                                        .size(px(Layout::ICON_SIZE))
+                                        .rounded(px(Layout::ICON_SIZE / 2.))
+                                        .bg(move || {
+                                            crate::nsh::color(state.get().colors.bg_elevated)
+                                        }),
+                                ),
+                        )
+                        .child(keyboard::target(
+                            Action::Sidebar,
+                            actions,
+                            sidebar,
+                            move || {
+                                state.with(|snapshot| {
+                                    vega_i18n::t(if snapshot.sidebar {
+                                        "settings.sidebar.hide"
+                                    } else {
+                                        "settings.sidebar.show"
+                                    })
+                                })
+                            },
+                        ))
+                        .into_element(),
                 ))
-                .into_element(),
-        ))
-        .child(when(
-            move || actions.failed.get(),
-            move || {
-                text(move || state.with(|_| vega_i18n::t("ui.command_failed")))
-                    .text_color(move || crate::nsh::color(state.get().colors.danger))
-            },
-        ))
+                .child(when(
+                    move || actions.failed.get(),
+                    move || {
+                        text(move || state.with(|_| vega_i18n::t("ui.command_failed")))
+                            .text_color(move || crate::nsh::color(state.get().colors.danger))
+                    },
+                )),
+        )
         .into_element()
 }
