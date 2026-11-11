@@ -213,25 +213,6 @@ impl Element for Leaf {
     }
 }
 
-fn preview_shadows() -> Vec<ns::BoxShadow> {
-    let mut chrome = div().shadow_sm();
-    chrome
-        .style()
-        .box_shadow
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|shadow| ns::BoxShadow {
-            offset_x: ns::px(shadow.offset.x.into()),
-            offset_y: ns::px(shadow.offset.y.into()),
-            blur: ns::px(f32::from(shadow.blur_radius) * 2.),
-            spread: ns::px(shadow.spread_radius.into()),
-            color: crate::nsh::color(shadow.color.into()).into(),
-            inset: shadow.inset,
-        })
-        .collect()
-}
-
 fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::AnyElement {
     let root = ns::view()
         .size_full()
@@ -255,7 +236,7 @@ fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::
                     .font_weight(ns::FontWeight(snapshot.weight))
                     .text_color(crate::nsh::color(colors[2]));
                 let text = if snapshot.italic { text.italic() } else { text };
-                let shadows = preview_shadows();
+                let shadows = super::super::foreground_chrome::small_popup_shadows();
                 ns::view()
                     .size_full()
                     .flex()

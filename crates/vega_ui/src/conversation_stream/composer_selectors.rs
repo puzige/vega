@@ -941,11 +941,16 @@ impl Render for Host {
                 element.track_focus(&self.focus)
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .when(self.snapshot.kind == Kind::Thinking, |host| {
+            .when(popup, |host| {
+                let shadow = if self.snapshot.kind == Kind::Thinking {
+                    super::foreground_chrome::Decoration::ThinkingCardShadow
+                } else {
+                    super::foreground_chrome::Decoration::SelectorMenuShadow
+                };
                 let edge = px(-super::thinking_slider::SHADOW_MARGIN);
                 host.child(
                     div()
-                        .id("thinking-card-shadow")
+                        .id("composer-selector-shadow")
                         .role(gpui_kit::Role::Group)
                         .a11y_synthetic_children(|tree| tree.parent_node().set_hidden())
                         .absolute()
@@ -953,9 +958,7 @@ impl Render for Host {
                         .bottom(edge)
                         .left(edge)
                         .right(edge)
-                        .child(super::foreground_chrome::decoration(
-                            super::foreground_chrome::Decoration::ThinkingCardShadow,
-                        )),
+                        .child(super::foreground_chrome::decoration(shadow)),
                 )
             })
             .child(surface.entity());
