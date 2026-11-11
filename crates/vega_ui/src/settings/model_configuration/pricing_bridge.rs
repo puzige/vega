@@ -16,10 +16,6 @@ impl PartialEq for NavigationDraft {
 }
 
 impl NavigationDraft {
-    pub(in crate::settings) fn refresh(&mut self) {
-        self.observed = self.draft.read();
-    }
-
     pub(in crate::settings) fn can_claim(&self) -> bool {
         !self.observed.frozen && !self.observed.composing.contains(&true)
     }

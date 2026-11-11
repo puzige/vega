@@ -70,6 +70,7 @@ struct Snapshot {
     id: ProjectionId,
     version: ProjectionId,
     visible: bool,
+    guard_focused: bool,
     authority: Arc<Authority>,
     editor: Option<Editor>,
     colors: ThemeColors,
@@ -81,6 +82,7 @@ impl PartialEq for Snapshot {
         self.id.matches(&other.id)
             && self.version.matches(&other.version)
             && self.visible == other.visible
+            && self.guard_focused == other.guard_focused
             && self.authority == other.authority
             && self.narrow == other.narrow
             && self.focus == other.focus
@@ -527,6 +529,7 @@ impl SettingsView {
         Snapshot {
             id: page.map(|p| p.id.clone()).unwrap_or_default(),
             version: page.map(|p| p.version.clone()).unwrap_or_default(),
+            guard_focused: self.navigation_guard_control_focused(),
             visible: provider_visible(
                 self.section,
                 cx.try_global::<super::super::SettingsOpen>()
@@ -746,6 +749,10 @@ impl SettingsView {
     pub(in crate::settings) fn provider_nsh_submission_claimed(&self) -> bool {
         self.provider_management.submission_claimed
     }
+    pub(in crate::settings) fn provider_form_save_unavailable(&self, cx: &App) -> bool {
+        self.provider_management.form && !allowed(&self.provider_snapshot(cx), &Action::Submit(0))
+    }
+
     pub(in crate::settings) fn request_provider_nsh_save_observed(
         &mut self,
         stamp: &DraftStamp,
@@ -1433,7 +1440,7 @@ fn field(
             .border(px(1.))
             .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
             .border_color(move || {
-                crate::nsh::color(if focused.get() {
+                crate::nsh::color(if focused.get() && !actions.state.get().guard_focused {
                     actions.state.get().colors.accent
                 } else {
                     actions.state.get().colors.border_subtle
@@ -2414,7 +2421,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         }
                     },
                 );
-                view()
             },
         ))
         .text_size(px(Typography::BODY))

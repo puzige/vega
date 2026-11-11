@@ -96,6 +96,7 @@ impl SettingsView {
             return;
         }
         self.palette_open = open;
+        self.revoke_navigation_input(cx);
         self.invalidate_help_state();
         self.invalidate_model_controls();
         self.sync_default_model(cx);

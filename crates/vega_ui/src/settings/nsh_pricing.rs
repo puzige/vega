@@ -142,6 +142,7 @@ struct Decision {
 }
 enum Request {
     Decide(Box<Decision>),
+    DraftChanged,
     Layout(f32),
 }
 
@@ -404,6 +405,9 @@ impl SettingsView {
                                         cx.notify();
                                     }
                                     let _ = command.reply.send(accepted);
+                                }
+                                Request::DraftChanged => {
+                                    this.sync_settings_navigation_presentations(cx);
                                 }
                                 Request::Layout(height) if height.is_finite() && height > 0. => {
                                     if let Some(page) = &mut this.pricing_presentation
@@ -764,6 +768,15 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         failed: signal(false),
         edits: signal(0),
     };
+    let changes = commands.clone();
+    effect(move || {
+        if actions.edits.get() != 0 {
+            let changes = changes.clone();
+            spawn(async move {
+                let _ = changes.send(Request::DraftChanged).await;
+            });
+        }
+    });
     let measured = signal(0.0f32);
     let layout = commands.clone();
     let rows = commands.clone();

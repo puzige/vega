@@ -1,3 +1,5 @@
+mod guard_controls;
+
 use gpui_kit::{App, Context, Window};
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot};
@@ -19,6 +21,7 @@ pub(in crate::settings) struct Presentation {
     height: f32,
     submitted: Option<Authority>,
     intent: Intent,
+    guard: Option<guard_controls::Controls>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +64,8 @@ struct Snapshot {
     pane: Pane,
     visible: bool,
     submitted: bool,
+    guard_revision: u64,
+    guard_focus: Option<Action>,
     authority: Authority,
     colors: ThemeColors,
 }
@@ -119,6 +124,7 @@ fn allowed(snapshot: &Snapshot, action: Action) -> bool {
 
 fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
     current.id.matches(&observed.id)
+        && current.guard_revision == observed.guard_revision
         && current.pane == observed.pane
         && current.authority == observed.authority
         && allowed(current, action)
@@ -190,14 +196,40 @@ impl SettingsView {
             .navigation_page(pane)
             .and_then(|page| page.submitted.as_ref())
             .is_some_and(|submitted| *submitted == authority);
+        let guard = self
+            .navigation_page(pane)
+            .and_then(|page| page.guard.as_ref());
         Snapshot {
+            guard_revision: guard.map_or(0, |controls| controls.revision),
+            guard_focus: guard
+                .filter(|controls| controls.keyboard)
+                .and_then(|controls| controls.focused),
             id,
             pane,
-            visible: self.navigation_visible(pane, cx),
+            visible: !self.palette_open && self.navigation_visible(pane, cx),
             submitted,
             authority,
             colors: vega_theme::theme(cx).colors,
         }
+    }
+
+    pub(in crate::settings) fn navigation_guard_control_focused(&self) -> bool {
+        self.settings_navigation_presentation
+            .as_ref()
+            .and_then(|p| p.guard.as_ref())
+            .is_some_and(|guard| guard.focused.is_some())
+    }
+
+    pub(in crate::settings) fn revoke_navigation_input(&mut self, cx: &App) {
+        for pane in [Pane::Guard, Pane::Model] {
+            if let Some(page) = self.navigation_page_mut(pane) {
+                page.id = ProjectionId::new();
+                if let Some(guard) = &mut page.guard {
+                    guard.revision = guard.revision.wrapping_add(1);
+                }
+            }
+        }
+        self.sync_settings_navigation_presentations(cx);
     }
 
     pub(in crate::settings) fn sync_settings_navigation_presentations(&mut self, cx: &App) {
@@ -225,6 +257,13 @@ impl SettingsView {
                     page.submitted = None;
                     snapshot.submitted = false;
                 }
+                if let Some(guard) = &mut page.guard {
+                    if guard.authority != snapshot.authority {
+                        guard.revision = guard.revision.wrapping_add(1);
+                        guard.authority = snapshot.authority.clone();
+                    }
+                    snapshot.guard_revision = guard.revision;
+                }
                 page.surface.publish(snapshot);
             }
         }
@@ -244,6 +283,14 @@ impl SettingsView {
         let current = self.navigation_snapshot(pane, page.id.clone(), cx);
         if !accepts(&current, observed, action) {
             return false;
+        }
+        // An incomplete provider form has no save operation to await.
+        if action == Action::Save
+            && self.section == 0
+            && self.model_capability_draft.is_none()
+            && self.provider_form_save_unavailable(cx)
+        {
+            return true;
         }
         let accepted = match action {
             Action::Save => self.save_settings_before_navigation(
@@ -324,6 +371,13 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::{IntoElement, ParentElement, Styled};
+        if let Some(guard) = self
+            .navigation_page_mut(pane)
+            .as_mut()
+            .and_then(|p| p.guard.as_mut())
+        {
+            guard.keyboard = window.last_input_was_keyboard();
+        }
         self.sync_settings_navigation_presentations(cx);
         if !self.navigation_visible(pane, cx) {
             return gpui_kit::div().into_any_element();
@@ -332,8 +386,12 @@ impl SettingsView {
             let id = ProjectionId::new();
             let snapshot = self.navigation_snapshot(pane, id.clone(), cx);
             let intent = snapshot.authority.intent.clone();
+            let authority = snapshot.authority.clone();
             let (surface, mut requests) = Surface::new_transparent(snapshot, render, window, cx);
+            let guard = (pane == Pane::Guard)
+                .then(|| guard_controls::Controls::new(&surface, authority, window, cx));
             *self.navigation_page_mut(pane) = Some(Presentation {
+                guard,
                 surface,
                 id,
                 height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
@@ -341,6 +399,7 @@ impl SettingsView {
                 intent,
             });
             if pane == Pane::Guard
+                && !self.palette_open
                 && let Some(page) = self.navigation_page(pane)
             {
                 page.surface.focus(window, cx);
@@ -404,10 +463,7 @@ struct Actions {
 
 impl Actions {
     fn send(self, commands: mpsc::Sender<Request>, action: Action) {
-        let mut observed = self.state.get_untracked();
-        if let Some(draft) = &mut observed.authority.pricing_draft {
-            draft.refresh();
-        }
+        let observed = self.state.get_untracked();
         if self.pending.get_untracked() || !allowed(&observed, action) {
             return;
         }
@@ -446,15 +502,17 @@ fn route_button(
     let focused = signal(false);
     target.on_focus_in(move || focused.set(true));
     target.on_focus_out(move || focused.set(false));
+    let enabled = move || !actions.pending.get() && allowed(&actions.state.get(), action);
     view()
         .element_ref(&target)
         .role(AccessibilityRole::Button)
+        .focusable(true)
         .label(move || actions.state.with(|_| vega_i18n::t(key)))
         .accessibility_state(move || nsh_core::AccessibilityState {
             selected: selected(&actions.state.get(), action),
             ..Default::default()
         })
-        .disabled(move || actions.pending.get() || !allowed(&actions.state.get(), action))
+        .disabled(move || !enabled())
         .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
         .py_1()
         .items_center()
@@ -475,6 +533,31 @@ fn route_button(
                 actions.state.get().colors.bg_active
             } else {
                 actions.state.get().colors.bg_base.opacity(0.)
+            })
+        })
+        .style_when(enabled, |style| style.cursor_pointer())
+        .hover(|style| {
+            style.bg(move || {
+                actions.state.with(|s| {
+                    crate::nsh::color(if selected(s, action) {
+                        s.colors.bg_active
+                    } else if enabled() {
+                        s.colors.bg_hover
+                    } else {
+                        s.colors.bg_base.opacity(0.)
+                    })
+                })
+            })
+        })
+        .active(|style| {
+            style.bg(move || {
+                actions.state.with(|s| {
+                    crate::nsh::color(if selected(s, action) || enabled() {
+                        s.colors.bg_active
+                    } else {
+                        s.colors.bg_base.opacity(0.)
+                    })
+                })
             })
         })
         .text_color(move || {
@@ -529,34 +612,16 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             move || {
                 view()
                     .gap(px(Layout::SETTINGS_CONTENT_GAP))
-                    .child(
-                        text(move || state.with(|_| vega_i18n::t("settings.navigation.unsaved")))
-                            .text_color(move || crate::nsh::color(state.get().colors.warning)),
-                    )
-                    .child(
-                        view()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(route_button(
-                                actions,
-                                guard.clone(),
-                                Action::Save,
-                                "settings.navigation.save_continue",
-                            ))
-                            .child(route_button(
-                                actions,
-                                guard.clone(),
-                                Action::Discard,
-                                "settings.navigation.discard",
-                            ))
-                            .child(route_button(
-                                actions,
-                                guard.clone(),
-                                Action::Stay,
-                                "settings.navigation.stay",
-                            )),
-                    )
+                    .child(super::super::nsh_form::status(
+                        move || state.get().colors,
+                        move || state.get().colors.warning,
+                        text(move || state.with(|_| vega_i18n::t("settings.navigation.unsaved"))),
+                    ))
+                    .child(view().flex_row().flex_wrap().gap_2().children(
+                        guard_controls::BUTTONS.map(|(action, key)| {
+                            guard_controls::button(actions, guard.clone(), action, key)
+                        }),
+                    ))
             },
         ))
         .child(when(
