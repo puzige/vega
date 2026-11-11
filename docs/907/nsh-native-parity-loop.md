@@ -453,3 +453,12 @@ macOS 15.8.2 arm64，生产源码 9295c81532a19e5a0a76986d8f1f35192139e74e，rel
 - 浅色生产窗口，输入框旁的加号获得键盘焦点后显示完整圆环，空格展开 Add images。Tab 到权限按钮、空格展开四档权限菜单。悬停 Ask for approval 后胶囊上下圆角均完整。Select project 右边没有灰条，激活后出现项目搜索及选项。该项目按钮悬停较久时 Switch project 提示仍可能叠在标签上。没有在此轮验证长列表滚动、真实 IME 或所有模型名，Composer 整行仍为 PARTIAL。
 - 本机截图标签 composer-chip-297-add-focus、297-add-open、297-permission-open、297-hover-seq3、297-project-hover、297-project-open。三文件非作者终审差异 SHA-256 39954c6dd22d3fea36b37b5d460b6711609c9d8caf296dbc94d024f31c8f25d2。Rust/Cargo 1.98.0，fmt、严格 Clippy、Python 5/15/40 项通过。nextest 0 发现、0 执行。前一 head 12c52bf3 的 CI run 42938259677 成功。
 - 另复现从设置回到同一段已完成会话的延迟。原版 0.1.413 在点击后 573ms 返回的截图已有正文；8c7d0239 在 557ms 截图中只有空消息背景，在 1029ms 截图中已有正文。采样含自动化开销。两次设置返回的操作分别使用原版坐标点击与新版可访问按钮，时刻仅作为对应截图上界。该项仍待修复，证据 back-settings-old1、back-settings-prod2。
+
+## 模型与思考档位弹层
+
+macOS 15.8.2 arm64，生产源码 f48157f53fdb3a2d0ae9273ab11d9fda36ffd03e，release 程序 SHA-256 e38b481e9ee1658278e1ba0a184f7d61e7f93f1a7bcea06c148918ad1fe87a55，UUID 2A99A905-4557-3C71-8569-68788566DFE1。在同机原版 0.1.413 与本次构建使用独立数据目录、相同离线模型与浅色主题。
+
+- 思考档位和模型名按原版组成居中标题区。模型名使用单行省略并提供完整原生辅助功能文本，点击档位进入模型列表。卡片按原版的 254.5pt 宽度、20pt 圆角、上下内边距和两层投影绘制。固定滑杆由实际档位决定填充与滑块。恢复提供方默认值的操作保留在滑杆右侧，增加了一个原版没有的图标按钮。
+- 同机对照时默认值为 Default，灰色轨道无选中滑块。选择 High 后两版均显示蓝色填充和白色滑块。截图为 performance/model-card-old-tier.png、model-card-r307-tier.png。中间构建的焦点框、模型名点击范围和阴影差异均在实窗比较后修订。
+- 源码冻结后四文件非作者终审差异 SHA-256 48fa60a4894995ed6c3c0ff031823eda6c5e44da2e515af4ad7a5b63c986357e。Rust/Cargo 1.98.0，fmt、严格全目标 Clippy 与 Python 5/15/40 项通过。nextest 0 发现/0 执行。Composer 整行为 PARTIAL；真实服务、VoiceOver 播报与整应用验收另行核对。
+- 用户随后明确要求移除常驻圆箭头。此处对 f48157f5 的记录保留为前一轮证据，后续修订以常态无刷新图标为目标。另用较长测试模型名在真实窗口通过 Tab 和空格打开弹层，单行显示，AX 文本保留完整原名。长列表滚轮与快速切换的成功结果尚未核实。
