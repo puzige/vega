@@ -572,3 +572,9 @@ macOS 15.8.2 arm64，1404pt。诊断构建记录按钮激活通过，弹层在�
 原先 FAIL 的菜单展开子项已通过实窗回归：浅色无初始提交的隔离仓库显示搜索、实际空仓状态和禁用的新建分支入口，Esc 关闭后可重开，外部单击可关闭。深色隔离仓库有一个提交、三个本地分支，0.1.413 和本构建都列出 docs-preview、main、release-notes。键入 docs 后只剩 docs-preview，点击后弹层收起，按钮 AX 名称改为 docs-preview；git status --short --branch 独立确认实际分支和干净工作树。操作仅针对临时仓库。诊断日志和新旧截图位于本机 performance/branch-menu。新版仍有触发器鼠标蓝框、可见名称提前省略、深色弹层圆角外黑底和搜索行图标差距；工作区、Composer 整行仍 PARTIAL。
 
 静态独立复核限定差异 SHA-256 1a9a025a971c1ac8b45853239495e93d3d3f5609dcdeedd6885c4ca9ef50a026。Rust/Cargo 1.98.0 release 构建、fmt、严格 Clippy 与 Python 5/15/40 项通过；nextest 16 个程序执行 0 项。隔离启动器已验证并退出。
+
+## 分支胶囊焦点、名称和正常菜单外观
+
+macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704afbbcaf808492100c3111ee2，release SHA-256 e328350f057aafa0febf485be7cf881fe2968645b0881d2d8240402e567fe433。同一仓库对照 0.1.413，鼠标打开时 docs-preview 名称完整，无蓝框；Esc 收起后出现键盘描边，Return 再次打开。正常菜单的圆角透出窗口背景，搜索行恢复放大镜。输入 release 后只剩 release-notes，单击完成切换，Git 独立确认干净的 release-notes 分支，胶囊名称完整。首个本地编译发现 SVG 接口需要字符串借用，修正后重新构建并完成上述回归。
+
+本机 performance/branch-appearance 保存原始窗口截图和同位置裁切。最终搜索行左缘仍比旧版靠右约 4 个物理像素，原版的 Switch branch 悬停提示在本构建中未见。180pt 上限保留，超长分支和故障恢复页未实窗覆盖。Composer 与工作区仍 PARTIAL。独立复核生产差异 SHA-256 16827cb4c14473f1b4c1bf8a07f1dcb82c37687122b3a0fab290632e27159d6c。Rust/Cargo 1.98.0 release 构建、fmt、严格 Clippy 和 Python 5/15/40 项通过；nextest 16 个程序执行 0 项。隔离启动器已验证并退出。
