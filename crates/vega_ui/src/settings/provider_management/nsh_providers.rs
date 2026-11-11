@@ -2491,9 +2491,12 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         ))
         .child(when(
             move || {
-                !state.get().authority.unavailable
-                    && state.get().authority.model.is_none()
-                    && !state.get().authority.form
+                state.with(|s| {
+                    s.visible
+                        && !s.authority.unavailable
+                        && s.authority.model.is_none()
+                        && !s.authority.form
+                })
             },
             move || {
                 let commands = commands.clone();
