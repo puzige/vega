@@ -279,10 +279,10 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     }
                     let commands = press_commands.clone();
                     let observed = observed.clone();
+                    let observation = revision.get_untracked();
+                    let native = observed.native_revision.action.load(Ordering::Acquire);
                     command_owner.run(|| {
                         ns::spawn(async move {
-                            let observation = revision.get_untracked();
-                            let native = observed.native_revision.action.load(Ordering::Acquire);
                             let (Some(control), Some(container)) =
                                 (target.measure().await, viewport.measure().await)
                             else {
@@ -460,11 +460,10 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         pointer: Rc::new(move |position| {
                             let commands = drag_commands.clone();
                             let observed = observed.clone();
+                            let observation = revision.get_untracked();
+                            let native = observed.native_revision.action.load(Ordering::Acquire);
                             command_owner.run(|| {
                                 ns::spawn(async move {
-                                    let observation = revision.get_untracked();
-                                    let native =
-                                        observed.native_revision.action.load(Ordering::Acquire);
                                     let (Some(control), Some(container)) =
                                         (target.measure().await, viewport.measure().await)
                                     else {

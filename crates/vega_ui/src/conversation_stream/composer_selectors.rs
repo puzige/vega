@@ -380,7 +380,17 @@ impl Host {
     fn sync_snapshot(&mut self, mut snapshot: Snapshot, cx: &App) -> bool {
         let changed = !self.snapshot.same_source(&snapshot);
         if changed {
-            self.stop(cx);
+            if self.fixed_trigger()
+                && self.snapshot.epoch.matches(&snapshot.epoch)
+                && self.snapshot.source.thread.id == snapshot.source.thread.id
+                && self.snapshot.source.input == snapshot.source.input
+            {
+                snapshot.geometry = self.snapshot.geometry;
+                snapshot.mount = self.snapshot.mount.clone();
+                self.activation_focus = None;
+            } else {
+                self.stop(cx);
+            }
             self.height = None;
         } else {
             snapshot.id = self.snapshot.id.clone();
@@ -408,6 +418,25 @@ impl Host {
         if let Some(surface) = self.surface.take() {
             surface.entity().read(cx).stop();
         }
+        self.invalidate_interaction();
+    }
+
+    fn fixed_trigger(&self) -> bool {
+        matches!(
+            self.snapshot.kind,
+            Kind::PermissionTrigger | Kind::ModelTrigger
+        )
+    }
+
+    fn window_changed(&mut self, cx: &App) {
+        if self.fixed_trigger() {
+            self.invalidate_interaction();
+        } else {
+            self.stop(cx);
+        }
+    }
+
+    fn invalidate_interaction(&mut self) {
         self.published = None;
         self.snapshot.id = ProjectionId::new();
         self.snapshot.intent = ProjectionId::new();
@@ -800,12 +829,12 @@ impl RenderOnce for Native {
             let mut subscriptions = vec![cx.on_release(|host: &mut Host, cx| host.stop(cx))];
             subscriptions.push(
                 cx.observe_window_activation(window, |host: &mut Host, _, cx| {
-                    host.stop(cx);
+                    host.window_changed(cx);
                     cx.notify();
                 }),
             );
             subscriptions.push(cx.observe_window_bounds(window, |host: &mut Host, _, cx| {
-                host.stop(cx);
+                host.window_changed(cx);
                 cx.notify();
             }));
             subscriptions.push(
