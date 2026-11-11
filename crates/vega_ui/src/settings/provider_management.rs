@@ -947,7 +947,7 @@ impl SettingsView {
                     }
                     Err(error) => {
                         if generation == this.provider_management.generation {
-                            this.error = Some(SettingsText::Provider(error));
+                            this.error = Some(SettingsText::ProviderRead(error));
                         }
                     }
                 }

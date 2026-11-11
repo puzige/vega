@@ -167,6 +167,7 @@ pub(crate) struct McpSettingsState {
     revoke_in_flight: bool,
     pub(super) message: Option<SettingsText>,
     pub(super) message_error: bool,
+    pub(super) read_failed: bool,
     pub(crate) editor: Option<McpEditor>,
     pub(crate) confirmation: Option<McpConfirmation>,
     pub(crate) transport: McpTransportChoice,
@@ -204,6 +205,7 @@ impl McpSettingsState {
             revoke_in_flight: false,
             message: None,
             message_error: false,
+            read_failed: false,
             editor: None,
             confirmation: None,
             transport: McpTransportChoice::Local,
@@ -535,6 +537,7 @@ impl SettingsView {
         self.mcp.loading = false;
         self.mcp.message = None;
         self.mcp.message_error = false;
+        self.mcp.read_failed = false;
         self.mcp.bearer_input.update(cx, TextInput::clear);
         self.mcp.env_secret_input.update(cx, TextInput::clear);
         if self.mcp.service.is_some() {
@@ -552,6 +555,7 @@ impl SettingsView {
             (self.mcp.service.as_ref(), self.mcp.oauth_flow_id.take())
             && let Err(error) = service.cancel_oauth(&flow_id)
         {
+            self.mcp.read_failed = false;
             self.mcp.message = Some(mcp_error_label(error));
             self.mcp.message_error = true;
         }
@@ -928,6 +932,19 @@ impl SettingsView {
         }
     }
 
+    pub(super) fn refresh_mcp_on_entry(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if !self.mcp.busy
+            && self.mcp.editor.is_none()
+            && self.mcp.confirmation.is_none()
+            && self.mcp.oauth_flow_id.is_none()
+            && self.mcp.oauth_preparation.is_none()
+            && self.mcp.oauth_discovery.is_none()
+            && !self.mcp.message_error
+        {
+            self.mcp_operation(McpOperation::Reload, cx);
+        }
+    }
+
     fn mcp_operation(&mut self, operation: McpOperation, cx: &mut gpui_kit::Context<Self>) {
         let Some(service) = self.mcp.service.clone() else {
             return;
@@ -943,7 +960,9 @@ impl SettingsView {
                 | McpOperation::Remove { .. }
                 | McpOperation::OAuthDisconnect { .. }
         );
-        self.mcp.loading = matches!(operation, McpOperation::Reload);
+        let reading = matches!(operation, McpOperation::Reload);
+        self.mcp.loading = reading;
+        self.mcp.read_failed = false;
         self.mcp.message = None;
         self.mcp.message_error = false;
         let generation = self.mcp.generation;
@@ -1052,6 +1071,7 @@ impl SettingsView {
             self.mcp.revoke_in_flight = false;
             self.mcp.loading = false;
             self.mcp.message_error = true;
+            self.mcp.read_failed = reading;
             self.mcp.message = Some(SettingsText::key("settings.mcp.worker_failed"));
             cx.notify();
             return;
@@ -1099,6 +1119,7 @@ impl SettingsView {
                 if let Some(draft) = &this.mcp.nsh_draft {
                     draft.release();
                 }
+                this.mcp.read_failed = refreshed.is_err() || step_up_offers.is_err();
                 match refreshed {
                     Ok(servers) => {
                         this.mcp.servers = servers;
@@ -1193,7 +1214,7 @@ impl SettingsView {
                                 }
                             }
                         }
-                        if this.mcp.message.is_none() {
+                        if !reading && this.mcp.message.is_none() {
                             let row = enabled_id
                                 .as_deref()
                                 .and_then(|id| this.mcp.servers.iter().find(|row| row.id == id));
@@ -1208,6 +1229,7 @@ impl SettingsView {
                         }
                     }
                     Err(error) => {
+                        this.mcp.read_failed |= reading;
                         if let Some(flow_id) = cleanup_flow.as_ref() {
                             let _ = cleanup_service.cancel_oauth(flow_id);
                             this.mcp.oauth_preparation = None;

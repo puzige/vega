@@ -158,12 +158,7 @@ fn editing(snapshot: &Snapshot) -> bool {
 
 fn allowed(snapshot: &Snapshot, action: &Action) -> bool {
     match action {
-        Action::Reload => !matches!(
-            &*snapshot.projection,
-            PricingSettingsProjection::Saving { .. }
-                | PricingSettingsProjection::Loading
-                | PricingSettingsProjection::Reloading
-        ),
+        Action::Reload => matches!(&*snapshot.projection, PricingSettingsProjection::Invalid(_)),
         Action::Retry | Action::Discard => matches!(
             &*snapshot.projection,
             PricingSettingsProjection::Ready {
@@ -493,7 +488,7 @@ impl Actions {
 
 fn label(snapshot: &Snapshot, action: &Action) -> &'static str {
     vega_i18n::t(match action {
-        Action::Reload => "settings.action.reload",
+        Action::Reload => "ui.retry",
         Action::Add => "settings.pricing.add_custom",
         Action::Edit(_) => "settings.action.edit",
         Action::Secondary(entry) => {
@@ -768,6 +763,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         failed: signal(false),
         edits: signal(0),
     };
+    let retry = commands.clone();
     let changes = commands.clone();
     effect(move || {
         if actions.edits.get() != 0 {
@@ -875,7 +871,10 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     view()
                         .flex_row()
                         .gap_2()
-                        .child(button(actions, commands.clone(), || Action::Reload))
+                        .child(when(
+                            move || allowed(&state.get(), &Action::Reload),
+                            move || button(actions, retry.clone(), || Action::Reload),
+                        ))
                         .child(button(actions, commands.clone(), || Action::Add)),
                 ),
         )

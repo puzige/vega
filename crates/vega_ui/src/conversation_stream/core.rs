@@ -1772,6 +1772,19 @@ impl ConversationStream {
             .unwrap_or(&self.composer_defaults.model)
     }
 
+    pub(super) fn can_restore_default_effort(&self, cx: &App) -> bool {
+        let slider = self.thinking_slider.read(cx);
+        slider.has_tiers() && !slider.is_provider_default()
+    }
+
+    pub(super) fn restore_default_effort(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_restore_default_effort(cx) {
+            self.thinking_slider
+                .update(cx, |slider, cx| slider.select_provider_default(cx));
+            self.on_model_close(&CloseModel, window, cx);
+        }
+    }
+
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
@@ -1808,6 +1821,8 @@ impl ConversationStream {
             .cloned()
         {
             self.select_model_option(&option.model, cx);
+        } else if self.model_selector_highlight == self.model_options.len() {
+            self.restore_default_effort(window, cx);
         }
         cx.notify();
     }
@@ -1886,7 +1901,9 @@ impl ConversationStream {
         if self.model_picker_level != ModelPickerLevel::List || self.trusted_action_busy {
             return;
         }
-        if self.model_selector_highlight + 1 < self.model_options.len() {
+        if self.model_selector_highlight + 1
+            < self.model_options.len() + usize::from(self.can_restore_default_effort(cx))
+        {
             self.model_selector_highlight += 1;
         }
         self.model_menu_scroll

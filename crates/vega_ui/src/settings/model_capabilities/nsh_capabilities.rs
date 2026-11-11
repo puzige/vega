@@ -90,7 +90,9 @@ enum Request {
 
 fn allowed(snapshot: &Snapshot, action: Action) -> bool {
     if matches!(action, Action::Reload) {
-        return !matches!(snapshot.phase, Phase::Saving(..));
+        return snapshot.error.is_some()
+            && (snapshot.draft.is_none() || snapshot.rows.is_empty())
+            && !matches!(snapshot.phase, Phase::Saving(..));
     }
     if !matches!(snapshot.phase, Phase::Ready(_)) {
         return false;
@@ -251,8 +253,14 @@ impl SettingsView {
                                         });
                                     if accepted {
                                         match command.action {
-                                            Action::Reload => cx
-                                                .emit(super::super::ModelCapabilityReloadRequested),
+                                            Action::Reload => {
+                                                if this.model_capability_draft.is_some() {
+                                                    this.cancel_model_capability(cx);
+                                                }
+                                                cx.emit(
+                                                    super::super::ModelCapabilityReloadRequested,
+                                                );
+                                            }
                                             Action::Effort(index, effort) => {
                                                 this.toggle_capability_effort(index, effort, cx)
                                             }
@@ -326,6 +334,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -339,26 +348,29 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
 
 fn action_label(snapshot: &Snapshot, action: Action) -> String {
     match action {
-        Action::Reload => vega_i18n::t("settings.action.reload").into(),
+        Action::Reload if snapshot.draft.is_some() => vega_i18n::t("ui.discard_and_reload").into(),
+        Action::Reload => vega_i18n::t("ui.retry").into(),
         Action::Save(_) => vega_i18n::t("settings.action.save").into(),
         Action::Cancel(_) => vega_i18n::t("settings.action.cancel").into(),
         Action::Reset(_) => vega_i18n::t("settings.capabilities.reset").into(),
@@ -490,6 +502,7 @@ fn error_key(error: ModelCapabilitySettingsErrorCode) -> &'static str {
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
@@ -520,7 +533,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             move || state.get().pane == Pane::Efforts,
             move || text(move || state.with(|_| vega_i18n::t("settings.capabilities.efforts"))),
         ))
-        .child(control(actions, commands, || Action::Reload))
         .child(when(
             move || !matches!(state.get().phase, Phase::Ready(_)),
             move || {
@@ -548,6 +560,10 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 })
                 .text_color(move || crate::nsh::color(state.get().colors.danger))
             },
+        ))
+        .child(when(
+            move || allowed(&state.get(), Action::Reload),
+            move || control(actions, commands.clone(), || Action::Reload),
         ))
         .child(each(
             move || state.get().rows,

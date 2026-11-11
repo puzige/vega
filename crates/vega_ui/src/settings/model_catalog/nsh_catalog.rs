@@ -87,7 +87,9 @@ fn allowed(snapshot: &Snapshot, action: &Action) -> bool {
     }
     match action {
         Action::Toggle | Action::Help => true,
-        Action::Refresh => !snapshot.projection.refreshing,
+        Action::Refresh => {
+            (snapshot.open || snapshot.error.is_some()) && !snapshot.projection.refreshing
+        }
         _ if !snapshot.open || snapshot.projection.refreshing => false,
         Action::Mapping => true,
         Action::Unmap => snapshot.projection.mapped.is_some(),
@@ -344,17 +346,19 @@ fn content(snapshot: &Snapshot, query: &str) -> Content {
         Action::Toggle,
         snapshot.open,
     );
-    add(
-        "refresh",
-        t(if snapshot.projection.refreshing {
-            "settings.catalog.reading"
-        } else {
-            "settings.catalog.refresh"
-        })
-        .into(),
-        Action::Refresh,
-        false,
-    );
+    if snapshot.open || snapshot.error.is_some() {
+        add(
+            "refresh",
+            t(if snapshot.projection.refreshing {
+                "settings.catalog.reading"
+            } else {
+                "settings.catalog.refresh"
+            })
+            .into(),
+            Action::Refresh,
+            false,
+        );
+    }
     add(
         "help",
         t("settings.catalog.help").into(),
@@ -633,6 +637,7 @@ fn content(snapshot: &Snapshot, query: &str) -> Content {
     result
 }
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    let owner = nsh_core::element::Owner::current();
     let pending = signal(false);
     let failed = signal(false);
     let query = signal(String::new());
@@ -773,19 +778,21 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         }
                         pending.set(true);
                         let commands = commands.clone();
-                        spawn(async move {
-                            let (reply, response) = oneshot::channel();
-                            let accepted = commands
-                                .send(Request::Decide(Box::new(Decision {
-                                    observed: (*observed).clone(),
-                                    action: control.action,
-                                    reply,
-                                })))
-                                .await
-                                .is_ok()
-                                && matches!(response.await, Ok(true));
-                            failed.set(!accepted);
-                            pending.set(false);
+                        owner.run(|| {
+                            spawn(async move {
+                                let (reply, response) = oneshot::channel();
+                                let accepted = commands
+                                    .send(Request::Decide(Box::new(Decision {
+                                        observed: (*observed).clone(),
+                                        action: control.action,
+                                        reply,
+                                    })))
+                                    .await
+                                    .is_ok()
+                                    && matches!(response.await, Ok(true));
+                                failed.set(!accepted);
+                                pending.set(false);
+                            });
                         });
                     })
                     .child(text(move || item.get().0.label))

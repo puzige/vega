@@ -17,6 +17,7 @@ pub(crate) struct SkillsSettingsState {
     projection: Option<SkillSettingsProjection>,
     root_preview: Option<SkillRootPreview>,
     busy: bool,
+    read_failed: bool,
     message: Option<SettingsText>,
     request_generation: u64,
     presentation: Option<nsh_skills::Presentation>,
@@ -107,7 +108,9 @@ impl SettingsView {
     }
 
     fn skills_operation(&mut self, operation: SkillOperation, cx: &mut gpui_kit::Context<Self>) {
-        if matches!(&operation, SkillOperation::Reload) {
+        let reading = matches!(&operation, SkillOperation::Reload);
+        self.skills.read_failed = false;
+        if reading {
             self.skills.projection = None;
         }
         let Some(service) = self.skills.service.clone() else {
@@ -162,6 +165,7 @@ impl SettingsView {
                         this.skills.root_preview = Some(preview);
                     }
                     Err(error) => {
+                        this.skills.read_failed = reading;
                         this.skills.message = Some(skill_error_label(error));
                     }
                 }
@@ -189,6 +193,7 @@ impl SettingsView {
                         {
                             return;
                         }
+                        this.skills.read_failed = false;
                         this.skills.message =
                             Some(SettingsText::key("settings.skills.folder_failed"));
                         cx.notify();

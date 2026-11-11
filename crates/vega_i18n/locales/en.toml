@@ -529,7 +529,7 @@
 "settings.usage.last_7_days" = "Last 7 days"
 "settings.usage.lifetime_cost" = "Lifetime estimated cost"
 "settings.usage.lifetime_tokens" = "Lifetime tokens"
-"settings.usage.load_failed" = "Could not load usage. Refresh to try again."
+"settings.usage.load_failed" = "Could not load usage."
 "settings.usage.loading" = "Loading usage…"
 "settings.usage.longest_streak" = "Longest streak · Last 365 days"
 "settings.usage.model_usage" = "Model usage"

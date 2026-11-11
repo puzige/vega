@@ -360,23 +360,6 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 );
                 continue;
             }
-            if matches!(row.action, Action::Default) {
-                controls.push(
-                    control
-                        .absolute()
-                        .right(ns::px(1.))
-                        .top(ns::px(0.))
-                        .size(ns::px(24.))
-                        .min_h(ns::px(24.))
-                        .p(ns::px(0.))
-                        .justify_center()
-                        .rounded_full()
-                        .tooltip(ns::text(row.label.clone()))
-                        .child(icon(crate::icons::Icon::Refresh, foreground))
-                        .into_element(),
-                );
-                continue;
-            }
             if permission_option && show_ring {
                 control = control
                     .outline(ns::px(1.))
@@ -454,8 +437,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         }
         if snapshot.kind == Kind::Thinking {
             let title = controls.remove(0);
-            let default = controls.pop();
-            let mut track_row = ns::view().relative().w_full().items_center().child({
+            let track = {
                 let target = track_target;
                 let drag_commands = commands.clone();
                 let observed = snapshot.clone();
@@ -519,11 +501,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         }),
                     },
                 )
-            });
-            if let Some(default) = default {
-                track_row = track_row.child(default);
-            }
-            content = content.child(title).child(track_row);
+            };
+            content = content.child(title).child(track);
         } else if snapshot.kind == Kind::PermissionMenu {
             content = content.child(ns::view().flex_col().p_1().children(controls));
         } else {

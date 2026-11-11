@@ -109,6 +109,7 @@ struct Authority {
     expanded: HashSet<String>,
     message: Option<String>,
     message_error: bool,
+    read_failed: bool,
 }
 #[derive(Clone)]
 struct Editor {
@@ -204,7 +205,6 @@ fn blocks(authority: &Authority) -> Vec<Block> {
             McpAction::Add(McpTransportChoice::Remote),
             idle,
         ),
-        control(t("settings.mcp.refresh"), McpAction::Reload, idle),
     ];
     let mut result = vec![top];
     let mut status = block("availability", "");
@@ -233,6 +233,10 @@ fn blocks(authority: &Authority) -> Vec<Block> {
         let mut item = block("message", "");
         item.lines.push(message.clone());
         item.warning = authority.message_error;
+        if authority.read_failed && item.warning && idle {
+            item.controls
+                .push(control(t("settings.mcp.refresh"), McpAction::Reload, true));
+        }
         result.push(item);
     }
     if let Some(confirmation) = &authority.confirmation
@@ -704,6 +708,7 @@ impl SettingsView {
                 expanded: self.mcp.expanded_rejections.clone(),
                 message: self.mcp.message.as_ref().map(|message| message.render()),
                 message_error: self.mcp.message_error,
+                read_failed: self.mcp.read_failed,
             }),
             editor: self
                 .mcp
@@ -884,6 +889,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -912,20 +918,22 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    secret,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        secret,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
@@ -1334,6 +1342,7 @@ fn form(actions: Actions, commands: mpsc::Sender<Request>, editor: Editor) -> An
 }
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
@@ -1397,10 +1406,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
             |(block, _)| block.key.clone(),
             move |entry, _| {
                 let block = computed(move || entry.get().0);
-                if matches!(
-                    block.get_untracked().key.as_str(),
-                    "availability" | "message"
-                ) {
+                if block.get_untracked().key == "availability" {
                     return view().child(each(
                         move || {
                             block
@@ -1474,17 +1480,32 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         },
                         |(index, _)| *index,
                         move |line, _| {
-                            text(move || line.get().1).text_color(move || {
-                                let block = block.get();
-                                crate::nsh::color(if block.key == "message" && block.warning {
-                                    state.get().colors.danger
-                                } else if block.warning || block.emphasized.contains(&line.get().0)
-                                {
-                                    state.get().colors.warning
-                                } else {
-                                    state.get().colors.text_secondary
+                            if block.get_untracked().key == "message" {
+                                return super::super::nsh_form::status(
+                                    move || state.get().colors,
+                                    move || {
+                                        if block.get().warning {
+                                            state.get().colors.danger
+                                        } else {
+                                            state.get().colors.text_secondary
+                                        }
+                                    },
+                                    text(move || line.get().1),
+                                );
+                            }
+                            text(move || line.get().1)
+                                .text_color(move || {
+                                    let block = block.get();
+                                    crate::nsh::color(
+                                        if block.warning || block.emphasized.contains(&line.get().0)
+                                        {
+                                            state.get().colors.warning
+                                        } else {
+                                            state.get().colors.text_secondary
+                                        },
+                                    )
                                 })
-                            })
+                                .into_element()
                         },
                     ))
                     .child(when(

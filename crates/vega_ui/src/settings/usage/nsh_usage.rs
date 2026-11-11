@@ -68,7 +68,7 @@ fn accepts(current: &Snapshot, observed: &Snapshot, action: Action) -> bool {
         && current.mode == observed.mode
         && current.selected == observed.selected
         && match action {
-            Action::Refresh => !current.loading,
+            Action::Refresh => current.error && !current.loading,
             Action::Range(days) => matches!(days, 7 | 30),
             Action::Mode(mode) => mode <= 2,
             Action::Day(index) => index < day_count(current),
@@ -215,6 +215,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -228,19 +229,21 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
@@ -880,12 +883,14 @@ fn render_data(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElement 
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
     };
     let measured = signal(0.0f32);
     let layout = commands.clone();
+    let retry = commands.clone();
     let data_commands = commands.clone();
     view()
         .w_full()
@@ -916,12 +921,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                 .child(control(
                     actions,
                     commands.clone(),
-                    Action::Refresh,
-                    "settings.action.refresh",
-                ))
-                .child(control(
-                    actions,
-                    commands.clone(),
                     Action::Range(7),
                     "settings.usage.last_7_days",
                 ))
@@ -942,8 +941,13 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         .child(when(
             move || state.get().error,
             move || {
-                text(move || state.with(|_| vega_i18n::t("settings.usage.load_failed")))
-                    .text_color(move || crate::nsh::color(state.get().colors.danger))
+                view()
+                    .gap_2()
+                    .child(
+                        text(move || state.with(|_| vega_i18n::t("settings.usage.load_failed")))
+                            .text_color(move || crate::nsh::color(state.get().colors.danger)),
+                    )
+                    .child(control(actions, retry.clone(), Action::Refresh, "ui.retry"))
             },
         ))
         .child(when(
@@ -952,11 +956,12 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
         ))
         .child(when(
             move || {
-                state
-                    .get()
-                    .dashboard
-                    .as_ref()
-                    .is_some_and(|data| data.lifetime.calls == 0)
+                state.with(|s| {
+                    !s.error
+                        && s.dashboard
+                            .as_ref()
+                            .is_some_and(|data| data.lifetime.calls == 0)
+                })
             },
             move || {
                 super::super::nsh_form::status(

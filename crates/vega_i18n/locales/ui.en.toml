@@ -641,6 +641,7 @@
 "ui.searching" = "Searching…"
 "ui.searching_content" = "Searching content"
 "ui.searching_en" = "Searching"
+"ui.use_default_effort" = "Use default reasoning effort"
 "ui.select_effort" = "Select effort"
 "ui.select_model" = "Select model"
 "ui.select_open_tab_change_scope_esc_close" = "↑↓ Select   ↵ Open   Tab Change scope   Esc Close"
@@ -928,3 +929,4 @@
 "ui.ordinary_send.configuration_busy" = "Configuration is temporarily busy. Retry shortly."
 "ui.ordinary_send.safety_storage_failed" = "Message preparation could not complete the safety check because local storage or configuration is unavailable. Retry shortly."
 "ui.ordinary_send.safety_state_failed" = "Message preparation could not validate its safety state. Retry; if it persists, reopen the conversation."
+"ui.discard_and_reload" = "Discard draft and reload"

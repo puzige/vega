@@ -86,6 +86,26 @@ impl SettingsView {
             }
             SettingsDestination::ModelSection(section) => section,
         };
+        if self.section != section
+            && section == 3
+            && self.pricing_editor.is_none()
+            && matches!(
+                &self.pricing,
+                PricingSettingsProjection::Ready {
+                    draft_reason: None,
+                    error: None,
+                    ..
+                }
+            )
+        {
+            cx.emit(PricingReloadRequested);
+        }
+        if self.section != section && section == 4 {
+            self.request_usage_reload(cx);
+        }
+        if self.section != section && section == 5 {
+            self.refresh_mcp_on_entry(cx);
+        }
         self.skills_section_changed(section, cx);
         self.section = section;
         self.pending_section = None;

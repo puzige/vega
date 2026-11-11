@@ -22,6 +22,7 @@ struct Authority {
     preview: Option<SkillRootPreview>,
     busy: bool,
     available: bool,
+    read_failed: bool,
     sources: bool,
     add: bool,
     message: Option<String>,
@@ -386,7 +387,11 @@ fn rows(snapshot: &Snapshot, query: &str) -> Vec<Row> {
 fn allowed(snapshot: &Snapshot, action: &SkillAction) -> bool {
     match action {
         SkillAction::ToggleSources | SkillAction::ToggleAdd => true,
-        SkillAction::Reload => snapshot.authority.available && !snapshot.authority.busy,
+        SkillAction::Reload => {
+            snapshot.authority.available
+                && !snapshot.authority.busy
+                && snapshot.authority.read_failed
+        }
         _ if snapshot.authority.busy || !snapshot.authority.available => false,
         SkillAction::DismissPreview => snapshot.authority.preview.is_some(),
         SkillAction::Mutate(SkillSettingsMutation::LinkRoot { preview_token }) => snapshot
@@ -494,6 +499,7 @@ impl SettingsView {
                 preview: self.skills.root_preview.clone(),
                 busy: self.skills.busy,
                 available: self.skills.service.is_some(),
+                read_failed: self.skills.read_failed,
                 sources: self.skills.show_sources,
                 add: self.skills.show_add,
                 message: self.skills.message.as_ref().map(|message| message.render()),
@@ -583,6 +589,7 @@ impl SettingsView {
 
 #[derive(Clone, Copy)]
 struct Actions {
+    owner: nsh_core::element::Owner,
     state: Signal<Snapshot>,
     pending: Signal<bool>,
     failed: Signal<bool>,
@@ -596,19 +603,21 @@ impl Actions {
         }
         self.pending.set(true);
         self.failed.set(false);
-        spawn(async move {
-            let (reply, response) = oneshot::channel();
-            let accepted = commands
-                .send(Request::Decide(Box::new(Decision {
-                    observed,
-                    action,
-                    reply,
-                })))
-                .await
-                .is_ok()
-                && matches!(response.await, Ok(true));
-            self.failed.set(!accepted);
-            self.pending.set(false);
+        self.owner.run(|| {
+            spawn(async move {
+                let (reply, response) = oneshot::channel();
+                let accepted = commands
+                    .send(Request::Decide(Box::new(Decision {
+                        observed,
+                        action,
+                        reply,
+                    })))
+                    .await
+                    .is_ok()
+                    && matches!(response.await, Ok(true));
+                self.failed.set(!accepted);
+                self.pending.set(false);
+            });
         });
     }
 }
@@ -682,6 +691,7 @@ fn control(
 
 fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
     let actions = Actions {
+        owner: nsh_core::element::Owner::current(),
         state,
         pending: signal(false),
         failed: signal(false),
@@ -694,6 +704,7 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
     let layout = commands.clone();
     let measured = signal(0.0f32);
     let rows_commands = commands.clone();
+    let retry = commands.clone();
     view()
         .w_full()
         .flex_shrink_0()
@@ -732,7 +743,6 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                         .gap_2()
                         .children(
                             [
-                                (SkillAction::Reload, "settings.action.refresh"),
                                 (SkillAction::ToggleSources, "settings.skills.sources"),
                                 (SkillAction::ToggleAdd, "settings.skills.add"),
                             ]
@@ -781,6 +791,23 @@ fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElemen
                     })
                 }),
         )
+        .child(when(
+            move || allowed(&state.get(), &SkillAction::Reload),
+            move || {
+                control(
+                    actions,
+                    retry.clone(),
+                    move || {
+                        (
+                            state.with(|_| vega_i18n::t("ui.retry").to_owned()),
+                            SkillAction::Reload,
+                            None,
+                        )
+                    },
+                    move || state.get().authority,
+                )
+            },
+        ))
         .child(when(
             move || state.get().authority.busy,
             move || text(move || state.with(|_| vega_i18n::t("settings.skills.checking"))),

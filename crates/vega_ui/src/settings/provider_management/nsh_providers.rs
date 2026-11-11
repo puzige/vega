@@ -50,6 +50,7 @@ struct Authority {
     saving: bool,
     network: bool,
     path: bool,
+    reload_needed: bool,
     candidates: Option<Vec<String>>,
     checked: Vec<String>,
     statuses: Vec<(String, String)>,
@@ -230,11 +231,13 @@ fn controls(s: &Snapshot) -> Vec<Control> {
     let show_list = !s.narrow || !a.detail;
     if show_list {
         out.push(control(t("settings.provider.add"), Command::Add, idle));
-        out.push(control(
-            t("settings.provider.reload"),
-            Command::Reload,
-            idle && a.path,
-        ));
+        if a.reload_needed {
+            out.push(control(
+                t("settings.provider.reload"),
+                Command::Reload,
+                idle && a.path,
+            ));
+        }
         out.push(control(
             t("settings.provider.price_library"),
             Command::PriceLibrary,
@@ -566,6 +569,10 @@ impl SettingsView {
                 saving: self.provider_is_saving(),
                 network: state.cancel.is_some(),
                 path: self.config_path.is_some(),
+                reload_needed: self.error.as_ref().is_some_and(|error| {
+                    matches!(error, SettingsText::ProviderRead(_))
+                        || error.is_key("settings.config.load_failed")
+                }),
                 candidates: state.candidates.clone(),
                 checked: state.checked.iter().cloned().collect(),
                 statuses: state
@@ -1200,10 +1207,10 @@ fn button(
         &action,
         Action::Submit(_) | Action::Command(Command::SaveModel)
     );
-    let reload = matches!(&action, Action::Command(Command::Reload));
+
     let quiet = matches!(
         &action,
-        Action::Command(Command::Add | Command::Reload | Command::PriceLibrary)
+        Action::Command(Command::Add | Command::PriceLibrary)
     ) || (matches!(&action, Action::Command(Command::Cancel))
         && actions.state.get_untracked().authority.form);
     let rendered = computed(move || {
@@ -1302,14 +1309,7 @@ fn button(
                 colors.text_primary
             })
         })
-        .tooltip(text(move || {
-            let item = item.get();
-            if reload && item.reason.is_empty() {
-                item.label
-            } else {
-                item.reason
-            }
-        }))
+        .tooltip(text(move || item.get().reason))
         .on_press(move || {
             let s = rendered.get_untracked();
             actions.send(
@@ -1320,15 +1320,7 @@ fn button(
                 secret,
             );
         });
-    if reload {
-        control
-            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-            .p_0()
-            .child(icon(crate::icons::Icon::Refresh, actions.state))
-            .into_element()
-    } else {
-        control.child(text(move || item.get().label)).into_element()
-    }
+    control.child(text(move || item.get().label)).into_element()
 }
 
 fn field(
@@ -2187,13 +2179,15 @@ fn provider_list(actions: Actions, commands: mpsc::Sender<Request>) -> AnyElemen
                 Some("add".into()),
                 None,
             ))
-            .child(button(
-                actions,
-                commands.clone(),
-                Action::Command(Command::Reload),
-                None,
-                None,
-            )),
+            .children(s.authority.reload_needed.then(|| {
+                button(
+                    actions,
+                    commands.clone(),
+                    Action::Command(Command::Reload),
+                    None,
+                    None,
+                )
+            })),
     );
     for row in &s.authority.rows {
         let name = row.name.clone();

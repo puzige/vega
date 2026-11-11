@@ -529,7 +529,7 @@
 "settings.usage.last_7_days" = "近7日"
 "settings.usage.lifetime_cost" = "累计估算费用"
 "settings.usage.lifetime_tokens" = "累计 Tokens"
-"settings.usage.load_failed" = "使用统计读取失败，请刷新重试"
+"settings.usage.load_failed" = "使用统计读取失败。"
 "settings.usage.loading" = "正在加载使用统计…"
 "settings.usage.longest_streak" = "最长连续天数 · 近365日"
 "settings.usage.model_usage" = "模型用量"

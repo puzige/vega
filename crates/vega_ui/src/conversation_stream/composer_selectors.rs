@@ -204,7 +204,7 @@ impl Snapshot {
             )],
             Kind::ModelMenu => {
                 header.push(vega_i18n::t(super::render::PICKER_LIST_HEADING).to_owned());
-                stream
+                let mut rows: Vec<_> = stream
                     .model_options
                     .iter()
                     .enumerate()
@@ -219,7 +219,16 @@ impl Snapshot {
                         enabled: model_enabled,
                         glyph: None,
                     })
-                    .collect()
+                    .collect();
+                if stream.can_restore_default_effort(cx) {
+                    rows.push(row(
+                        Action::Default,
+                        vega_i18n::t("ui.use_default_effort").to_owned(),
+                        model_enabled,
+                        false,
+                    ));
+                }
+                rows
             }
             Kind::Thinking => {
                 let slider = stream.thinking_slider.read(cx).native_snapshot();
@@ -237,17 +246,15 @@ impl Snapshot {
                         slider.model.selected_position() == Some(index),
                     )
                 }));
-                rows.push(row(
-                    Action::Default,
-                    vega_i18n::t(super::thinking_slider::PROVIDER_DEFAULT_LABEL).to_owned(),
-                    model_enabled,
-                    slider.model.is_provider_default(),
-                ));
                 rows
             }
         };
         let selected = match kind {
-            Kind::ModelMenu => Some(stream.model_selector_highlight),
+            Kind::ModelMenu => Some(
+                stream
+                    .model_selector_highlight
+                    .min(rows.len().saturating_sub(1)),
+            ),
             Kind::Thinking => Some(
                 stream
                     .thinking_slider
@@ -545,9 +552,7 @@ impl Host {
                     });
                 }
                 Action::Default => {
-                    stream
-                        .thinking_slider
-                        .update(cx, |slider, cx| slider.select_provider_default(cx));
+                    stream.restore_default_effort(window, cx);
                 }
             }
         });
@@ -673,11 +678,11 @@ impl Host {
             } else {
                 match key {
                     "home" => 1.min(count.saturating_sub(1)),
-                    "end" => count.saturating_sub(2),
+                    "end" => count.saturating_sub(1),
                     "up" | "left" => current.saturating_sub(1).max(1),
                     "tab" if modifiers.shift => (current + count - 1) % count,
                     "tab" => (current + 1) % count,
-                    _ => (current + 1).min(count.saturating_sub(2)),
+                    _ => (current + 1).min(count.saturating_sub(1)),
                 }
             };
             if self.snapshot.kind == Kind::Thinking && key != "tab" {

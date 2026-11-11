@@ -641,6 +641,7 @@
 "ui.searching" = "正在搜索…"
 "ui.searching_content" = "正在搜索内容"
 "ui.searching_en" = "正在搜索"
+"ui.use_default_effort" = "使用默认思考强度"
 "ui.select_effort" = "选择强度"
 "ui.select_model" = "选择模型"
 "ui.select_open_tab_change_scope_esc_close" = "↑↓ 选择   ↵ 打开   Tab 切换范围   Esc 关闭"
@@ -928,3 +929,4 @@
 "ui.ordinary_send.configuration_busy" = "配置暂忙，请稍后重试。"
 "ui.ordinary_send.safety_storage_failed" = "本地存储或配置不可用，消息准备未能完成安全检查，请稍后重试。"
 "ui.ordinary_send.safety_state_failed" = "消息准备未能验证安全状态，请重试；若仍失败，请重新打开会话。"
+"ui.discard_and_reload" = "放弃草稿并重新读取"
