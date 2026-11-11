@@ -564,3 +564,11 @@ macOS 15.8.2 arm64，1404pt 隔离项目窗口，2× Retina。原版 0.1.413 与
 同一个尚无初始提交的隔离仓库，原版点击 main 展现搜索、空仓状态和创建分支入口；cca7a4ee 和最终构建点击后均未见菜单，并出现蓝框。最终版再次点击及按 Return 后仍未见菜单。这个交互缺口独立于底色变更，菜单展开 FAIL，Composer 和工作区整体仍 PARTIAL。本机 performance/branch-trigger 保存对照截图。本轮没有创建或切换分支。
 
 独立复核单文件差异 SHA-256 4771a5153995aabbf476baf34de7d323f73342a4c69449ae454c65c7c98e1250。本地 Rust/Cargo 1.98.0 release 构建、fmt、严格 Clippy 和 Python 5/15/40 项通过；nextest 16 个程序共执行 0 项。隔离启动器已实测，临时实例均已退出。
+
+## 分支菜单保持展开、搜索和切换
+
+macOS 15.8.2 arm64，1404pt。诊断构建记录按钮激活通过，弹层在窗口内完成 320×109pt 布局，随后的渲染发现触发器挂载引用已失效，立即关闭菜单。触发器和弹层用相同元素 ID 存储各自的挂载引用。生产提交 99430c603a4f22082ac28a6656be7f23215006a7 分开两个 ID。release SHA-256 9e854513a9cc2a004ddafba38fada1b587359d0e5d21801bf86950c2e470317d。
+
+原先 FAIL 的菜单展开子项已通过实窗回归：浅色无初始提交的隔离仓库显示搜索、实际空仓状态和禁用的新建分支入口，Esc 关闭后可重开，外部单击可关闭。深色隔离仓库有一个提交、三个本地分支，0.1.413 和本构建都列出 docs-preview、main、release-notes。键入 docs 后只剩 docs-preview，点击后弹层收起，按钮 AX 名称改为 docs-preview；git status --short --branch 独立确认实际分支和干净工作树。操作仅针对临时仓库。诊断日志和新旧截图位于本机 performance/branch-menu。新版仍有触发器鼠标蓝框、可见名称提前省略、深色弹层圆角外黑底和搜索行图标差距；工作区、Composer 整行仍 PARTIAL。
+
+静态独立复核限定差异 SHA-256 1a9a025a971c1ac8b45853239495e93d3d3f5609dcdeedd6885c4ca9ef50a026。Rust/Cargo 1.98.0 release 构建、fmt、严格 Clippy 与 Python 5/15/40 项通过；nextest 16 个程序执行 0 项。隔离启动器已验证并退出。
