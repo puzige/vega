@@ -768,6 +768,7 @@ impl BranchSelector {
                 .track_focus(&self.focus)
                 .min_w_0()
                 .child(Mounted {
+                    id: "branch-selector-trigger-mounted",
                     child: trigger_host.into_any_element(),
                     lease,
                     geometry: trigger_geometry,
@@ -897,6 +898,7 @@ impl BranchSelector {
                         .snap_to_window_with_margin(px(8.))
                         .child(
                             gpui_kit::deferred(Mounted {
+                                id: "branch-selector-popup-mounted",
                                 child: popup_host.into_any_element(),
                                 lease: popup_lease,
                                 geometry: popup_geometry,
@@ -911,6 +913,7 @@ impl BranchSelector {
 }
 
 struct Mounted {
+    id: &'static str,
     child: AnyElement,
     lease: Rc<()>,
     geometry: Rc<RefCell<Geometry>>,
@@ -927,7 +930,7 @@ impl Element for Mounted {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
-        Some("branch-selector-mounted".into())
+        Some(self.id.into())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
