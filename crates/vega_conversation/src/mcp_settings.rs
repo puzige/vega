@@ -447,9 +447,8 @@ impl McpServerSettingsService {
             let mut retry = budget
                 .lock()
                 .map_err(|_| crate::credential_errors::state_error(CredentialReadStage::Mcp))?;
-            if let Err(error) = retry
-                .check_acquisition(waiting_since.map_or(Duration::ZERO, |start| start.elapsed()))
-            {
+            let elapsed = waiting_since.map_or(Duration::ZERO, |start| start.elapsed());
+            if let Err(error) = retry.check_acquisition(elapsed) {
                 drop(retry);
                 return Err(self.configuration_exhausted(error));
             }
@@ -471,8 +470,7 @@ impl McpServerSettingsService {
                                     "configuration lock acquisition recovered"
                                 );
                             }
-                            retry.contention_elapsed +=
-                                waiting_since.map_or(Duration::ZERO, |start| start.elapsed());
+                            retry.contention_elapsed += elapsed;
                             return Ok((state, document));
                         }
                         Err(error) => {
@@ -554,10 +552,13 @@ impl McpServerSettingsService {
     fn credential_store(&self) -> Result<Store, CredentialReadError> {
         let store = Store::open_read_only(&self.database_path)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
+        let path = self.config_root.join("config.yaml");
+        let validated = vega_store::mcp_config::ValidatedProjectionSource::read(&path).ok();
         let (mut state, document) = self.configuration_guard()?;
         if let Err(error) = vega_store::mcp_config::verify_current_projection(
             store.conn(),
-            &self.config_root.join("config.yaml"),
+            &path,
+            validated.as_ref(),
         ) {
             Self::invalidate_configuration(&mut state);
             drop(document);
@@ -2750,3 +2751,6 @@ async fn connect_row(
         }
     }
 }
+
+#[cfg(test)]
+mod concurrent_reads;

@@ -312,13 +312,30 @@ pub fn admitted(
     Ok(())
 }
 
-pub fn verify_current_projection(conn: &Connection, path: &Path) -> Result<(), McpStoreError> {
-    let bytes = crate::yaml_config::read(path).map_err(io_error)?;
-    if matches_accepted_projection(conn, bytes.as_deref())? {
-        return Ok(());
+pub struct ValidatedProjectionSource(Option<Vec<u8>>);
+
+impl ValidatedProjectionSource {
+    pub fn read(path: &Path) -> Result<Self, McpStoreError> {
+        let bytes = crate::yaml_config::read(path).map_err(io_error)?;
+        parse(bytes.as_deref())?;
+        Ok(Self(bytes))
     }
-    parse(bytes.as_deref())?;
-    Err(McpStoreError::Conflict)
+}
+
+pub fn verify_current_projection(
+    conn: &Connection,
+    path: &Path,
+    validated: Option<&ValidatedProjectionSource>,
+) -> Result<(), McpStoreError> {
+    let bytes = crate::yaml_config::read(path).map_err(io_error)?;
+    if validated.is_none_or(|source| source.0 != bytes) {
+        parse(bytes.as_deref())?;
+    }
+    if matches_accepted_projection(conn, bytes.as_deref())? {
+        Ok(())
+    } else {
+        Err(McpStoreError::Conflict)
+    }
 }
 
 fn matches_accepted_projection(

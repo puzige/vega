@@ -1901,3 +1901,61 @@ fn prepare_worker_system_prompt(
         failure
     })
 }
+
+#[cfg(test)]
+mod terminal_batch_tests {
+    use super::{AgentUpdate, ConversationEvent, RunFailureKind, drain_agent_updates};
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn configuration_error_keeps_the_worker_owned_until_finished_or_disconnected() {
+        for disconnect in [false, true] {
+            let (sender, receiver) = mpsc::sync_channel(4);
+            let mut error = vega_runtime::CredentialReadError::new(
+                vega_runtime::CredentialReadStage::Mcp,
+                vega_runtime::CredentialReadReason::Configuration,
+            );
+            error.configuration_lock = Some("registry");
+            sender
+                .send(AgentUpdate::Event(ConversationEvent::Error {
+                    message_id: Some("attempt".into()),
+                    error: Arc::new(vega_runtime::VegaError::CredentialRead(error)),
+                    execution_duration_ms: None,
+                }))
+                .unwrap();
+            let batch = drain_agent_updates(&receiver);
+            assert_eq!(batch.finished, None);
+            assert!(
+                matches!(&batch.events[..], [ConversationEvent::Error { error,.. }] if RunFailureKind::from_runtime(error) == RunFailureKind::ConfigurationBusy)
+            );
+            if !disconnect {
+                sender
+                    .send(AgentUpdate::Event(ConversationEvent::Error {
+                        message_id: Some("attempt".into()),
+                        error: Arc::new(vega_runtime::VegaError::RuntimeFailure(
+                            vega_runtime::RuntimeFailureDetail::new(
+                                vega_runtime::RuntimeFailureReason::Database,
+                            ),
+                        )),
+                        execution_duration_ms: None,
+                    }))
+                    .unwrap();
+                sender
+                    .send(AgentUpdate::Finished {
+                        success: false,
+                        reference_failure: None,
+                        credential_failure: false,
+                    })
+                    .unwrap();
+            }
+            drop(sender);
+            let terminal = drain_agent_updates(&receiver);
+            assert_eq!(terminal.finished, Some(false));
+            if !disconnect {
+                assert!(
+                    matches!(&terminal.events[..], [ConversationEvent::Error { error,.. }] if RunFailureKind::from_runtime(error) == RunFailureKind::RuntimeStorage)
+                );
+            }
+        }
+    }
+}
