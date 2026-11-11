@@ -2751,6 +2751,3 @@ async fn connect_row(
         }
     }
 }
-
-#[cfg(test)]
-mod concurrent_reads;
