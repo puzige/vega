@@ -578,3 +578,10 @@ macOS 15.8.2 arm64，1404pt。诊断构建记录按钮激活通过，弹层在�
 macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704afbbcaf808492100c3111ee2，release SHA-256 e328350f057aafa0febf485be7cf881fe2968645b0881d2d8240402e567fe433。同一仓库对照 0.1.413，鼠标打开时 docs-preview 名称完整，无蓝框；Esc 收起后出现键盘描边，Return 再次打开。正常菜单的圆角透出窗口背景，搜索行恢复放大镜。输入 release 后只剩 release-notes，单击完成切换，Git 独立确认干净的 release-notes 分支，胶囊名称完整。首个本地编译发现 SVG 接口需要字符串借用，修正后重新构建并完成上述回归。
 
 本机 performance/branch-appearance 保存原始窗口截图和同位置裁切。最终搜索行左缘仍比旧版靠右约 4 个物理像素，原版的 Switch branch 悬停提示在本构建中未见。180pt 上限保留，超长分支和故障恢复页未实窗覆盖。Composer 与工作区仍 PARTIAL。独立复核生产差异 SHA-256 16827cb4c14473f1b4c1bf8a07f1dcb82c37687122b3a0fab290632e27159d6c。Rust/Cargo 1.98.0 release 构建、fmt、严格 Clippy 和 Python 5/15/40 项通过；nextest 16 个程序执行 0 项。隔离启动器已验证并退出。
+
+## 设置层级、侧栏焦点与提供方操作（macOS 15.8.2 arm64）
+
+- 生产提交 `688aa63a705044cb9b75746a790f72d8ee119fa0`，隔离 release 二进制 SHA-256 `b52787b0787852d73ed8d9246263396e852842ea13703b186ac4bf0999aa2457`。真实生产应用中的 Agents 将能力开关、电脑组件与系统权限、Codex 配置分组。电脑操控说明保留发现和切换 macOS 授权范围内所有桌面窗口、后台输入限制，浏览器说明保留逐标签授权。导航通过留白分组。主窗口侧栏仅为键盘焦点绘制描边。
+- 设置行 PARTIAL。以离线测试提供方分别进入英文浅色、中文深色 Agents，两组开关均报告 off，组件/权限显示未检查，捕获未验证。实际窗口截图在本机 performance/settings-layout/agents-before.png、agents-final-en.png、agents-final-zh.png。未启用电脑或浏览器权限，未安装扩展。鼠标设置入口已测；旧构建此次采帧未稳定捕获用户描述的瞬时蓝框。
+- 提供方名称与启用状态分行，单项无排序柄，多项有排序柄。两项同前缀超长模型的操作均在右侧可见，点击第二项打开的模型 ID 以 Beta 结尾。R387 同一布局实点「添加提供方」及价格库右边缘，分别打开表单和价格库，取消表单无数据更改。双提供方合成目录拖动排序后仍显示原顺序，排序未验证通过。最小窗口、全页键盘顺序及其他平台待验。Composer 此轮未取得可重复的单击/双击收起证据。
+- rustc/Cargo 1.98.0，release 使用 --locked --offline -j 2。fmt、workspace Clippy -D warnings、三组 Python 5/15/40 通过；nextest 0 发现/0 执行。独立审查覆盖 settings/providers 差异（含 locale）45d948d64d56f4faddcab0ae5efceabf579d892005c13056e75961380cdcc10a、Agents 最终增量与语言文件 3323c9b653aeb1008b0082a0284e3e849ff4ae63ab8a34b3d34ce5dbeb438242，以及侧栏鼠标焦点修改。隔离启动器核对可执行文件和新建数据库成功。
