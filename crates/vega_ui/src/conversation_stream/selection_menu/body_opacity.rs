@@ -28,15 +28,16 @@ impl Mapping {
         model: &super::super::super::model::StreamModel,
     ) -> Self {
         let mut output = Self::default();
-        for (block, _, blocks) in &content.rows {
+        for row in &content.rows {
+            let block = row.id;
             let lines = model
                 .committed_lines
                 .iter()
                 .chain(&model.pending_lines)
-                .filter(|line| line.block_id == *block)
+                .filter(|line| line.block_id == block)
                 .collect::<Vec<_>>();
             let mut line = 0;
-            output.blocks(content, *block, blocks, &lines, &mut line);
+            output.blocks(content, block, &row.blocks, &lines, &mut line);
         }
         output
     }

@@ -129,10 +129,51 @@ pub(crate) struct Fragment {
     code: bool,
 }
 
+#[derive(Clone, PartialEq)]
+struct ReadingRow {
+    id: u64,
+    version: u64,
+    blocks: Vec<Block>,
+    gap_before: f32,
+}
+
+fn is_empty_heading(node: &RenderNode) -> bool {
+    fn has_span(inline: &vega_markdown::Inline) -> bool {
+        use vega_markdown::Inline;
+        match inline {
+            Inline::Text(text) => !text.is_empty(),
+            Inline::Code(_) => true,
+            Inline::Strong(children)
+            | Inline::Emphasis(children)
+            | Inline::Strikethrough(children)
+            | Inline::Link {
+                spans: children, ..
+            } => children.iter().any(has_span),
+        }
+    }
+    matches!(node, RenderNode::Heading { spans, .. } if !spans.iter().any(has_span))
+}
+
+fn reading_block_gap(previous: Option<&Block>, current: &Block) -> f32 {
+    use vega_theme::Layout;
+    match (previous, current) {
+        (None, _) => 0.,
+        (Some(previous), _)
+            if matches!(list_boundary(previous, false), Block::Blockquote { .. })
+                || matches!(list_boundary(current, true), Block::Blockquote { .. }) =>
+        {
+            Layout::MARKDOWN_BLOCK_GAP
+        }
+        (_, Block::Heading { .. }) => Layout::MARKDOWN_HEADING_BEFORE,
+        (Some(Block::Heading { .. }), Block::Paragraph { .. }) => Layout::MARKDOWN_HEADING_AFTER,
+        _ => Layout::MARKDOWN_BLOCK_GAP,
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Content {
     pub(crate) document: Document,
-    rows: Vec<(u64, u64, Vec<Block>)>,
+    rows: Vec<ReadingRow>,
     pub(crate) text: Arc<str>,
     source: Option<Arc<str>>,
     source_prefix: usize,
@@ -441,6 +482,20 @@ impl Content {
         let mut blocks = Vec::new();
         let mut rows = Vec::new();
         for (id, version, nodes) in retained {
+            let filtered;
+            let nodes = if nodes.iter().any(is_empty_heading) {
+                filtered = nodes
+                    .iter()
+                    .filter(|node| !is_empty_heading(node))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                filtered.as_slice()
+            } else {
+                nodes.as_slice()
+            };
+            if nodes.is_empty() {
+                continue;
+            }
             if !blocks.is_empty() {
                 builder.separator("\n\n");
             }
@@ -448,8 +503,16 @@ impl Content {
             builder.row = *id;
             builder.ordinal = 0;
             let row = builder.blocks(nodes, 0, false);
-            blocks.extend(row.clone());
-            rows.push((*id, *version, row));
+            let gap_before = row
+                .first()
+                .map_or(0., |first| reading_block_gap(blocks.last(), first));
+            blocks.extend(row.iter().cloned());
+            rows.push(ReadingRow {
+                id: *id,
+                version: *version,
+                blocks: row,
+                gap_before,
+            });
         }
         let mut content = Self {
             document: Document::new(blocks),
@@ -603,8 +666,8 @@ impl Content {
             }
         }
         let mut found = Vec::new();
-        for (_, _, row) in &self.rows {
-            blocks(row, &mut found);
+        for row in &self.rows {
+            blocks(&row.blocks, &mut found);
         }
         found
             .into_iter()
@@ -2206,12 +2269,14 @@ fn pixels(
     let content_commands = commands.clone();
     let content = each(
         move || incoming.with(|projection| projection.content.rows.clone()),
-        |(id, _, _)| *id,
+        |row| row.id,
         move |row, _| {
             let commands = content_commands.clone();
-            view().child(dynamic(move || {
-                native_blocks(&row.get().2, incoming, commands.clone(), false)
-            }))
+            view()
+                .pt(move || px(row.with(|value| value.gap_before)))
+                .child(dynamic(move || {
+                    row.with(|value| native_row_blocks(&value.blocks, incoming, commands.clone()))
+                }))
         },
     );
     let root = element_ref();
@@ -2241,7 +2306,6 @@ fn pixels(
         .element_ref(&root)
         .w_full()
         .flex_col()
-        .gap(px(vega_theme::Layout::MARKDOWN_BLOCK_GAP))
         .selectable(true)
         .text_size(px(vega_theme::Typography::CONVERSATION))
         .text_color(move || {
@@ -2547,6 +2611,35 @@ fn list_boundary(block: &Block, first: bool) -> &Block {
     block
 }
 
+fn native_row_blocks(
+    blocks: &[Block],
+    state: nsh_core::prelude::Signal<Projection>,
+    commands: crate::nsh::OrderedCommands<Request>,
+) -> nsh_core::prelude::AnyElement {
+    use nsh_core::prelude::*;
+    if blocks.len() < 2
+        || !blocks
+            .iter()
+            .any(|block| matches!(block, Block::Heading { .. }))
+    {
+        return native_blocks(blocks, state, commands, false);
+    }
+    view()
+        .flex_col()
+        .children(blocks.iter().enumerate().map(|(index, block)| {
+            let previous = index.checked_sub(1).map(|previous| &blocks[previous]);
+            view()
+                .pt(px(reading_block_gap(previous, block)))
+                .child(native_blocks(
+                    std::slice::from_ref(block),
+                    state,
+                    commands.clone(),
+                    false,
+                ))
+        }))
+        .into_element()
+}
+
 fn native_blocks(
     blocks: &[Block],
     state: nsh_core::prelude::Signal<Projection>,
@@ -2565,17 +2658,15 @@ fn native_blocks(
                 ))
                 .into_element(),
             Block::Heading { level, content, .. } => {
-                let size = match level {
-                    1 => vega_theme::Typography::MARKDOWN_H1,
-                    2 => vega_theme::Typography::MARKDOWN_H2,
-                    3 => vega_theme::Typography::MARKDOWN_H3,
-                    _ => vega_theme::Typography::CONVERSATION,
-                };
+                let (size, weight) = super::super::heading_style(*level);
                 text("")
                     .children(native_inlines(content, state, commands.clone()))
                     .select_text()
                     .text_size(px(size))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight(weight.0 as u16))
+                    .line_height(nsh_core::LineHeight::Multiple(
+                        vega_theme::Typography::CONVERSATION_LINE_HEIGHT,
+                    ))
                     .into_element()
             }
             Block::Blockquote { children, .. } => view()
