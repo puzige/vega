@@ -614,3 +614,10 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 生产提交 `f7e599f174cfd99bab88c4ccd97e7d1f1a237c73`，macOS arm64 release SHA-256 `ec5e28d6277dedae23cdb6aea84a1aedb7b2a4274427e1cc88cb0a8cfff360d5`。Composer PARTIAL。
 - 使用三个离线模型，在实际窗口点击模型按钮、打开列表，按 ↓。原尺寸截图显示第二行整行灰底，第一行保留蓝勾，AX 当前值仍为第一项；按回车后弹层关闭，触发器和 AX 值均为 second-option。修前、旧版和修后截图位于 performance/picker-shadow/{before-model-keyboard,old-model-keyboard,r425-model-keyboard}.png。上次已观察到的长列表标题滚动差距仍待修复。
 - 单文件独立审查差异 SHA-256 `eb30479f67901fe7b3be2566a4481e85f36bb545a6eb7827eecbc6a063ff303f`。Rust/Cargo 1.98.0，release 构建、fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器路径、二进制身份与数据库通过复核。Windows/Linux 未运行。
+
+## Composer 长模型列表的滚轮与方向键
+
+生产提交 `282d28141f67a07498184307bf19063be6a2e0eb`，release SHA-256 `90a9a8267a0849625c63baebb1b252fda8d803f37a0b592529ad9214f62727d4`。Composer PARTIAL。
+- 26 项隔离配置，同一窗口和滚轮操作。旧版停在 model-17 至末项。修前仍显示当前模型和 model-01 等首页内容。修后固定 Select model 标题，末项名称单行截断。截图分别在 performance/picker-shadow/old-model-scroll-end.png、r425-model-scroll.png、r429-wheel.png。
+- 修后第一次滚底并截图，随后点末项时回到首页，当前模型未变。再次滚底立即实际点击后成功收起，触发器显示完整末项名称。重新打开，↑ 与回车切到 model-24，再开后 ↓ 与回车切回末项。长时间停留后滚动位置的稳定性仍待定位。
+- 固定标题之外的可见区域参与命中和键盘定位。先前候选的内层滚区未显式允许收缩，独立审查提出后已修订。最终限定差异 SHA-256 `c8ff3b5a506942cee3a6147e1e98a235a1d023aea8473d9848ea78cb4abd49cd`。Rust/Cargo 1.98.0，release、fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器路径、SHA 与新数据库核对通过。Windows/Linux 未运行。
