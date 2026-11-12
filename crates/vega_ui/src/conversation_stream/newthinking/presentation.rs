@@ -62,7 +62,7 @@ pub(super) struct Owner {
 }
 
 impl Owner {
-    pub(super) fn current(&self, cx: &App) -> bool {
+    fn current(&self, cx: &App, row_matches: impl Fn(&ConversationStream, usize) -> bool) -> bool {
         let Some(owner) = self.stream.upgrade() else {
             return false;
         };
@@ -74,9 +74,7 @@ impl Owner {
             && !stream.reading_preview
             && stream.entries.iter().enumerate().any(|(index, entry)| {
                 matches!(entry, StreamEntry::RunActivity { group } | StreamEntry::RunActivitySegment { group, .. } if group.entity_id() == self.group)
-                    && stream.list.bounds_for_item(index).is_some_and(|bounds| {
-                        !bounds.intersect(&stream.list.viewport_bounds()).is_empty()
-                    })
+                    && row_matches(stream, index)
             })
             && cx.try_global::<crate::settings::SettingsOpen>().is_some_and(|state| !state.0)
             && cx.try_global::<crate::sidebar::OpenedThread>().is_some_and(|route| {
@@ -202,11 +200,14 @@ impl ThinkingBlock {
         }) && observed.authority.available
             && self.ancestor_visible
             && self.owner.as_ref().is_some_and(|owner| {
-                owner.current(cx)
-                    && observed
-                        .owner_session
-                        .as_ref()
-                        .is_some_and(|session| owner.binding.accepts(&owner.binding.epoch, session))
+                owner.current(cx, |stream, index| {
+                    stream.list.bounds_for_item(index).is_some_and(|bounds| {
+                        !bounds.intersect(&stream.list.viewport_bounds()).is_empty()
+                    })
+                }) && observed
+                    .owner_session
+                    .as_ref()
+                    .is_some_and(|session| owner.binding.accepts(&owner.binding.epoch, session))
             })
             && !self.source_copy.has_selected_text()
             && window.is_window_active()
@@ -297,7 +298,10 @@ impl ThinkingBlock {
         let snapshot = self.thinking_snapshot(session, window, cx);
         let enabled = snapshot.authority.available
             && self.ancestor_visible
-            && self.owner.as_ref().is_some_and(|owner| owner.current(cx));
+            && self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.current(cx, |_, _| true));
         self.disclosure_focus = self.disclosure_focus.clone().tab_stop(enabled);
         let Some(page) = self.presentation.as_mut() else {
             return div().into_any_element();
@@ -370,7 +374,7 @@ impl IntoElement for HeaderMount {
 
 impl Element for HeaderMount {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = bool;
     fn id(&self) -> Option<ElementId> {
         Some("thinking-native-mount".into())
     }
@@ -394,14 +398,16 @@ impl Element for HeaderMount {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
-        self.mount.set(false);
+    ) -> bool {
+        let visible = !bounds.intersect(&window.content_mask().bounds).is_empty();
+        self.mount.set(id.is_some() && visible);
         if let Some(id) = id {
             window.with_element_state::<Rc<Cell<bool>>, _>(id, |_, _| ((), self.mount.clone()));
-            self.mount
-                .set(!bounds.intersect(&window.content_mask().bounds).is_empty());
         }
-        self.child.prepaint(window, cx);
+        if visible {
+            self.child.prepaint(window, cx);
+        }
+        visible
     }
     fn paint(
         &mut self,
@@ -409,10 +415,12 @@ impl Element for HeaderMount {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        visible: &mut bool,
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.child.paint(window, cx);
+        if *visible {
+            self.child.paint(window, cx);
+        }
     }
 }
