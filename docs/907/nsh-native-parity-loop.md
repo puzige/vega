@@ -729,3 +729,9 @@ macOS 15.8.3 arm64，独立 VEGA_HOME，真实生产窗口，测试项目、地�
 | 工作区及跨切面 | 真实写入 33 字节测试文件后，深色会话产物卡顶部和圆角外侧出现黑色矩形。使用会话底色绘制分组外间距后，录像中同位置 RGB 从 9/9/9 变为 30/30/30，与相邻会话底色相同；卡内仍为 40/40/40。 | artifact-entry-resumed.mp4 与 artifact-base-verified.mp4。中间两次候选的操作和录像窗口不一致，未计入。最终录像、应用名和唯一进程 PID 53302 已核对。产物卡的已选中 AX 操作及 VoiceOver 仍未验收。 |
 
 产物卡修复的源码为 b8877a2657692efc3ca38ceaa00a16f5f994cb34，二进制 SHA-256 为 47ba85d285121d5617b622ce888a74f1a685ad17d7b0605f4f633d93d95d4d96。使用官方 cargo 1.98.0 (797e8a9bc) 和 rustc 1.98.0 (88d9e12ae)，从隔离源码以 cargo build -p vega --bin vega --locked --offline -j 2 构建，共用 official-nsh-validation 目标目录。链接器保留 __eh_frame 警告。cargo fmt --all -- --check、工作区 all-targets 严格 Clippy、非作者独立审查通过。nextest 的 16 个测试二进制共 0 发现、0 执行。旧 ae46a47b 的 CI 重跑成功，仅对应旧 head。
+
+### 产物预览的键盘与辅助功能回归
+
+深色窗口对隔离写入的 approval-fixture.txt 打开「打开方式」，Esc 收起后按 Shift-Tab，截图可见文件行获得焦点框。原构建此时按 Return 或对该行执行 AX Press 均未打开预览；鼠标点击可读取文件。诊断版记录同一选中目标在首次布局之前耗尽四次测量，每次都没有取得尺寸。未取得尺寸时，宿主正确拒绝激活。
+
+1652469fb3c6a8fdbfd7bec800b5b6d81e675410 在按钮首次报告有效尺寸后开始原有测量。实机开发构建 SHA-256 为 fc2304774ec87a4bee5841785ee7c5b6e7d57d55d15b7b67dd0445ab81c16be4。在同一测试窗口分别用 Return 和 AX Press 打开文件，均从工作区读到 Authorized UI regression fixture.。未选中时 AX Press 被拒绝；再从文件行 Tab 到「打开方式」后对旧文件行 AX Press 仍被拒绝，此时 Return 正确打开菜单。录屏 art-layout.mp4 已回看。此次通过覆盖该文件行的键盘和 AX 激活，不代替 VoiceOver 或全部工作区回归。独立审查、fmt、严格 Clippy 通过。nextest 为 0 发现/0 执行；诊断日志未进入生产源码。
