@@ -254,7 +254,14 @@ impl DiffView {
             if let Some((error_file, code)) = self.projection_error
                 && error_file == file.id
             {
-                rows.push(PreparedRow::ProjectionError { id: file.id, code });
+                rows.push(if code == GitWorkspaceErrorCode::MetadataOnly {
+                    PreparedRow::Message {
+                        key: "ui.this_file_can_only_be_shown_as_metadata",
+                        danger: false,
+                    }
+                } else {
+                    PreparedRow::ProjectionError { id: file.id, code }
+                });
                 continue;
             }
             let Some(projection) = self

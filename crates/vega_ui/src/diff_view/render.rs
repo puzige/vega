@@ -277,7 +277,8 @@ pub(crate) fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
         GitWorkspaceErrorCode::StaleGeneration | GitWorkspaceErrorCode::UnknownFile => {
             vega_i18n::t("ui.this_diff_is_stale_refresh_and_try_again")
         }
-        GitWorkspaceErrorCode::SpawnFailed
+        GitWorkspaceErrorCode::FileReadFailed
+        | GitWorkspaceErrorCode::SpawnFailed
         | GitWorkspaceErrorCode::GitFailed
         | GitWorkspaceErrorCode::MalformedOutput
         | GitWorkspaceErrorCode::ProcessControlFailed
