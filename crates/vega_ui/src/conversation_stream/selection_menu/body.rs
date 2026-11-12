@@ -1047,7 +1047,75 @@ struct CodeTarget {
     snapshot: ReadingSnapshot,
 }
 
+#[derive(PartialEq)]
+struct ReaderViewport {
+    window: WindowId,
+    size: Size<Pixels>,
+    scale: f32,
+    language: &'static str,
+}
+
+impl ReaderViewport {
+    fn current(window: &Window) -> Self {
+        Self {
+            window: window.window_handle().window_id(),
+            size: window.viewport_size(),
+            scale: window.scale_factor(),
+            language: vega_i18n::language(),
+        }
+    }
+}
+
+/// The settings route owns only visible, idle reading surfaces. Their input
+/// leases still expire when the conversation leaves the window.
+pub struct SettingsReaders {
+    _viewport: Rc<ReaderViewport>,
+    _readers: Vec<Entity<BodyState>>,
+}
+
+impl SettingsReaders {
+    pub fn capture(
+        stream: &Entity<super::ConversationStream>,
+        window: &Window,
+        cx: &mut App,
+    ) -> Self {
+        use super::super::StreamEntry;
+        let viewport = Rc::new(ReaderViewport::current(window));
+        let candidates = stream
+            .read(cx)
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let (StreamEntry::User { copy, .. } | StreamEntry::Assistant { copy, .. }) = entry
+                else {
+                    return None;
+                };
+                copy.nsh_reading.borrow().as_ref()?.state.upgrade()
+            })
+            .collect::<Vec<_>>();
+        let readers = candidates
+            .into_iter()
+            .filter(|reader| {
+                reader.update(cx, |body, cx| {
+                    if !body.lease.upgrade().is_some_and(|lease| lease.live.get())
+                        || !body.idle_reader(cx)
+                    {
+                        return false;
+                    }
+                    body.settings_viewport = Rc::downgrade(&viewport);
+                    true
+                })
+            })
+            .collect();
+        Self {
+            _viewport: viewport,
+            _readers: readers,
+        }
+    }
+}
+
 struct BodyState {
+    settings_viewport: Weak<ReaderViewport>,
     copy: MessageCopy,
     owner: Option<ReadingOwner>,
     projection: Projection,
@@ -1077,6 +1145,27 @@ struct BodyState {
 }
 
 impl BodyState {
+    fn idle_reader(&self, cx: &App) -> bool {
+        self.acknowledged
+            .as_ref()
+            .is_some_and(|id| id.matches(&self.projection.session))
+            && self.reading.borrow().is_empty()
+            && self.retained.borrow().is_none()
+            && self.pending_remap.is_none()
+            && !self.copy.selection_has_cursor(cx)
+            && !self
+                .menu
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .is_some_and(|m| m.read(cx).open.is_some())
+            && self
+                .surface
+                .as_ref()
+                .zip(self.area)
+                .and_then(|(s, a)| s.entity().read(cx).reading_snapshot(a))
+                .is_some_and(|snap| snap.ranges.iter().all(|(_, r)| r.is_empty()))
+    }
+
     fn interrupt_anchor(&mut self) {
         self.scroll_intent = self.scroll_intent.wrapping_add(1);
         self.source_anchor = None;
@@ -1625,60 +1714,100 @@ pub(in crate::conversation_stream) fn render_fading(
     cx: &mut App,
 ) -> AnyElement {
     let id = copy.id;
-    let state = window.use_keyed_state(("nsh-reading-body", id), cx, |_, _| BodyState {
-        copy: copy.clone(),
-        owner: None,
-        projection: Projection {
-            session: ProjectionId::new(),
-            revision: copy.content_generation(),
-            source: copy.display_text(),
-            content: content.clone(),
-            colors,
-            thinking,
-            scroll_ticket: ProjectionId::new(),
-        },
-        surface: None,
-        reading: Rc::new(RefCell::new(Vec::new())),
-        snapshot: Default::default(),
-        last_geometry: None,
-        acknowledged: None,
-        area: None,
-        retained: Default::default(),
-        lease: Weak::new(),
-        // Reserve the tallest unwrapped code block while NSH measures the document.
-        height: {
-            let lines = content
-                .fragments
-                .iter()
-                .filter(|fragment| fragment.code)
-                .map(|fragment| fragment.rendered_text().lines().count())
-                .max()
-                .unwrap_or(0);
-            let estimate = (lines as f32
-                * vega_theme::Typography::CODE
-                * vega_theme::Typography::CODE_LINE_HEIGHT)
-                .max(28.);
-            if thinking {
-                estimate.min(vega_theme::Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
-            } else {
-                estimate
-            }
-        },
-        menu: None,
-        code_targets: Vec::new(),
-        pending_remap: None,
-        listener_session: None,
-        observation: Rc::new(Cell::new(0)),
-        opacity: opacity::Publication::new(),
-        scroll_node: None,
-        follow: false,
-        source_anchor: None,
-        source_mount: None,
-        scroll_intent: 0,
-        anchor_scroll: None,
-        scroll_content_height: 0.,
-        source_layout_width: None,
+    let holder = window.use_keyed_state(("nsh-reading-body", id), cx, |window, cx| {
+        let previous = copy
+            .nsh_reading
+            .borrow()
+            .as_ref()
+            .and_then(|binding| binding.state.upgrade());
+        if let Some(previous) = previous
+            && previous.update(cx, |old, cx| {
+                std::mem::take(&mut old.settings_viewport)
+                    .upgrade()
+                    .is_some_and(|viewport| *viewport == ReaderViewport::current(window))
+                    && old.lease.upgrade().is_none()
+                    && old.idle_reader(cx)
+                    && old.projection.revision == copy.content_generation()
+                    && old.projection.colors == colors
+                    && old.projection.thinking == thinking
+                    && old.projection.source == copy.display_text()
+                    && old.projection.content.document == content.document
+                    && old.projection.content.text == content.text
+                    && old.projection.content.source_start == content.source_start
+                    && old.projection.content.source_prefix == content.source_prefix
+                    && old.projection.content.source_domain == content.source_domain
+                    && old
+                        .owner
+                        .as_ref()
+                        .zip(copy.reading_owner.borrow().as_ref())
+                        .is_some_and(|(a, b)| {
+                            a.stream == b.stream
+                                && a.thread == b.thread
+                                && a.preview == b.preview
+                                && a.revoked == b.revoked
+                                && a.pending == b.pending
+                        })
+            })
+        {
+            return previous;
+        }
+        cx.new(|_| BodyState {
+            settings_viewport: Weak::new(),
+            copy: copy.clone(),
+            owner: None,
+            projection: Projection {
+                session: ProjectionId::new(),
+                revision: copy.content_generation(),
+                source: copy.display_text(),
+                content: content.clone(),
+                colors,
+                thinking,
+                scroll_ticket: ProjectionId::new(),
+            },
+            surface: None,
+            reading: Rc::new(RefCell::new(Vec::new())),
+            snapshot: Default::default(),
+            last_geometry: None,
+            acknowledged: None,
+            area: None,
+            retained: Default::default(),
+            lease: Weak::new(),
+            // Reserve the tallest unwrapped code block while NSH measures the document.
+            height: {
+                let lines = content
+                    .fragments
+                    .iter()
+                    .filter(|fragment| fragment.code)
+                    .map(|fragment| fragment.rendered_text().lines().count())
+                    .max()
+                    .unwrap_or(0);
+                let estimate = (lines as f32
+                    * vega_theme::Typography::CODE
+                    * vega_theme::Typography::CODE_LINE_HEIGHT)
+                    .max(28.);
+                if thinking {
+                    estimate.min(vega_theme::Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+                } else {
+                    estimate
+                }
+            },
+            menu: None,
+            code_targets: Vec::new(),
+            pending_remap: None,
+            listener_session: None,
+            observation: Rc::new(Cell::new(0)),
+            opacity: opacity::Publication::new(),
+            scroll_node: None,
+            follow: false,
+            source_anchor: None,
+            source_mount: None,
+            scroll_intent: 0,
+            anchor_scroll: None,
+            scroll_content_height: 0.,
+            source_layout_width: None,
+        })
     });
+    let state = holder.read(cx).clone();
     let lease = state.read(cx).lease.upgrade().unwrap_or_else(|| {
         Rc::new(Lease {
             frame: Default::default(),

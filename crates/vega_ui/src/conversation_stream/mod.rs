@@ -350,6 +350,7 @@ mod autolinks;
 mod inline_code;
 pub(crate) mod links;
 mod selection_menu;
+pub use selection_menu::body::SettingsReaders;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;

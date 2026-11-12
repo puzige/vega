@@ -255,6 +255,10 @@ impl Render for VegaWindow {
         let pending_delete = cx.global::<PendingDeleteConfirm>().0.clone();
 
         let settings_open = cx.global::<SettingsOpen>().0;
+        if !settings_open && let Some(readers) = self.settings_readers.take() {
+            // Keep readers alive until the returning list has completed layout.
+            window.on_next_frame(move |_, _| drop(readers));
+        }
         if settings_open {
             self.set_workspace_presentation_visible(false, cx);
             self.hide_shell_chrome(cx);
@@ -305,6 +309,9 @@ impl Render for VegaWindow {
         if (settings_open || opening_thread)
             && let Some((_, stream)) = &self.stream_view
         {
+            if settings_open && self.settings_view.is_none() {
+                self.settings_readers = Some(SettingsReaders::capture(stream, window, cx));
+            }
             stream.update(cx, ConversationStream::suspend_ui_presentations);
         }
         let content: AnyElement = if settings_open {
