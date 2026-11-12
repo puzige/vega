@@ -40,6 +40,7 @@ fn button(
     let measure_commands = commands.clone();
     let owner = Owner::current();
     let wake = signal(0u8);
+    let laid_out = signal(false);
     let busy = signal(false);
     let attempts = signal(0u8);
     let reveal_selected = control.chosen;
@@ -56,7 +57,8 @@ fn button(
         if changed {
             attempts.set(0);
         }
-        if !current.same(&measured)
+        if !laid_out.get()
+            || !current.same(&measured)
             || current.selected.as_ref() != Some(&measured_action)
             || (!current.focused && !reveal_selected && current.accessible.is_none())
             || busy.get_untracked()
@@ -164,6 +166,11 @@ fn button(
     let name = control.label.clone();
     let mut result = view()
         .element_ref(&target)
+        .on_layout(move |bounds: &Bounds<Points>| {
+            laid_out.set(bounds.size.width.0 > 0. && bounds.size.height.0 > 0.);
+            attempts.set(0);
+            wake.update(|value| *value = value.wrapping_add(1));
+        })
         .role(AccessibilityRole::Button)
         .label(name.clone())
         .hint(name.clone())
