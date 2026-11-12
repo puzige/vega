@@ -608,3 +608,9 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 - 原图确认修前权限菜单描边完整，外侧阴影缺失。修后同位置截图，左侧外沿三个像素的灰度由 255/255/255 恢复为 243/240/236，旧版为 243/240/237。权限弹层上缘相对旧版仍低约 3pt。权限原图、模型列表原图及局部见本机 performance/picker-shadow。
 - 两版点权限→模型→权限均切换。菜单已展开时，双击触发器在旧版仍展开，最终 NSH 构建收起，符合用户要求。修后点击左边框外 3 个物理像素的阴影收起菜单，AX 触发器从 on 变为 off。未选择危险选项。另在修前 NSH 和旧版观察到 Escape 后菜单仍在；本轮没有调整键盘行为。模型列表点开时新版选中行的蓝色轮廓仍有差异。
 - Rust/Cargo 1.98.0，release 构建、fmt、严格 Clippy、Python 5/15/40 项通过，nextest 0 执行。独立审查三文件差异 SHA-256 `bd68a5c28fe2dc324dab5681ba91b9dc16f4a7b146537d8b92434be58d7ee28e`。隔离启动器复核路径和数据库通过。VoiceOver、Windows/Linux 未运行。
+
+## Composer 模型列表高亮与当前模型
+
+生产提交 `f7e599f174cfd99bab88c4ccd97e7d1f1a237c73`，macOS arm64 release SHA-256 `ec5e28d6277dedae23cdb6aea84a1aedb7b2a4274427e1cc88cb0a8cfff360d5`。Composer PARTIAL。
+- 使用三个离线模型，在实际窗口点击模型按钮、打开列表，按 ↓。原尺寸截图显示第二行整行灰底，第一行保留蓝勾，AX 当前值仍为第一项；按回车后弹层关闭，触发器和 AX 值均为 second-option。修前、旧版和修后截图位于 performance/picker-shadow/{before-model-keyboard,old-model-keyboard,r425-model-keyboard}.png。上次已观察到的长列表标题滚动差距仍待修复。
+- 单文件独立审查差异 SHA-256 `eb30479f67901fe7b3be2566a4481e85f36bb545a6eb7827eecbc6a063ff303f`。Rust/Cargo 1.98.0，release 构建、fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器路径、二进制身份与数据库通过复核。Windows/Linux 未运行。
