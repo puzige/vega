@@ -382,8 +382,10 @@ impl McpServerSettingsService {
 
     fn store(&self) -> Result<Store, McpSettingsError> {
         self.configuration_operation()
-            .credential_store()
-            .map_err(Into::into)
+            .validated_store(|error| match error {
+                McpStoreError::Conflict => McpSettingsError::Conflict,
+                other => mcp_read_error(other).into(),
+            })
     }
 
     fn schedule_reconciliation(&self) {
@@ -550,6 +552,13 @@ impl McpServerSettingsService {
     }
 
     fn credential_store(&self) -> Result<Store, CredentialReadError> {
+        self.validated_store(mcp_read_error)
+    }
+
+    fn validated_store<E: From<CredentialReadError>>(
+        &self,
+        projection_error: impl FnOnce(McpStoreError) -> E,
+    ) -> Result<Store, E> {
         let store = Store::open_read_only(&self.database_path)
             .map_err(|error| CredentialReadError::database(CredentialReadStage::Mcp, error))?;
         let path = self.config_root.join("config.yaml");
@@ -564,7 +573,7 @@ impl McpServerSettingsService {
             drop(document);
             drop(state);
             self.schedule_reconciliation();
-            return Err(mcp_read_error(error));
+            return Err(projection_error(error));
         }
         Ok(store)
     }

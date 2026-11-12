@@ -1065,7 +1065,7 @@ impl SettingsView {
                         .map(|_| McpOperationOutput::NoData),
                 };
                 let mut servers = service.list();
-                if reading {
+                if reading || (is_edit && matches!(result, Err(McpSettingsError::Conflict))) {
                     for delay_ms in [10, 20, 40, 80, 160, 320] {
                         if !matches!(servers, Err(McpSettingsError::Conflict)) {
                             break;
@@ -1129,7 +1129,8 @@ impl SettingsView {
                 if let Some(draft) = &this.mcp.nsh_draft {
                     draft.release();
                 }
-                this.mcp.read_failed = refreshed.is_err() || step_up_offers.is_err();
+                let list_refreshed = refreshed.is_ok();
+                this.mcp.read_failed = !list_refreshed || step_up_offers.is_err();
                 match refreshed {
                     Ok(servers) => {
                         this.mcp.servers = servers;
@@ -1138,12 +1139,11 @@ impl SettingsView {
                             .retain(|id, _| this.mcp.servers.iter().any(|row| &row.id == id));
                     }
                     Err(error) => {
-                        this.mcp.message =
-                            Some(if reading && matches!(error, McpSettingsError::Conflict) {
-                                SettingsText::key("settings.mcp.error.reload")
-                            } else {
-                                mcp_error_label(error)
-                            });
+                        this.mcp.message = Some(if matches!(error, McpSettingsError::Conflict) {
+                            SettingsText::key("settings.mcp.error.reload")
+                        } else {
+                            mcp_error_label(error)
+                        });
                         this.mcp.message_error = true;
                     }
                 }
@@ -1253,7 +1253,9 @@ impl SettingsView {
                             this.mcp.oauth_flow_id = None;
                             this.mcp.oauth_waiting = false;
                         }
-                        this.mcp.message = Some(mcp_error_label(error));
+                        if list_refreshed || !matches!(error, McpSettingsError::Conflict) {
+                            this.mcp.message = Some(mcp_error_label(error));
+                        }
                         this.mcp.message_error = true;
                         if matches!(
                             error,
@@ -1262,6 +1264,7 @@ impl SettingsView {
                             this.mcp.editor = None;
                             this.mcp.confirmation = None;
                         } else if !reading
+                            && !is_edit
                             && let Some(McpEditor::Existing { id, revision }) =
                                 this.mcp.editor.as_mut()
                             && let Some(row) = this.mcp.servers.iter().find(|row| row.id == *id)
