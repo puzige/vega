@@ -621,3 +621,12 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 - 26 项隔离配置，同一窗口和滚轮操作。旧版停在 model-17 至末项。修前仍显示当前模型和 model-01 等首页内容。修后固定 Select model 标题，末项名称单行截断。截图分别在 performance/picker-shadow/old-model-scroll-end.png、r425-model-scroll.png、r429-wheel.png。
 - 修后第一次滚底并截图，随后点末项时回到首页，当前模型未变。再次滚底立即实际点击后成功收起，触发器显示完整末项名称。重新打开，↑ 与回车切到 model-24，再开后 ↓ 与回车切回末项。长时间停留后滚动位置的稳定性仍待定位。
 - 固定标题之外的可见区域参与命中和键盘定位。先前候选的内层滚区未显式允许收缩，独立审查提出后已修订。最终限定差异 SHA-256 `c8ff3b5a506942cee3a6147e1e98a235a1d023aea8473d9848ea78cb4abd49cd`。Rust/Cargo 1.98.0，release、fmt、严格 Clippy、Python 5/15/40 通过，nextest 0 执行。隔离启动器路径、SHA 与新数据库核对通过。Windows/Linux 未运行。
+
+## Vega 0.2.0 模型列表静置后首次点击
+
+生产提交 `e5e2a4b5`，NSH 0.4.0，macOS 15.8.3。隔离工作目录中以 Rust/Cargo 1.98.0 构建 debug 可执行文件，SHA-256 为 `d180c65bc6a07b8475dc7a8853991171b195f3bc087c29be563bd825c1c5d47c`。Composer PARTIAL。
+
+- 实际窗口打开 26 项离线模型列表、滚到底。静置 47 秒后仍可见 model-24 和末项，单击末项即收起。触发器 AX 名称为完整长模型名，展开值为 off。原尺寸窗口、列表局部与选中后的截图保存在本机 target/nsh-native-review/dev-020-MlclsN/focus-run-MNi8lN。
+- 鼠标打开列表后，方向键 ↓ 和回车从 model-23 切换到 model-24。打开 General 后返回，触发器仍显示 model-24。General 实机截图中 Appearance 和 Defaults 末行下方仅有卡片外框。此次为隔离的新任务，没有测量载入长会话的耗时。
+- 使用 AX 按钮动作进入列表后连续发送 ↑ 和回车，菜单仍然展开，选中项未变。这条组合路径尚未通过。真实中文 IME、VoiceOver 和其他平台均未在本轮验收。
+- 两处生产差异经独立审查。隔离候选源码 fmt 和严格 workspace Clippy 通过。
