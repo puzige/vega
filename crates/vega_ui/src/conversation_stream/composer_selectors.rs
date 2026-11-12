@@ -372,6 +372,7 @@ struct Host {
     focus: FocusHandle,
     height: Option<f32>,
     activation_focus: Option<FocusHandle>,
+    accessibility_generation: ProjectionId,
     paired_host: Rc<std::cell::RefCell<Option<WeakEntity<Host>>>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -847,6 +848,15 @@ impl RenderOnce for Native {
             }));
             subscriptions.push(
                 cx.on_focus_out(&focus, window, |host: &mut Host, _, _, cx| {
+                    if host.snapshot.kind == Kind::ModelMenu && host.snapshot.activation.is_none() {
+                        host.accessibility_generation = ProjectionId::new();
+                        host.snapshot
+                            .native_revision
+                            .action
+                            .fetch_add(1, Ordering::AcqRel);
+                        cx.notify();
+                        return;
+                    }
                     host.snapshot.intent = ProjectionId::new();
                     host.snapshot.activation = None;
                     host.activation_focus = None;
@@ -863,6 +873,7 @@ impl RenderOnce for Native {
                 focus,
                 height: None,
                 activation_focus: None,
+                accessibility_generation: ProjectionId::new(),
                 paired_host: self.paired_host.clone(),
                 _subscriptions: subscriptions,
             }
@@ -1042,6 +1053,8 @@ impl Render for Host {
             let observed = self.snapshot.clone();
             let focused = weak.clone();
             let focus_observed = observed.clone();
+            let click_generation = self.accessibility_generation.clone();
+            let focus_generation = click_generation.clone();
             let focus_target = if self.snapshot.kind == Kind::PermissionMenu {
                 owner.read(cx).permission_editor.options[index].clone()
             } else {
@@ -1068,7 +1081,9 @@ impl Render for Host {
                     })
                     .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
                         let _ = focused.update(cx, |host, cx| {
-                            if host.valid(&focus_observed, window, cx) {
+                            if host.accessibility_generation.matches(&focus_generation)
+                                && host.valid(&focus_observed, window, cx)
+                            {
                                 host.snapshot.selected = Some(index);
                                 host.snapshot.intent = ProjectionId::new();
                                 host.snapshot.activation = None;
@@ -1079,7 +1094,9 @@ impl Render for Host {
                     })
                     .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
                         let _ = weak.update(cx, |host, cx| {
-                            if host.valid(&observed, window, cx) {
+                            if host.accessibility_generation.matches(&click_generation)
+                                && host.valid(&observed, window, cx)
+                            {
                                 host.request(index, Origin::Accessibility, window, cx);
                             }
                         });

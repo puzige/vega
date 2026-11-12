@@ -84,13 +84,14 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         } else if model_menu {
             for title in &snapshot.header {
                 content = content.child(
-                    ns::text(title.clone())
-                        .flex_shrink_0()
-                        .px_2()
-                        .pt_2()
-                        .pb_1()
-                        .text_size(ns::px(Typography::METADATA))
-                        .text_color(crate::nsh::color(snapshot.colors.text_tertiary)),
+                    ns::view().flex_shrink_0().px_2().pt_2().pb_1().child(
+                        ns::text(title.clone())
+                            .text_size(ns::px(Typography::METADATA))
+                            .line_height(ns::px(
+                                Typography::METADATA * Typography::BODY_LINE_HEIGHT,
+                            ))
+                            .text_color(crate::nsh::color(snapshot.colors.text_tertiary)),
+                    ),
                 );
             }
         } else {
