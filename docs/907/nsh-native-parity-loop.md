@@ -644,3 +644,19 @@ macOS 15.8.2 arm64，1404pt 深色隔离窗口。生产提交 c3f39b1ed212d704af
 时间包含工具调度和抓帧，按窗口接收时间计。窗口合成图以标题、段落和代码三个区域的末帧文字像素比对。测试用窗口以独立 bundle ID 和 VEGA_HOME 启动。测试工具曾重复启动同一隔离应用，保留单个进程并在错误页点击 Retry 后正常打开，正式采样已核实窗口唯一。原始帧、分析程序 compare.py 及截图在 target/nsh-native-review/ns05-nNPYLg。实机测试结束后已关闭测试进程。
 
 独立审查发现父窗口的 IME 快捷键早于模态窗口保护判断，已修正并通过增量复核。源码差异指纹 651909604312572c3662101780cc0a7b28eacc42471bb187298415b4bb5457f2。VoiceOver、Windows/Linux、发布构建性能未在本次实机对照中运行。
+
+## 0.5.0 全量实机回归进行中
+
+macOS 15.8.3 arm64，独立 VEGA_HOME，真实生产窗口，测试项目、地址和凭据均为隔离夹具。交互录屏位于 target/nsh-native-review/ns05-nNPYLg/ui-loop-T7q4HP。起点 e13d11fa 对应上节候选哈希。项目提示修复 8ac97ffa 的二进制 SHA-256 为 4964631af4a40782cb374b22551ba065e3e35700dc2472f7bc86220df7af336b。MCP 修复 462d87aae15520689f64830833105a8c940b4635 的 LoopGate 二进制 SHA-256 为 29b32827bde97744e1651332d1e416de98038755dd0f26efbbbadc13f63f9cbf。
+
+| 范围 | 状态 | 实际操作、证据与缺口 |
+| --- | --- | --- |
+| 主窗口 | PARTIAL | 新建项目任务、改名、置顶、取消删除，备份后确认删除，数据库与窗口一致。tasks.mp4。草稿恢复待查。 |
+| 会话 | PARTIAL | 隔离服务先触发缺少凭据的失败，修正夹具后 Retry，窗口显示流式标题、列表与 Rust 代码。retry.mp4。子 Agent、锚点和选择复制待查。 |
+| Composer | PARTIAL | 项目按钮提示曾盖住标签，移动提示渲染位置后，鼠标打开和关闭选择器可见完整标签。before2.mp4、after.mp4。中文输入法候选、附件和排队待查。 |
+| 权限与提问 | PARTIAL | 回答双选项提问并提交，记录中含选中答案。拒绝写入后文件不存在，独立调用单次允许后生成 33 字节测试文件。questions.mp4、approval.mp4。危险确认、CUA 引导待查。 |
+| 设置 | PARTIAL | 浏览六页，切换中文、深色并重开。MCP 空列表曾误报编辑冲突，复现与重测见 settings.mp4、mcp-retest.mp4。462d87aa 再次打开中文 MCP，显示空列表和两个新增入口。外部编辑冲突、各页字段保存仍待测。 |
+| 工作区 | PARTIAL | 打开 README.md 的真实 Diff，选择文件、填写说明并提交。隔离仓库新提交 dabb799，工作区随后干净。navigation.mp4。分支、图片、产物和自动化仍待查。 |
+| 终端 | FAIL | 逐字输入 echo，PTY 收到多个累计前缀。粘贴正常，隐藏后恢复同一 shell PID。workspace.mp4。实验候选恢复逐字输入，但独立审查发现 AX SetValue 丢失，未纳入上述源码。 |
+| 跨切面 | PARTIAL | 已检查中英、浅深色、设置鼠标焦点和项目提示。原生 IME、VoiceOver、窄窗及完整快捷键仍待查。 |
+| 平台与交付 | PARTIAL | 两处生产修复分别完成非作者审查。干净候选构建、fmt、Clippy 通过。nextest 执行 0 项，Python 三组分别执行 5、15、40 项。Windows/Linux 未运行，发布未运行。 |
