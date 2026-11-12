@@ -313,6 +313,7 @@ impl DiagnosticsWriter {
             occurred_at: now_ms(),
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
+                compaction_rejection: None,
                 runtime_stage: attempt.metrics.runtime_stage.map(str::to_owned),
                 protocol_reason: attempt.metrics.protocol_reason.map(str::to_owned),
                 credential_stage: attempt.metrics.credential_stage.map(str::to_owned),

@@ -493,7 +493,7 @@ impl ConversationCompactionHook<'_> {
             return Ok(None);
         }
         vega_runtime::computer_use::redact_ephemeral_messages(&mut request.messages);
-        validate_precompute_source(&captured, &request)?;
+        validate_precompute_source(&captured, &request, self.diagnostics.as_ref())?;
         request.require_source_fence = true;
         request.source_version = captured.source.source_version;
         request.source_fingerprint = Some(captured.source.fingerprint.clone());
@@ -559,12 +559,18 @@ impl ConversationCompactionHook<'_> {
 fn validate_precompute_source(
     captured: &CapturedCompaction,
     request: &ContextCompactionRequest,
+    diagnostics: Option<&super::super::diagnostics::DiagnosticsContext>,
 ) -> Result<(), VegaError> {
     if request.require_source_fence || request.source_owner_id.is_none() {
-        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
-            .map_err(|failure| *failure.error);
+        return validate_request_source_with_diagnostics(
+            &captured.source,
+            captured.checkpoint.as_ref(),
+            request,
+            diagnostics,
+        )
+        .map_err(|failure| *failure.error);
     }
-    let changed = || context_error(ContextRuntimeError::SourceChanged);
+    let changed = || Rejection::SourceFence.error(diagnostics);
     if captured.source.source_version < request.source_version {
         return Err(changed());
     }
@@ -573,7 +579,7 @@ fn validate_precompute_source(
         &captured.source,
         captured.checkpoint.as_ref(),
     )
-    .map_err(|_| changed())?;
+    .map_err(|_| Rejection::HistoryProjection.error(diagnostics))?;
     let mut owned = projected.clone();
     owned.messages.retain(|message| message.id == owner);
     owned.tool_calls.retain(|call| call.message_id == owner);
@@ -585,30 +591,40 @@ fn validate_precompute_source(
             .iter()
             .all(|message| message.content.is_empty())
     {
-        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
-            .map_err(|failure| *failure.error);
+        return validate_request_source_with_diagnostics(
+            &captured.source,
+            captured.checkpoint.as_ref(),
+            request,
+            diagnostics,
+        )
+        .map_err(|failure| *failure.error);
     }
     for message in &mut owned.messages {
         message.status = "done".into();
     }
     let mut suffix =
         super::super::pipeline::history_from_context_source(&owned, "__precompute_owner__", None)
-            .map_err(|_| changed())?;
+            .map_err(|_| Rejection::HistoryProjection.error(diagnostics))?;
     vega_runtime::computer_use::redact_ephemeral_messages(&mut suffix);
     if suffix.is_empty() {
-        return validate_request_source(&captured.source, captured.checkpoint.as_ref(), request)
-            .map_err(|failure| *failure.error);
+        return validate_request_source_with_diagnostics(
+            &captured.source,
+            captured.checkpoint.as_ref(),
+            request,
+            diagnostics,
+        )
+        .map_err(|failure| *failure.error);
     }
     let split = request
         .messages
         .len()
         .checked_sub(suffix.len())
-        .ok_or_else(changed)?;
+        .ok_or_else(|| Rejection::HistoryOwned.error(diagnostics))?;
     if !durable_messages_equal(
         &suffix.iter().collect::<Vec<_>>(),
         &request.messages[split..].iter().collect::<Vec<_>>(),
     ) {
-        return Err(changed());
+        return Err(Rejection::HistoryOwned.error(diagnostics));
     }
     let prefix = normalize_terminal_history_groups(
         &projected,
@@ -619,6 +635,7 @@ fn validate_precompute_source(
             .map(|checkpoint| checkpoint.covered_through_seq),
         owner,
         &request.messages[..split],
+        diagnostics,
     )
     .map_err(|failure| *failure.error)?;
     let expected = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
@@ -631,7 +648,7 @@ fn validate_precompute_source(
         &expected.iter().collect::<Vec<_>>(),
         &prefix.iter().collect::<Vec<_>>(),
     ) {
-        return Err(changed());
+        return Err(Rejection::HistoryMessages.error(diagnostics));
     }
     Ok(())
 }

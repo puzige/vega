@@ -9,6 +9,8 @@ mod micro;
 pub(crate) mod precompute;
 mod projection;
 mod reactive;
+mod rejection;
+use rejection::Rejection;
 mod summary_fork;
 mod summary_variant;
 mod writer;
@@ -56,20 +58,18 @@ pub(crate) fn durable_messages_equal(expected: &[&ChatMessage], actual: &[&ChatM
         })
 }
 
-fn validate_request_source(
+fn validate_request_source_with_diagnostics(
     source: &vega_store::context_compaction::ContextSource,
     checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
     request: &ContextCompactionRequest,
+    diagnostics: Option<&super::diagnostics::DiagnosticsContext>,
 ) -> Result<(), ContextCompactionFailure> {
     let exact_source = source.source_version == request.source_version
         && request.source_fingerprint.as_deref() == Some(source.fingerprint.as_str());
     if (request.require_source_fence && !exact_source)
         || (!request.require_source_fence && source.source_version < request.source_version)
     {
-        return Err(failure(
-            context_error(ContextRuntimeError::SourceChanged),
-            None,
-        ));
+        return Err(failure(Rejection::SourceFence.error(diagnostics), None));
     }
 
     if !request.require_source_fence
@@ -87,7 +87,7 @@ fn validate_request_source(
             .map(|call| call.id.as_str())
             .collect::<HashSet<_>>();
         let projected_source = super::pipeline::source_after_checkpoint(source, checkpoint)
-            .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
+            .map_err(|_| failure(Rejection::HistoryProjection.error(diagnostics), None))?;
         let mut owned_source = projected_source.clone();
         owned_source
             .messages
@@ -103,7 +103,7 @@ fn validate_request_source(
             .retain(|image| image.message_id == owner_id);
         let mut canonical_owned =
             super::pipeline::history_from_context_source(&owned_source, "__owned_fence__", None)
-                .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?;
+                .map_err(|_| failure(Rejection::HistoryProjection.error(diagnostics), None))?;
         vega_runtime::computer_use::redact_ephemeral_messages(&mut canonical_owned);
         let is_owned = |message: &&ChatMessage| {
             (message.role == ChatRole::Assistant
@@ -120,10 +120,7 @@ fn validate_request_source(
         let expected_owned = canonical_owned.iter().filter(is_owned).collect::<Vec<_>>();
         let actual_owned = request.messages.iter().filter(is_owned).collect::<Vec<_>>();
         if !durable_messages_equal(&expected_owned, &actual_owned) {
-            return Err(failure(
-                context_error(ContextRuntimeError::SourceChanged),
-                None,
-            ));
+            return Err(failure(Rejection::HistoryOwned.error(diagnostics), None));
         }
         let request_without_owned_group =
             remove_owned_live_group(&request.messages, &owned_call_ids);
@@ -134,14 +131,12 @@ fn validate_request_source(
                 .map(|checkpoint| checkpoint.covered_through_seq),
             owner_id,
             &request_without_owned_group,
+            diagnostics,
         )?;
         let persisted_history = persisted_history.iter().collect::<Vec<_>>();
         let request_without_owned_group = request_without_owned_group.iter().collect::<Vec<_>>();
         if !durable_messages_equal(&persisted_history, &request_without_owned_group) {
-            return Err(failure(
-                context_error(ContextRuntimeError::SourceChanged),
-                None,
-            ));
+            return Err(failure(Rejection::HistoryMessages.error(diagnostics), None));
         }
     }
     Ok(())
@@ -1971,12 +1966,13 @@ impl ConversationCompactionHook<'_> {
         let thread_id = self.thread_id.clone();
         let model = self.model.clone();
         let admission = self.admission.clone();
+        let diagnostics = self.diagnostics.clone();
         let source_owner_id = request.source_owner_id.clone();
         let capture = tokio::task::spawn_blocking(move || {
             let store = Store::open(path).map_err(VegaError::Store)?;
             let admission =
                 super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+                    .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?;
             let transaction = store
                 .conn()
                 .unchecked_transaction()
@@ -1989,7 +1985,7 @@ impl ConversationCompactionHook<'_> {
                 )
                 .map_err(VegaError::Store)?;
             if !model_matches {
-                return Err(context_error(ContextRuntimeError::SourceChanged));
+                return Err(Rejection::SourceFence.error(diagnostics.as_ref()));
             }
             let (source, precompute) = if precompute {
                 let (source, fence) = vega_store::context_precompute::capture_in_transaction(
@@ -2035,9 +2031,11 @@ impl ConversationCompactionHook<'_> {
                             &store,
                             &vega_store::threads::find(&transaction, &thread_id)
                                 .map_err(VegaError::Store)?
-                                .ok_or_else(|| context_error(ContextRuntimeError::SourceChanged))?,
+                                .ok_or_else(|| {
+                                    Rejection::SourceFence.error(diagnostics.as_ref())
+                                })?,
                         )
-                        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?,
+                        .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?,
                     }),
                 )
             } else {
@@ -2066,7 +2064,7 @@ impl ConversationCompactionHook<'_> {
                 return Err(failure(context_error(ContextRuntimeError::SummaryTimedOut), None));
             }
             result = capture => result
-                .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?
+                .map_err(|_| failure(Rejection::WorkerJoin.error(self.diagnostics.as_ref()), None))?
                 .map_err(|error| failure(error, None))?,
         };
 
@@ -2116,7 +2114,12 @@ impl ConversationCompactionHook<'_> {
             self.credential_exceptions.as_ref(),
         )
         .map_err(|error| failure(error, None))?;
-        validate_request_source(&source, checkpoint.as_ref(), &request)?;
+        validate_request_source_with_diagnostics(
+            &source,
+            checkpoint.as_ref(),
+            &request,
+            self.diagnostics.as_ref(),
+        )?;
 
         let latest_user = source
             .messages
@@ -2694,8 +2697,9 @@ fn normalize_terminal_history_groups(
     minimum_seq: Option<u64>,
     current_owner: &str,
     messages: &[ChatMessage],
+    diagnostics: Option<&super::diagnostics::DiagnosticsContext>,
 ) -> Result<Vec<ChatMessage>, ContextCompactionFailure> {
-    let invalid = || failure(context_error(ContextRuntimeError::SourceChanged), None);
+    let invalid = || failure(Rejection::HistoryGroup.error(diagnostics), None);
     let mut owners = source.messages.iter().filter(|message| {
         message.role == "assistant"
             && message.id != current_owner
@@ -2768,10 +2772,11 @@ fn normalize_terminal_history_groups(
                             .flat_map(|message| &message.tool_calls)
                             .find(|expected| expected.id == call.id)
                             .ok_or_else(invalid)?;
-                        if canonical_call != call
-                            || stored.text_offset_bytes != Some(content.len() as i64)
-                        {
-                            return Err(invalid());
+                        if canonical_call != call {
+                            return Err(failure(Rejection::HistoryCall.error(diagnostics), None));
+                        }
+                        if stored.text_offset_bytes != Some(content.len() as i64) {
+                            return Err(failure(Rejection::HistoryOffset.error(diagnostics), None));
                         }
                         observed_calls.push(call.id.as_str());
                     }
@@ -2793,7 +2798,7 @@ fn normalize_terminal_history_groups(
                         })
                         .ok_or_else(invalid)?;
                     if message.without_runtime_metadata() != *expected {
-                        return Err(invalid());
+                        return Err(failure(Rejection::HistoryResult.error(diagnostics), None));
                     }
                     observed_results += 1;
                 }
@@ -2839,7 +2844,6 @@ fn normalize_terminal_history_groups(
     }
     Ok(projected)
 }
-
 fn remove_owned_live_group(
     messages: &[ChatMessage],
     owned_call_ids: &HashSet<&str>,

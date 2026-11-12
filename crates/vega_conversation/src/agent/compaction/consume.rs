@@ -11,11 +11,12 @@ impl ConversationCompactionHook<'_> {
         let path = self.database_path.clone();
         let thread_id = self.thread_id.clone();
         let admission = self.admission.clone();
+        let diagnostics = self.diagnostics.clone();
         let pending = tokio::task::spawn_blocking(move || {
             let store = Store::open(path).map_err(VegaError::Store)?;
             let admission =
                 super::super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+                    .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?;
             crate::types::ContextPrecomputeRegistry::global().pending(
                 store.database_identity(),
                 &thread_id,
@@ -23,7 +24,7 @@ impl ConversationCompactionHook<'_> {
             )
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        .map_err(|_| Rejection::WorkerJoin.error(self.diagnostics.as_ref()))??;
         if let Some(pending) = pending {
             tokio::select! {
                 biased;
@@ -100,6 +101,7 @@ impl ConversationCompactionHook<'_> {
         let thread_id = self.thread_id.clone();
         let model = self.model.clone();
         let admission = self.admission.clone();
+        let diagnostics = self.diagnostics.clone();
         let owner = request.source_owner_id.clone();
         let read_cancel = cancel.clone();
         let captured = tokio::task::spawn_blocking(move || {
@@ -109,7 +111,7 @@ impl ConversationCompactionHook<'_> {
             let store = Store::open(path).map_err(VegaError::Store)?;
             let admission =
                 super::super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+                    .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?;
             let transaction = store
                 .conn()
                 .unchecked_transaction()
@@ -122,7 +124,7 @@ impl ConversationCompactionHook<'_> {
                 )
                 .map_err(VegaError::Store)?;
             if !model_matches {
-                return Err(context_error(ContextRuntimeError::SourceChanged));
+                return Err(Rejection::SourceFence.error(diagnostics.as_ref()));
             }
             if pending {
                 return Ok(None);
@@ -148,15 +150,20 @@ impl ConversationCompactionHook<'_> {
             Ok::<_, VegaError>(Some((prepared, previous, admission)))
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        .map_err(|_| Rejection::WorkerJoin.error(self.diagnostics.as_ref()))??;
         let Some((prepared, previous, admission)) = captured else {
             return Ok(None);
         };
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
-        validate_request_source(prepared.source(), previous.as_ref(), request)
-            .map_err(|failure| *failure.error)?;
+        validate_request_source_with_diagnostics(
+            prepared.source(),
+            previous.as_ref(),
+            request,
+            self.diagnostics.as_ref(),
+        )
+        .map_err(|failure| *failure.error)?;
         if prepared.candidate().preferences_digest != self.precompute_preferences_digest() {
             return Ok(None);
         }
@@ -323,7 +330,7 @@ impl ConversationCompactionHook<'_> {
             )
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        .map_err(|_| Rejection::WorkerJoin.error(self.diagnostics.as_ref()))??;
         if matches!(install, Some(ContextCheckpointInstall::Stale)) {
             return Err(context_error(ContextRuntimeError::SourceChanged));
         }
