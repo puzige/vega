@@ -1,6 +1,9 @@
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
+mod prepared;
+pub use prepared::{PreparedCleanup, prepare_clean};
+
 pub fn exceptions(conn: &Connection, thread: &str) -> rusqlite::Result<Vec<(String, String)>> {
     conn.prepare(
         "SELECT rule_id, fingerprint FROM credential_privacy_exceptions WHERE thread_id = ?1",
@@ -201,7 +204,14 @@ where
     Ok(())
 }
 
-pub fn clean<F>(
+pub fn clean<F>(conn: &Connection, thread: &str, expected: &str, redact: F) -> rusqlite::Result<()>
+where
+    F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
+{
+    prepare_clean(conn, thread, expected, redact)?.install(conn)
+}
+
+fn clean_snapshot<F>(
     conn: &Connection,
     thread: &str,
     expected: &str,

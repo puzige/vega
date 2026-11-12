@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
+mod prepared;
+pub use prepared::{ForkProjection, PreparedForkInstall};
+
 #[derive(Debug, thiserror::Error)]
 pub enum ForkError {
     #[error("source thread does not exist")]
@@ -184,6 +187,16 @@ pub fn clone_prefix(
     through_message_id: &str,
     now: i64,
 ) -> Result<crate::threads::ThreadRow, ForkError> {
+    clone_prefix_with_origins(tx, source_thread_id, through_message_id, now, None)
+}
+
+fn clone_prefix_with_origins(
+    tx: &Transaction<'_>,
+    source_thread_id: &str,
+    through_message_id: &str,
+    now: i64,
+    origins: Option<&BTreeMap<String, crate::fork_mutations::MutationOrigin>>,
+) -> Result<crate::threads::ThreadRow, ForkError> {
     let source = crate::threads::find(tx, source_thread_id)?.ok_or(ForkError::MissingSource)?;
     if source.backend != "native"
         || source.parent_thread_id.is_some()
@@ -266,7 +279,22 @@ pub fn clone_prefix(
     for (id, owner, tool, _, _) in &calls {
         tx.execute("INSERT INTO tool_calls(id,thread_id,message_id,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes,description) SELECT ?1,?2,?3,seq,tool,input_json,output_text,output_full_path,status,approval,exit_code,duration_ms,created_at,finished_at,text_offset_bytes,description FROM tool_calls WHERE id=?4",params![mapped(&call_map,id)?,destination,mapped(&messages,owner)?,id])?;
         if matches!(tool.as_str(), "write" | "Write" | "edit" | "Edit") {
-            crate::fork_mutations::copy_origin(tx, source_thread_id, id, mapped(&call_map, id)?)?;
+            if let Some(origins) = origins {
+                let origin = origins
+                    .get(id)
+                    .ok_or_else(|| corrupt("missing mutation origin"))?;
+                tx.execute(
+                    "INSERT INTO fork_mutation_origins(call_id,project_id,source_thread_id,source_call_id) VALUES(?1,?2,?3,?4)",
+                    params![mapped(&call_map, id)?, origin.project_id, origin.thread_id, origin.call_id],
+                )?;
+            } else {
+                crate::fork_mutations::copy_origin(
+                    tx,
+                    source_thread_id,
+                    id,
+                    mapped(&call_map, id)?,
+                )?;
+            }
         }
     }
     for id in &owners {

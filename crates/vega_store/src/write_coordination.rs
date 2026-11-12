@@ -575,6 +575,7 @@ pub enum CommitFailure {
 pub struct WriteTransaction<'a> {
     transaction: Transaction<'a>,
     permit: WritePermit<'a>,
+    admission_remaining: Option<Duration>,
 }
 
 impl<'a> WriteTransaction<'a> {
@@ -602,6 +603,7 @@ impl<'a> WriteTransaction<'a> {
         Ok(Self {
             transaction,
             permit,
+            admission_remaining: None,
         })
     }
 
@@ -640,6 +642,9 @@ impl<'a> WriteTransaction<'a> {
                     return Ok(Self {
                         transaction,
                         permit,
+                        admission_remaining: Some(
+                            deadline.saturating_duration_since(Instant::now()),
+                        ),
                     });
                 }
                 Err(error) => {
@@ -668,10 +673,15 @@ impl<'a> WriteTransaction<'a> {
         }
     }
 
+    pub fn admission_remaining(&self) -> Option<Duration> {
+        self.admission_remaining
+    }
+
     pub fn commit(self) -> rusqlite::Result<()> {
         let Self {
             transaction,
             permit,
+            ..
         } = self;
         let started = permit.acquired;
         let result = transaction.commit();
@@ -683,6 +693,7 @@ impl<'a> WriteTransaction<'a> {
         let Self {
             transaction,
             permit,
+            ..
         } = self;
         let result = transaction.execute_batch("COMMIT");
         log_transaction(&permit, StorageOperation::Commit, permit.acquired, &result);
@@ -710,6 +721,7 @@ impl<'a> WriteTransaction<'a> {
         let Self {
             transaction,
             permit,
+            ..
         } = self;
         let started = permit.acquired;
         let result = transaction.rollback();

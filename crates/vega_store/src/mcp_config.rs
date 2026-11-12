@@ -1,4 +1,10 @@
-use std::collections::{HashMap, HashSet};
+mod prepared;
+
+pub use prepared::{
+    PreparedConfirmation, PreparedReconciliation, ReconciliationIntent, prepare_reconciliation,
+};
+
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 
@@ -7,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::mcp_servers::{self, McpEnvSlot, McpServerRow, McpStoreError};
-use crate::write_coordination::{WriteCategory, WriteTransaction};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Declaration {
@@ -287,212 +292,6 @@ pub(crate) fn stage(conn: &Connection) -> Result<(), McpStoreError> {
     Ok(())
 }
 
-fn remember(
-    conn: &Connection,
-    declaration: &Declaration,
-    revision: u64,
-) -> Result<(), McpStoreError> {
-    conn.execute(
-        "INSERT INTO mcp_config_identities (id, declaration, projected_revision) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(id) DO UPDATE SET declaration = excluded.declaration, projected_revision = excluded.projected_revision",
-        params![declaration.id, json(declaration)?, i64::try_from(revision).map_err(|_| McpStoreError::Invalid)?],
-    )?;
-    Ok(())
-}
-
-fn projection_unchanged(
-    conn: &Connection,
-    bytes: Option<&[u8]>,
-    declarations: &[Declaration],
-    validate: &impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
-) -> Result<bool, McpStoreError> {
-    let snapshot = conn.unchecked_transaction()?;
-    let (accepted, pending): (Option<Vec<u8>>, bool) = snapshot.query_row(
-        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if pending || accepted.as_deref() != Some(digest(bytes).as_slice()) {
-        return Ok(false);
-    }
-    let current = mcp_servers::list(&snapshot)?;
-    if current.len() != declarations.len() {
-        return Ok(false);
-    }
-    for declaration in declarations {
-        let Some(row) = current.iter().find(|row| row.id == declaration.id) else {
-            return Ok(false);
-        };
-        let mut projected = Declaration::from_row(row)?;
-        projected.enabled = declaration.enabled;
-        if row.deleting || (row.enabled && !declaration.enabled) || projected != *declaration {
-            return Ok(false);
-        }
-        let historical: Option<(String, bool, i64)> = snapshot.query_row(
-            "SELECT declaration, tombstoned, projected_revision FROM mcp_config_identities WHERE id = ?1",
-            [&declaration.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional()?;
-        let encoded = json(declaration)?;
-        if !historical.is_some_and(|(previous, tombstoned, revision)| {
-            !tombstoned
-                && previous == encoded
-                && u64::try_from(revision).ok() == Some(row.config_revision)
-        }) {
-            return Ok(false);
-        }
-        validate(row)?;
-    }
-    snapshot.commit()?;
-    Ok(true)
-}
-
-pub fn reconcile(
-    conn: &Connection,
-    path: &Path,
-    validate: impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
-) -> Result<Vec<String>, McpStoreError> {
-    let edit = crate::yaml_config::begin(path).map_err(io_error)?;
-    reconcile_with_edit(conn, path, validate, edit)
-}
-
-pub fn reconcile_with_edit(
-    conn: &Connection,
-    path: &Path,
-    validate: impl Fn(&McpServerRow) -> Result<(), McpStoreError>,
-    edit: crate::yaml_config::Edit,
-) -> Result<Vec<String>, McpStoreError> {
-    let mut bytes = edit.bytes();
-    let mut declarations = parse(bytes.as_deref())?;
-    if projection_unchanged(conn, bytes.as_deref(), &declarations, &validate)? {
-        if crate::yaml_config::read(path).map_err(io_error)? != bytes {
-            return Err(McpStoreError::Conflict);
-        }
-        return Ok(Vec::new());
-    }
-    let pending_before: Option<(Vec<u8>, String)> = conn.query_row(
-        "SELECT pending_base_digest, pending_declarations FROM mcp_config_state WHERE singleton = 1 AND pending_declarations IS NOT NULL",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional()?;
-    if let Some((base, target)) = &pending_before {
-        let target: Vec<Declaration> =
-            serde_json::from_str(target).map_err(|_| McpStoreError::Invalid)?;
-        if declarations != target {
-            if digest(bytes.as_deref()) != *base {
-                return Err(McpStoreError::Conflict);
-            }
-            bytes = Some(
-                edit.save_fields(&serde_json::json!({"mcp_servers": target}))
-                    .map_err(io_error)?,
-            );
-            declarations = parse(bytes.as_deref())?;
-            if declarations != target {
-                return Err(McpStoreError::Conflict);
-            }
-        }
-    }
-    let tx = WriteTransaction::new(conn, WriteCategory::McpServers)?;
-    let pending_current: Option<(Vec<u8>, String)> = tx.query_row(
-        "SELECT pending_base_digest, pending_declarations FROM mcp_config_state WHERE singleton = 1 AND pending_declarations IS NOT NULL",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional()?;
-    if pending_current != pending_before {
-        return Err(McpStoreError::Conflict);
-    }
-    let pending = pending_current.is_some();
-    let current = mcp_servers::list(&tx)?;
-    let current_by_id: HashMap<_, _> = current.iter().map(|row| (row.id.as_str(), row)).collect();
-    let mut changed = Vec::new();
-    for declaration in &declarations {
-        let mut row = declaration.row()?;
-        let historical: Option<(String, bool, i64)> = tx.query_row(
-            "SELECT declaration, tombstoned, projected_revision FROM mcp_config_identities WHERE id = ?1",
-            [&declaration.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional()?;
-        if historical.as_ref().is_some_and(|(_, dead, _)| *dead) {
-            return Err(McpStoreError::Conflict);
-        }
-        let old = current_by_id.get(declaration.id.as_str()).copied();
-        if old.is_some_and(|row| row.deleting) || (historical.is_some() && old.is_none()) {
-            return Err(McpStoreError::Conflict);
-        }
-        if let Some(old) = old {
-            row.config_revision = old.config_revision;
-            row.created_at = old.created_at;
-        }
-        validate(&row)?;
-        let unchanged = historical.as_ref().is_some_and(|(previous, _, revision)| {
-            json(declaration).is_ok_and(|value| value == *previous)
-                && old.is_some_and(|row| u64::try_from(*revision).ok() == Some(row.config_revision))
-        });
-        if unchanged {
-            continue;
-        }
-        if let Some(old) = old {
-            row.config_revision = old.config_revision;
-            row.created_at = old.created_at;
-            if pending {
-                if Declaration::from_row(old)? != *declaration {
-                    return Err(McpStoreError::Conflict);
-                }
-                remember(&tx, declaration, old.config_revision)?;
-                continue;
-            }
-            mcp_servers::validate_projection_refs(&row, Some(old))?;
-            row.config_revision = row
-                .config_revision
-                .checked_add(1)
-                .ok_or(McpStoreError::Invalid)?;
-            mcp_servers::queue_projection_cleanup(&tx, old, &row)?;
-        } else {
-            let audited: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM tool_calls WHERE tool LIKE 'mcp_%' AND json_extract(CASE WHEN json_valid(input_json) THEN input_json ELSE '{}' END, '$.server_id') = ?1)",
-                [&row.id], |row| row.get(0),
-            )?;
-            if audited {
-                return Err(McpStoreError::Conflict);
-            }
-            mcp_servers::validate_projection_refs(&row, None)?;
-        }
-        mcp_servers::write_projection(&tx, &row)?;
-        remember(&tx, declaration, row.config_revision)?;
-        changed.push(row.id.clone());
-    }
-    let declared: HashSet<_> = declarations.iter().map(|entry| entry.id.as_str()).collect();
-    for row in current
-        .iter()
-        .filter(|row| !declared.contains(row.id.as_str()))
-    {
-        let declaration = Declaration::from_row(row)?;
-        remember(&tx, &declaration, row.config_revision)?;
-        tx.execute(
-            "UPDATE mcp_config_identities SET tombstoned = 1 WHERE id = ?1",
-            [&row.id],
-        )?;
-        if !row.deleting {
-            mcp_servers::queue_projection_cleanup(
-                &tx,
-                row,
-                &McpServerRow {
-                    remote_credential_ref: None,
-                    local_env_refs_json: None,
-                    ..row.clone()
-                },
-            )?;
-            tx.execute("UPDATE mcp_servers SET enabled = 0, deleting = 1, config_revision = config_revision + 1 WHERE id = ?1", [&row.id])?;
-            changed.push(row.id.clone());
-        }
-    }
-    if crate::yaml_config::read(path).map_err(io_error)? != bytes {
-        return Err(McpStoreError::Conflict);
-    }
-    tx.execute(
-        "UPDATE mcp_config_state SET accepted_digest = ?1, generation = generation + 1, pending_base_digest = NULL, pending_declarations = NULL \
-         WHERE singleton = 1 AND (accepted_digest IS NULL OR accepted_digest != ?1 OR pending_declarations IS NOT NULL)",
-        [digest(bytes.as_deref())],
-    )?;
-    tx.commit()?;
-    Ok(changed)
-}
-
 pub fn admitted(
     conn: &Connection,
     path: &Path,
@@ -513,17 +312,50 @@ pub fn admitted(
     Ok(())
 }
 
+pub struct ValidatedProjectionSource(Option<Vec<u8>>);
+
+impl ValidatedProjectionSource {
+    pub fn read(path: &Path) -> Result<Self, McpStoreError> {
+        let bytes = crate::yaml_config::read(path).map_err(io_error)?;
+        parse(bytes.as_deref())?;
+        Ok(Self(bytes))
+    }
+}
+
+pub fn verify_current_projection(
+    conn: &Connection,
+    path: &Path,
+    validated: Option<&ValidatedProjectionSource>,
+) -> Result<(), McpStoreError> {
+    let bytes = crate::yaml_config::read(path).map_err(io_error)?;
+    if validated.is_none_or(|source| source.0 != bytes) {
+        parse(bytes.as_deref())?;
+    }
+    if matches_accepted_projection(conn, bytes.as_deref())? {
+        Ok(())
+    } else {
+        Err(McpStoreError::Conflict)
+    }
+}
+
+fn matches_accepted_projection(
+    conn: &Connection,
+    bytes: Option<&[u8]>,
+) -> Result<bool, McpStoreError> {
+    let (accepted, pending): (Option<Vec<u8>>, bool) = conn.query_row(
+        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
+        [], |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(!pending && accepted.as_deref() == Some(digest(bytes).as_slice()))
+}
+
 pub fn projection_current(
     conn: &Connection,
     path: &Path,
 ) -> Result<Vec<Declaration>, McpStoreError> {
     let bytes = crate::yaml_config::read(path).map_err(io_error)?;
     let declarations = parse(bytes.as_deref())?;
-    let (accepted, pending): (Option<Vec<u8>>, bool) = conn.query_row(
-        "SELECT accepted_digest, pending_declarations IS NOT NULL FROM mcp_config_state WHERE singleton = 1",
-        [], |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    if pending || accepted.as_deref() != Some(digest(bytes.as_deref()).as_slice()) {
+    if !matches_accepted_projection(conn, bytes.as_deref())? {
         return Err(McpStoreError::Conflict);
     }
     Ok(declarations)

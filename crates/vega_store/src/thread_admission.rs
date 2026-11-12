@@ -23,6 +23,10 @@ impl DatabaseIdentity {
         }
     }
 
+    pub(crate) fn matches_metadata(self, metadata: &std::fs::Metadata) -> bool {
+        matches!(self.0, Identity::File { device, inode } if device == metadata.dev() && inode == metadata.ino())
+    }
+
     pub(crate) fn for_connection(conn: &Connection) -> rusqlite::Result<Self> {
         let identity = match conn.path().filter(|path| !path.is_empty()) {
             Some(path) => {
@@ -37,7 +41,22 @@ impl DatabaseIdentity {
                     inode: metadata.ino(),
                 }
             }
-            None => Identity::Memory(Ulid::generate()),
+            None => {
+                let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE type='table' AND name='vega_connection_identity')", [], |row| row.get(0))?;
+                if !exists {
+                    conn.execute_batch("CREATE TEMP TABLE vega_connection_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL) STRICT;")?;
+                    conn.execute(
+                        "INSERT INTO temp.vega_connection_identity VALUES(1,?1)",
+                        [Ulid::generate().to_string()],
+                    )?;
+                }
+                let id: String = conn.query_row(
+                    "SELECT id FROM temp.vega_connection_identity WHERE singleton=1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Identity::Memory(id.parse().map_err(|_| rusqlite::Error::InvalidQuery)?)
+            }
         };
         Ok(Self(identity))
     }

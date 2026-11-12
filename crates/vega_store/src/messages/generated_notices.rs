@@ -36,24 +36,31 @@ pub fn record_generated_notice(
     content: &str,
     notice: &GeneratedNoticeRow,
 ) -> Result<bool, rusqlite::Error> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Messages,
-    )?;
-    if notice.message_id != message_id || !notice.is_valid_for(content) {
-        return Ok(false);
-    }
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::Messages,
     )?;
-    let Some(owner) = find(&tx, message_id)? else {
+    let result = record_generated_notice_in_transaction(&tx, message_id, content, notice)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+pub fn record_generated_notice_in_transaction(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    content: &str,
+    notice: &GeneratedNoticeRow,
+) -> Result<bool, rusqlite::Error> {
+    if notice.message_id != message_id || !notice.is_valid_for(content) {
+        return Ok(false);
+    }
+    let Some(owner) = find(tx, message_id)? else {
         return Ok(false);
     };
     if owner.role != "assistant" || owner.content != content {
         return Ok(false);
     }
-    let existing = read_for_message(&tx, message_id)?;
+    let existing = read_for_message(tx, message_id)?;
     validate_notices(&owner, &existing)?;
     if let Some(previous) = existing
         .iter()
@@ -86,7 +93,6 @@ pub fn record_generated_notice(
             notice.delivered_images.map(i64::from),
         ],
     )?;
-    tx.commit()?;
     Ok(true)
 }
 

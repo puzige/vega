@@ -20,7 +20,7 @@ impl PermissionResetSession {
         config_path: PathBuf,
         intent: PermissionResetIntent,
     ) -> Result<Self, PermissionResetError> {
-        let store = Store::open_existing(&database_path).map_err(unavailable)?;
+        let store = Store::open_read_only(&database_path).map_err(unavailable)?;
         let pause = pause_admission(&store)?;
         let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
         if store.database_identity() != intent.database {
@@ -215,7 +215,7 @@ impl PermissionResetSession {
     }
 
     fn store(&self) -> Result<Store, PermissionResetError> {
-        let store = Store::open_existing(&self.database_path).map_err(unavailable)?;
+        let store = Store::open_read_only(&self.database_path).map_err(unavailable)?;
         if store.database_identity() != self.intent.database {
             return Err(PermissionResetError::ConfigurationConflict);
         }
@@ -227,12 +227,7 @@ impl PermissionResetSession {
         if self.scheduling_paused {
             return Ok(());
         }
-        let _coordination = crate::permission_contracts::coordinate().map_err(unavailable)?;
-        let tx = store.immediate_transaction().map_err(unavailable)?;
-        crate::automation::pause_for_reset_in_transaction(&tx, crate::threads::now_ms())
-            .map_err(unavailable)?;
-        tx.commit_with_rollback()
-            .map_err(|_| PermissionResetError::OutcomeUnknown)?;
+        commit_reset(store, writer::ResetWrite::PauseScheduling)?;
         self.scheduling_paused = true;
         Ok(())
     }

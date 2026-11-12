@@ -53,9 +53,7 @@ pub fn enqueue_cached_projection(
     message: &PendingMessage,
     cached: &[PendingMessage],
 ) -> Result<PendingQueueProjection, ConversationError> {
-    let _coordination = crate::permission_contracts::coordinate()?;
-    crate::permission_contracts::require_admission_open(store)?;
-    require_authority(store, message)?;
+    validate_authority(store, message)?;
     crate::types::SkillMention::selections(&message.content, &message.skill_mentions)
         .ok_or_else(failure)?;
     crate::attachments::validate_images(&message.images).map_err(|_| failure())?;
@@ -75,29 +73,32 @@ pub fn enqueue_cached_projection(
     if message.content.is_empty() && message.images.is_empty() {
         return Err(failure());
     }
-    let tx = store.immediate_transaction().map_err(|_| failure())?;
-    if rows::count(&tx, &message.thread_id).map_err(|_| failure())? >= 64 {
-        return Err(ConversationError::Store(
-            vega_i18n::t("domain.pending.error.full").into(),
-        ));
-    }
-    rows::insert(
-        &tx,
-        &rows::PendingMessageRow {
-            id: message.id.clone(),
-            thread_id: message.thread_id.clone(),
-            ordinal: 0,
-            behavior: message.behavior.as_str().into(),
-            generation: message.generation.clone(),
-            payload,
-            created_at: now_ms(),
+    let snapshot = store
+        .conn()
+        .unchecked_transaction()
+        .map_err(|_| failure())?;
+    let expected = rows::list(&snapshot, &message.thread_id).map_err(|_| failure())?;
+    let mut projection = load_cached_conn(&snapshot, &message.thread_id, cached)?;
+    snapshot.commit().map_err(|_| failure())?;
+    let created_at = now_ms();
+    commit_pending(
+        store,
+        PendingWrite::Enqueue {
+            expected,
+            row: rows::PendingMessageRow {
+                id: message.id.clone(),
+                thread_id: message.thread_id.clone(),
+                ordinal: 0,
+                behavior: message.behavior.as_str().into(),
+                generation: message.generation.clone(),
+                payload,
+                created_at,
+            },
+            fence: message.permission_fence.clone().ok_or_else(failure)?,
         },
-    )
-    .map_err(|_| failure())?;
-    let mut accepted = cached.to_vec();
-    accepted.push(message.clone());
-    let projection = load_cached_conn(&tx, &message.thread_id, &accepted)?;
-    tx.commit().map_err(|_| failure())?;
+    )?;
+    projection.timestamps.insert(message.id.clone(), created_at);
+    projection.messages.push(message.clone());
     Ok(projection)
 }
 
@@ -165,17 +166,11 @@ pub fn remove(
     thread_id: &str,
     id: &str,
 ) -> Result<PendingMessage, ConversationError> {
-    let tx = store.immediate_transaction().map_err(|_| failure())?;
-    let row = rows::find(&tx, thread_id, id)
+    let row = rows::find(store.conn(), thread_id, id)
         .map_err(|_| failure())?
         .ok_or_else(failure)?;
-    let message = decode(row)?;
-    if !rows::remove(&tx, thread_id, id).map_err(|_| failure())? {
-        return Err(ConversationError::Store(
-            vega_i18n::t("domain.pending.error.delivering").into(),
-        ));
-    }
-    tx.commit().map_err(|_| failure())?;
+    let message = decode(row.clone())?;
+    commit_pending(store, PendingWrite::Remove { row })?;
     Ok(message)
 }
 
@@ -185,10 +180,14 @@ pub fn promote(
     id: &str,
     generation: &str,
 ) -> Result<(), ConversationError> {
-    if !rows::promote(store.conn(), thread_id, id, generation).map_err(|_| failure())? {
-        return Err(failure());
-    }
-    Ok(())
+    commit_pending(
+        store,
+        PendingWrite::Promote {
+            thread_id: thread_id.to_owned(),
+            id: id.to_owned(),
+            generation: generation.to_owned(),
+        },
+    )
 }
 
 pub fn recover(store: &Store, thread_id: &str) -> Result<Vec<PendingMessage>, ConversationError> {
@@ -208,7 +207,12 @@ pub fn recover_cached_projection(
     thread_id: &str,
     cached: &[PendingMessage],
 ) -> Result<PendingQueueProjection, ConversationError> {
-    rows::release_claims(store.conn(), thread_id).map_err(|_| failure())?;
+    commit_pending(
+        store,
+        PendingWrite::Recover {
+            thread_id: thread_id.to_owned(),
+        },
+    )?;
     load_cached_projection(store, thread_id, cached)
 }
 
@@ -287,6 +291,19 @@ pub(crate) fn require_authority(
     Ok(saved.clone())
 }
 
+fn require_authority_for_commit(
+    store: &Store,
+    message: &PendingMessage,
+) -> Result<crate::types::PermissionFence, ConversationError> {
+    let fence = message
+        .permission_fence
+        .as_ref()
+        .filter(|fence| fence.is_valid() && fence.thread_id == message.thread_id)
+        .ok_or(ConversationError::InvalidTaskIdentity)?;
+    verify_commit_fence(store, &message.thread_id, fence)?;
+    Ok(fence.clone())
+}
+
 pub fn validate_authority(
     store: &Store,
     message: &PendingMessage,
@@ -338,7 +355,7 @@ pub(crate) fn verify_dispatch(
     if message != accepted.message {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    require_authority(store, &message)
+    require_authority_for_commit(store, &message)
 }
 
 #[derive(Clone)]
@@ -443,7 +460,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }
-                let store = Store::open(database)
+                let store = Store::open_read_only(database)
                     .map_err(|error| VegaError::from(error).at_runtime_stage(Stage::PendingRead))?;
                 let _admission = match admission {
                     Some(admission)
@@ -513,7 +530,7 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 if require_authority(&store, &message).as_ref().ok() != Some(accepted) {
                     return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
                 }
-                let tx = store.immediate_transaction()?;
+                let tx = store.conn().unchecked_transaction()?;
                 if cancel.is_cancelled()
                     || rows::next_steer(&tx, &thread_id, &generation)?.as_ref() != Some(&row)
                 {
@@ -558,10 +575,10 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let this = self.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                let store = Store::open(&this.database)?;
+                let store = Store::open_read_only(&this.database)?;
                 let _coordination = crate::permission_contracts::coordinate()
                     .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
-                let mut prepared = this
+                let prepared = this
                     .prepared
                     .lock()
                     .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?;
@@ -584,23 +601,38 @@ impl RuntimeSteeringSource for QueueSteeringSource {
                 {
                     return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
                 }
+                let skill_generation = vega_store::skills::read_settings(store.conn())
+                    .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?
+                    .consent_generation;
                 if validate_steering_skills(&store, &message, &staged.admission, &staged.frozen)?
                     != input.skill_selections
                 {
                     return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
                 }
-                let tx = store.immediate_transaction()?;
-                if this.cancel.is_cancelled()
-                    || rows::next_steer(&tx, &this.thread_id, &this.generation)?.as_ref()
-                        != Some(row)
-                    || vega_store::messages::next_seq(&tx, &this.thread_id)?
-                        != input.user_message_seq
-                    || !rows::claim_steer(&tx, &this.thread_id, &input.id, &this.generation)?
+                let command = PendingWrite::Claim {
+                    row: row.clone(),
+                    seq: input.user_message_seq,
+                    admission: staged.admission.clone(),
+                    cancel: this.cancel.clone(),
+                    fence: message.permission_fence.clone().ok_or_else(|| {
+                        pending_failure(Stage::PendingAdmission, Reason::Admission)
+                    })?,
+                    skill_generation,
+                };
+                drop(prepared);
+                drop(_coordination);
+                commit_pending(&store, command)
+                    .map_err(|_| pending_failure(Stage::PendingClaim, Reason::Admission))?;
+                let mut prepared = this
+                    .prepared
+                    .lock()
+                    .map_err(|_| pending_failure(Stage::PendingWorker, Reason::Worker))?;
+                if prepared
+                    .as_ref()
+                    .is_some_and(|staged| staged.input.id == input.id)
                 {
-                    return Err(pending_failure(Stage::PendingClaim, Reason::Admission));
+                    *prepared = None;
                 }
-                tx.commit()?;
-                *prepared = None;
                 Ok(())
             })
             .await
@@ -617,14 +649,16 @@ impl RuntimeSteeringSource for QueueSteeringSource {
         let id = input.id.clone();
         async move {
             tokio::task::spawn_blocking(move || {
-                let store = Store::open(&this.database)?;
-                let tx = store.immediate_transaction()?;
-                tx.execute(
-                    "UPDATE pending_messages SET state = 'pending' WHERE thread_id = ?1 \
-                     AND id = ?2 AND generation = ?3 AND state = 'claimed'",
-                    (&this.thread_id, &id, &this.generation),
-                )?;
-                tx.commit()?;
+                let store = Store::open_read_only(&this.database)?;
+                commit_pending(
+                    &store,
+                    PendingWrite::Release {
+                        thread_id: this.thread_id.clone(),
+                        id,
+                        generation: this.generation.clone(),
+                    },
+                )
+                .map_err(|_| pending_failure(Stage::PendingClaim, Reason::Admission))?;
                 Ok(())
             })
             .await
@@ -646,7 +680,7 @@ pub(crate) fn verify_steering_acceptance(
     if message.content != input.original_content || message.images != input.message.images {
         return Err(pending_failure(Stage::PendingAdmission, Reason::Admission));
     }
-    require_authority(store, &message)
+    require_authority_for_commit(store, &message)
         .map_err(|_| pending_failure(Stage::PendingAdmission, Reason::Admission))?;
     Ok(())
 }
@@ -698,4 +732,157 @@ fn now_ms() -> i64 {
         .ok()
         .and_then(|value| i64::try_from(value.as_millis()).ok())
         .unwrap_or(0)
+}
+
+enum PendingWrite {
+    Enqueue {
+        expected: Vec<rows::PendingMessageRow>,
+        row: rows::PendingMessageRow,
+        fence: crate::types::PermissionFence,
+    },
+    Remove {
+        row: rows::PendingMessageRow,
+    },
+    Promote {
+        thread_id: String,
+        id: String,
+        generation: String,
+    },
+    Recover {
+        thread_id: String,
+    },
+    Release {
+        thread_id: String,
+        id: String,
+        generation: String,
+    },
+    Claim {
+        row: rows::PendingMessageRow,
+        seq: i64,
+        admission: crate::types::ThreadAdmission,
+        cancel: CancellationToken,
+        fence: crate::types::PermissionFence,
+        skill_generation: u64,
+    },
+}
+
+impl crate::database_writer::Sealed for PendingWrite {}
+
+impl crate::database_writer::DatabaseCommand for PendingWrite {
+    type Output = Result<(), ConversationError>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        let _coordination = crate::permission_contracts::coordinate()?;
+        let tx = store.immediate_transaction().map_err(|_| failure())?;
+        match self {
+            Self::Enqueue {
+                expected,
+                row,
+                fence,
+            } => {
+                if rows::list(&tx, &row.thread_id).map_err(|_| failure())? != expected {
+                    return Err(failure());
+                }
+                verify_commit_fence(store, &row.thread_id, &fence)?;
+                if rows::count(&tx, &row.thread_id).map_err(|_| failure())? >= 64 {
+                    return Err(ConversationError::Store(
+                        vega_i18n::t("domain.pending.error.full").into(),
+                    ));
+                }
+                rows::insert(&tx, &row).map_err(|_| failure())?;
+            }
+            Self::Remove { row } => {
+                if rows::find(&tx, &row.thread_id, &row.id)
+                    .map_err(|_| failure())?
+                    .as_ref()
+                    != Some(&row)
+                {
+                    return Err(failure());
+                }
+                if !rows::remove(&tx, &row.thread_id, &row.id).map_err(|_| failure())? {
+                    return Err(ConversationError::Store(
+                        vega_i18n::t("domain.pending.error.delivering").into(),
+                    ));
+                }
+            }
+            Self::Promote {
+                thread_id,
+                id,
+                generation,
+            } => {
+                if !rows::promote(&tx, &thread_id, &id, &generation).map_err(|_| failure())? {
+                    return Err(failure());
+                }
+            }
+            Self::Recover { thread_id } => {
+                rows::release_claims(&tx, &thread_id).map_err(|_| failure())?;
+            }
+            Self::Release {
+                thread_id,
+                id,
+                generation,
+            } => {
+                tx.execute(
+                    "UPDATE pending_messages SET state = 'pending' WHERE thread_id = ?1 AND id = ?2 AND generation = ?3 AND state = 'claimed'",
+                    (&thread_id, &id, &generation),
+                ).map_err(|_| failure())?;
+            }
+            Self::Claim {
+                row,
+                seq,
+                admission,
+                cancel,
+                fence,
+                skill_generation,
+            } => {
+                crate::thread_access::verify(store, &row.thread_id, &admission)?;
+                verify_commit_fence(store, &row.thread_id, &fence)?;
+                if cancel.is_cancelled()
+                    || vega_store::skills::read_settings(&tx)
+                        .map_err(|_| failure())?
+                        .consent_generation
+                        != skill_generation
+                    || rows::next_steer(&tx, &row.thread_id, &row.generation)
+                        .map_err(|_| failure())?
+                        .as_ref()
+                        != Some(&row)
+                    || vega_store::messages::next_seq(&tx, &row.thread_id).map_err(|_| failure())?
+                        != seq
+                    || !rows::claim_steer(&tx, &row.thread_id, &row.id, &row.generation)
+                        .map_err(|_| failure())?
+                {
+                    return Err(ConversationError::InvalidTaskIdentity);
+                }
+            }
+        }
+        tx.commit_with_rollback().map_err(|_| failure())?;
+        Ok(())
+    }
+}
+
+fn verify_commit_fence(
+    store: &Store,
+    thread_id: &str,
+    fence: &crate::types::PermissionFence,
+) -> Result<(), ConversationError> {
+    let row = vega_store::threads::find(store.conn(), thread_id)
+        .map_err(|_| failure())?
+        .ok_or_else(failure)?;
+    if !fence.is_valid()
+        || row.backend != "native"
+        || row.status != "active"
+        || crate::permission_contracts::capture_fence_for_commit(store, &row)? != *fence
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    Ok(())
+}
+
+fn commit_pending(store: &Store, command: PendingWrite) -> Result<(), ConversationError> {
+    crate::database_writer::commit(
+        store.database_path().ok_or_else(failure)?,
+        store.database_identity(),
+        command,
+    )
+    .map_err(|_| failure())?
 }

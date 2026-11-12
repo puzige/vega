@@ -13,6 +13,12 @@ use vega_conversation::types::*;
 use vega_store::Store;
 
 use crate::app_agent::AgentUpdate;
+use vega_conversation::codex_persistence::{
+    CodexSessionOutcome, CodexToolChange, CodexToolProposal,
+};
+
+mod writes;
+use writes::CodexWrites;
 
 #[derive(Clone, Copy)]
 pub(crate) enum CodexPreflightFailure {
@@ -56,8 +62,8 @@ pub(crate) fn prepare_codex_execution(
     }
     let arguments = CodexAdapterArgument::from_argv(&profile.args)
         .map_err(|_| CodexPreflightFailure::InvalidProfile)?;
-    let store =
-        Store::open(database_path).map_err(|_| CodexPreflightFailure::WorkspaceUnavailable)?;
+    let store = Store::open_read_only(database_path)
+        .map_err(|_| CodexPreflightFailure::WorkspaceUnavailable)?;
     let project = vega_store::projects::find(store.conn(), &draft.project_id)
         .map_err(|_| CodexPreflightFailure::WorkspaceUnavailable)?
         .ok_or(CodexPreflightFailure::WorkspaceUnavailable)?;
@@ -111,10 +117,9 @@ fn codex_executable_available(path: &Path) -> bool {
 }
 
 pub(crate) struct CodexWorkerRequest {
-    pub database_path: PathBuf,
+    pub persistence: vega_conversation::codex_persistence::CodexPersistence,
     pub thread: Thread,
     pub snapshot: CodexExecutionSnapshot,
-    pub intent: CodexSessionCreationState,
     pub prompt: String,
     pub permission_queue: PermissionQueue,
     pub cancel: CancellationToken,
@@ -122,72 +127,71 @@ pub(crate) struct CodexWorkerRequest {
 }
 
 pub(crate) fn run_codex_agent_worker(request: CodexWorkerRequest) -> bool {
-    let intent_id = match &request.intent {
-        CodexSessionCreationState::Intent { intent_id } => intent_id.clone(),
-        _ => return false,
-    };
-    let Ok(store) = Store::open(&request.database_path) else {
-        return false;
-    };
-    let arguments = request
-        .snapshot
-        .arguments
-        .iter()
-        .flat_map(|argument| argument.as_args().iter().cloned())
-        .collect::<Vec<_>>();
-    let launch = LaunchConfig::new(
-        PathBuf::from(&request.snapshot.executable),
-        arguments,
-        PathBuf::from(&request.snapshot.workspace.canonical_working_directory),
-    );
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(_) => {
-            let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-                &store,
-                &request.thread.id,
-                &intent_id,
-                CodexSessionFailureCode::ProcessStartFailed,
-            );
+    let store = CodexWrites::from_startup(request.persistence);
+    let success = (|| {
+        if request.cancel.is_cancelled() {
             return false;
         }
-    };
-    let connection = match runtime.block_on(Connection::spawn(launch)) {
-        Ok(connection) => Arc::new(connection),
-        Err(_) => {
-            let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-                &store,
-                &request.thread.id,
-                &intent_id,
-                CodexSessionFailureCode::ProcessStartFailed,
-            );
+        let arguments = request
+            .snapshot
+            .arguments
+            .iter()
+            .flat_map(|argument| argument.as_args().iter().cloned())
+            .collect::<Vec<_>>();
+        let launch = LaunchConfig::new(
+            PathBuf::from(&request.snapshot.executable),
+            arguments,
+            PathBuf::from(&request.snapshot.workspace.canonical_working_directory),
+        );
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
+                    code: CodexSessionFailureCode::ProcessStartFailed,
+                });
+                return false;
+            }
+        };
+        if request.cancel.is_cancelled() {
             return false;
         }
-    };
-    let success = runtime.block_on(run_codex_agent_with_connection(CodexAgentRunContext {
-        store: &store,
-        connection: connection.clone(),
-        thread: &request.thread,
-        snapshot: &request.snapshot,
-        intent_id: &intent_id,
-        prompt: &request.prompt,
-        permission_queue: &request.permission_queue,
-        cancel: request.cancel,
-        sender: &request.sender,
-    }));
-    runtime.block_on(connection.shutdown());
-    success
+        if store.validate_external_start().is_err() || request.cancel.is_cancelled() {
+            return false;
+        }
+        store.mark_external_started();
+        let connection = match runtime.block_on(Connection::spawn(launch)) {
+            Ok(connection) => Arc::new(connection),
+            Err(_) => {
+                let _ = store.session(CodexSessionOutcome::DefinitivelyFailed {
+                    code: CodexSessionFailureCode::ProcessStartFailed,
+                });
+                return false;
+            }
+        };
+        let success = runtime.block_on(run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &request.thread,
+            snapshot: &request.snapshot,
+            prompt: &request.prompt,
+            permission_queue: &request.permission_queue,
+            cancel: request.cancel,
+            sender: &request.sender,
+        }));
+        runtime.block_on(connection.shutdown());
+        success
+    })();
+    store.finish_worker(success)
 }
 
 pub(crate) struct CodexAgentRunContext<'a> {
-    store: &'a Store,
+    store: &'a CodexWrites,
     connection: Arc<Connection>,
     thread: &'a Thread,
     snapshot: &'a CodexExecutionSnapshot,
-    intent_id: &'a CodexSessionIntentId,
     prompt: &'a str,
     permission_queue: &'a PermissionQueue,
     cancel: CancellationToken,
@@ -200,16 +204,13 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
         connection,
         thread,
         snapshot,
-        intent_id,
         prompt,
         permission_queue,
         cancel,
         sender,
     } = context;
     let fail_intent = |code| {
-        let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
-            store, &thread.id, intent_id, code,
-        );
+        let _ = store.session(CodexSessionOutcome::DefinitivelyFailed { code });
     };
     if connection.initialize().await.is_err() {
         fail_intent(CodexSessionFailureCode::AdapterRejected);
@@ -224,12 +225,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     let session = match tokio::select! {
         biased;
         _ = cancel.cancelled() => {
-            let _ = vega_conversation::codex_tasks::mark_codex_session_uncertain(
-                store,
-                &thread.id,
-                intent_id,
-                CodexSessionUncertaintyCode::OutcomeUnknown,
-            );
+            let _ = store.session(CodexSessionOutcome::Uncertain { code: CodexSessionUncertaintyCode::OutcomeUnknown });
             return false;
         }
         result = &mut new_session => result,
@@ -240,12 +236,9 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
             return false;
         }
         Err(_) => {
-            let _ = vega_conversation::codex_tasks::mark_codex_session_uncertain(
-                store,
-                &thread.id,
-                intent_id,
-                CodexSessionUncertaintyCode::OutcomeUnknown,
-            );
+            let _ = store.session(CodexSessionOutcome::Uncertain {
+                code: CodexSessionUncertaintyCode::OutcomeUnknown,
+            });
             return false;
         }
     };
@@ -268,12 +261,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
         biased;
         _ = cancel.cancelled() => {
             let _ = connection.cancel(&session.session_id).await;
-            let _ = vega_conversation::codex_tasks::mark_codex_session_uncertain(
-                store,
-                &thread.id,
-                intent_id,
-                CodexSessionUncertaintyCode::OutcomeUnknown,
-            );
+            let _ = store.session(CodexSessionOutcome::Uncertain { code: CodexSessionUncertaintyCode::OutcomeUnknown });
             return false;
         }
         result = &mut set_mode => result,
@@ -287,29 +275,19 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
         }
         Err(_) => {
             let _ = connection.cancel(&session.session_id).await;
-            let _ = vega_conversation::codex_tasks::mark_codex_session_uncertain(
-                store,
-                &thread.id,
-                intent_id,
-                CodexSessionUncertaintyCode::OutcomeUnknown,
-            );
+            let _ = store.session(CodexSessionOutcome::Uncertain {
+                code: CodexSessionUncertaintyCode::OutcomeUnknown,
+            });
             return false;
         }
     }
-    if vega_conversation::codex_tasks::confirm_codex_session_creation(
-        store,
-        &thread.id,
-        intent_id,
-        &session.session_id,
-    )
-    .is_err()
+    if store
+        .session(CodexSessionOutcome::Confirmed {
+            session_id: session.session_id.clone(),
+        })
+        .is_err()
     {
-        let _ = vega_conversation::codex_tasks::mark_codex_session_uncertain(
-            store,
-            &thread.id,
-            intent_id,
-            CodexSessionUncertaintyCode::OutcomeUnknown,
-        );
+        let _ = connection.cancel(&session.session_id).await;
         return false;
     }
     let _ = sender.send(AgentUpdate::CodexModeConfirmed);
@@ -375,7 +353,44 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     let mut tool_activities = HashMap::new();
     let (permission_sender, mut permission_receiver) = tokio_mpsc::unbounded_channel();
     let permission_cancel = cancel.child_token();
+    let mut permission_tasks = tokio::task::JoinSet::new();
     loop {
+        if !store.healthy() {
+            permission_cancel.cancel();
+            permission_queue.timeout_active();
+            let _ = connection.cancel(&session.session_id).await;
+            settle_codex_permissions(
+                store,
+                &permission_cancel,
+                permission_queue,
+                &mut permission_tasks,
+                &mut permission_receiver,
+                &mut tool_activities,
+                sender,
+            )
+            .await;
+            finalize_codex_tool_activities(
+                store,
+                &thread.id,
+                &assistant_message_id,
+                &mut tool_activities,
+                ToolCallStatus::Failed,
+                sender,
+            );
+            finish_codex_message(
+                store,
+                &assistant_message_id,
+                &assistant_text,
+                "failed",
+                run_started_at,
+            );
+            send_codex_error(
+                sender,
+                &assistant_message_id,
+                u64::try_from(run_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            );
+            return false;
+        }
         tokio::select! {
             biased;
             _ = cancel.cancelled(), if cancel_deadline.is_none() => {
@@ -390,6 +405,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
             } => {
                 permission_cancel.cancel();
                 permission_queue.timeout_active();
+                settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                 finalize_codex_tool_activities(
                     store,
                     &thread.id,
@@ -424,11 +440,9 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                             && let Some(delta) = params.pointer("/update/content/text").and_then(Value::as_str)
                         {
                             assistant_text.push_str(delta);
-                            let _ = vega_store::messages::update_streaming_content(
-                                store.conn(),
-                                &assistant_message_id,
-                                &assistant_text,
-                            );
+                            if store.stream(&assistant_message_id, &assistant_text).is_err() {
+                                continue;
+                            }
                             let _ = sender.send(AgentUpdate::Event(ConversationEvent::TextDelta {
                                 message_id: assistant_message_id.clone(),
                                 delta: delta.to_string(),
@@ -473,6 +487,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                             permission_cancel.cancel();
                             permission_queue.timeout_active();
                             let _ = connection.cancel(&session.session_id).await;
+                            settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                             finalize_codex_tool_activities(
                                 store,
                                 &thread.id,
@@ -508,6 +523,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                             permission_cancel.cancel();
                             permission_queue.timeout_active();
                             let _ = connection.cancel(&session.session_id).await;
+                            settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                             finalize_codex_tool_activities(
                                 store,
                                 &thread.id,
@@ -538,18 +554,11 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                         let queue = permission_queue.clone();
                         let cancel = permission_cancel.clone();
                         let permission_sender = permission_sender.clone();
-                        tokio::spawn(async move {
-                            let selected = match queue.request(permission, cancel.clone()).await {
-                                Ok(PermissionDecision::AcpOption { option_id }) => Some(
-                                    request.options.iter().find(|option| option.option_id == option_id)
-                                        .map(|option| (option_id, option.kind.clone())),
-                                ),
-                                _ => None,
-                            };
-                            let resolved = match selected.flatten() {
+                        permission_tasks.spawn(async move {
+                            let selected = select_codex_permission(&queue, permission, cancel.clone()).await;
+                            let resolved = match selected {
                                 Some((option_id, kind))
-                                    if codex_permission_action(kind.as_deref()).is_some()
-                                        && connection
+                                    if connection
                                             .respond_permission(
                                                 request.request_id.clone(),
                                                 &option_id,
@@ -577,6 +586,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                         )
                         .await
                         {
+                            settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                             return finish_codex_prompt_result(
                                 result,
                                 CodexPromptFinishContext {
@@ -594,6 +604,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                         }
                         permission_cancel.cancel();
                         permission_queue.timeout_active();
+                        settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                         finalize_codex_tool_activities(
                             store,
                             &thread.id,
@@ -612,6 +623,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                 let Ok(result) = result else {
                     permission_cancel.cancel();
                     permission_queue.timeout_active();
+                    settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                     finalize_codex_tool_activities(
                         store,
                         &thread.id,
@@ -624,6 +636,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                     send_codex_error(sender, &assistant_message_id, duration_ms);
                     return false;
                 };
+                settle_codex_permissions(store, &permission_cancel, permission_queue, &mut permission_tasks, &mut permission_receiver, &mut tool_activities, sender).await;
                 return finish_codex_prompt_result(
                     result,
                     CodexPromptFinishContext {
@@ -643,8 +656,47 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     }
 }
 
+async fn select_codex_permission(
+    queue: &PermissionQueue,
+    permission: PermissionRequest,
+    cancel: CancellationToken,
+) -> Option<(String, Option<String>)> {
+    let options = permission.acp_options.clone()?;
+    let PermissionDecision::AcpOption { option_id } =
+        queue.request(permission, cancel).await.ok()?
+    else {
+        return None;
+    };
+    let option = options
+        .into_iter()
+        .find(|option| option.option_id == option_id)?;
+    codex_permission_action(option.kind.as_deref())?;
+    Some((option_id, option.kind))
+}
+
+async fn settle_codex_permissions(
+    store: &CodexWrites,
+    cancel: &CancellationToken,
+    queue: &PermissionQueue,
+    tasks: &mut tokio::task::JoinSet<()>,
+    receiver: &mut tokio_mpsc::UnboundedReceiver<CodexPermissionResolution>,
+    activities: &mut HashMap<String, CodexToolActivity>,
+    sender: &std_mpsc::SyncSender<AgentUpdate>,
+) {
+    cancel.cancel();
+    queue.timeout_active();
+    while let Some(result) = tasks.join_next().await {
+        if result.is_err() {
+            store.fail("Codex permission resolution task failed");
+        }
+    }
+    while let Ok(resolution) = receiver.try_recv() {
+        apply_codex_permission_resolution(store, resolution, activities, sender);
+    }
+}
+
 struct CodexPromptFinishContext<'a> {
-    store: &'a Store,
+    store: &'a CodexWrites,
     thread_id: &'a str,
     message_id: &'a str,
     assistant_text: &'a str,
@@ -702,8 +754,18 @@ fn finish_codex_prompt_result(
         ToolCallStatus::Failed,
         sender,
     );
+    if result.stop_reason != "end_turn" || !store.healthy() {
+        let duration_ms =
+            finish_codex_message(store, message_id, assistant_text, "failed", run_started_at);
+        send_codex_error(sender, message_id, duration_ms);
+        return false;
+    }
     let duration_ms =
         finish_codex_message(store, message_id, assistant_text, "done", run_started_at);
+    if !store.healthy() {
+        send_codex_error(sender, message_id, duration_ms);
+        return false;
+    }
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::MessageFinished {
         message_id: message_id.to_owned(),
         stop_reason: ConversationStopReason::End,
@@ -714,11 +776,15 @@ fn finish_codex_prompt_result(
 
 struct CodexToolActivity {
     call_id: String,
+    message_id: String,
+    observed_terminal: Option<(ToolCallStatus, CodexTerminalReason)>,
+    persistence_uncertain: bool,
     identity: CodexAcpActivityIdentity,
     preview: CodexArgumentPreview,
     status: ToolCallStatus,
     permission_pending: bool,
     selected_by_user: bool,
+    rejected_by_user: bool,
     observed_in_progress: bool,
 }
 
@@ -733,7 +799,7 @@ enum CodexPermissionResolution {
 }
 
 fn ensure_codex_tool_activity(
-    store: &Store,
+    store: &CodexWrites,
     thread_id: &str,
     session_id: &str,
     message_id: &str,
@@ -747,7 +813,22 @@ fn ensure_codex_tool_activity(
         .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))?
         .to_owned();
     let external_id = format!("{thread_id}\0{session_id}\0{acp_tool_call_id}");
-    if activities.contains_key(&external_id) {
+    if let Some(activity) = activities.get(&external_id) {
+        if raw_tool_call.get("rawInput").is_some() || raw_tool_call.get("input").is_some() {
+            let (identity, preview) = codex_tool_identity(raw_tool_call)?;
+            if identity != activity.identity || preview != activity.preview {
+                store.fail("Codex repeated tool identity changed");
+                return None;
+            }
+        }
+        if raw_tool_call
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != activity.identity.kind)
+        {
+            store.fail("Codex repeated tool kind changed");
+            return None;
+        }
         return Some(external_id);
     }
     let (identity, preview) = codex_tool_identity(raw_tool_call)?;
@@ -759,29 +840,15 @@ fn ensure_codex_tool_activity(
         "argument_preview": identity.argument_preview,
     })
     .to_string();
-    let seq = vega_store::tool_calls::next_seq(store.conn(), thread_id).ok()?;
-    let created_at = unix_millis()?;
-    let (preview_kind, preview_count) = preview.storage_parts();
-    vega_store::tool_calls::insert_codex_pending(
-        store.conn(),
-        vega_store::tool_calls::NewToolCall {
-            id: &call_id,
-            thread_id,
-            message_id,
-            seq,
-            tool: "codex_acp",
-            input_json: &input_json,
-            description: None,
-            status: "pending_approval",
-            created_at,
-        },
-        &vega_store::tool_calls::StoredCodexDisplayMetadata {
-            preview_kind: preview_kind.into(),
-            preview_count,
-            terminal_reason: None,
-        },
-    )
-    .ok()?;
+    store
+        .propose(CodexToolProposal {
+            call_id: call_id.clone(),
+            message_id: message_id.into(),
+            identity: identity.clone(),
+            preview,
+            created_at: unix_millis()?,
+        })
+        .ok()?;
     let call = ToolCall {
         id: call_id.clone(),
         tool: "codex_acp".into(),
@@ -799,11 +866,15 @@ fn ensure_codex_tool_activity(
         external_id.clone(),
         CodexToolActivity {
             call_id,
+            message_id: message_id.into(),
+            observed_terminal: None,
+            persistence_uncertain: false,
             identity,
             preview,
             status: ToolCallStatus::PendingApproval,
             permission_pending: false,
             selected_by_user: false,
+            rejected_by_user: false,
             observed_in_progress: false,
         },
     );
@@ -887,7 +958,7 @@ fn codex_permission_request(
 }
 
 fn apply_codex_permission_resolution(
-    store: &Store,
+    store: &CodexWrites,
     resolution: CodexPermissionResolution,
     activities: &mut HashMap<String, CodexToolActivity>,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
@@ -898,6 +969,14 @@ fn apply_codex_permission_resolution(
                 return;
             };
             activity.permission_pending = false;
+            activity.rejected_by_user =
+                codex_permission_action(kind.as_deref()) == Some(CodexPermissionAction::Reject);
+            if let Some((status, reason)) = activity.observed_terminal {
+                activity.selected_by_user =
+                    codex_permission_action(kind.as_deref()) == Some(CodexPermissionAction::Allow);
+                finish_codex_tool(store, activity, status, reason, sender);
+                return;
+            }
             match codex_permission_action(kind.as_deref()) {
                 Some(CodexPermissionAction::Reject) => reject_codex_tool(
                     store,
@@ -908,7 +987,9 @@ fn apply_codex_permission_resolution(
                 ),
                 Some(CodexPermissionAction::Allow) => {
                     activity.selected_by_user = true;
-                    if activity.observed_in_progress {
+                    if let Some((status, reason)) = activity.observed_terminal {
+                        finish_codex_tool(store, activity, status, reason, sender);
+                    } else if activity.observed_in_progress {
                         start_codex_tool(store, activity, sender);
                     }
                 }
@@ -924,6 +1005,10 @@ fn apply_codex_permission_resolution(
         CodexPermissionResolution::TimedOut { external_id } => {
             if let Some(activity) = activities.get_mut(&external_id) {
                 activity.permission_pending = false;
+                if let Some((status, reason)) = activity.observed_terminal {
+                    finish_codex_tool(store, activity, status, reason, sender);
+                    return;
+                }
                 reject_codex_tool(
                     store,
                     activity,
@@ -951,7 +1036,7 @@ fn codex_permission_action(kind: Option<&str>) -> Option<CodexPermissionAction> 
 }
 
 fn apply_codex_tool_status(
-    store: &Store,
+    store: &CodexWrites,
     external_id: &str,
     status: Option<&str>,
     activities: &mut HashMap<String, CodexToolActivity>,
@@ -993,82 +1078,55 @@ fn apply_codex_tool_status(
 }
 
 fn start_codex_tool(
-    store: &Store,
+    store: &CodexWrites,
     activity: &mut CodexToolActivity,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
-    if activity.status == ToolCallStatus::PendingApproval {
-        let source = if activity.selected_by_user {
-            ApprovalSource::User
-        } else {
-            ApprovalSource::Auto
-        };
-        let audit = ApprovalAudit {
-            decision: Approval::Once,
-            note: None,
-            source,
-            danger: None,
-        };
-        let Ok(approval_json) = audit.to_json() else {
-            return;
-        };
-        if vega_store::tool_calls::approve(
-            store.conn(),
-            &activity.call_id,
-            &approval_json,
-            None,
-            unix_millis().unwrap_or_default(),
+    if activity.persistence_uncertain
+        || activity.status != ToolCallStatus::PendingApproval
+        || !activity.observed_in_progress
+    {
+        return;
+    }
+    if store
+        .tool(
+            activity,
+            CodexToolChange::Start {
+                selected_by_user: activity.selected_by_user,
+                observed_in_progress: activity.observed_in_progress,
+            },
         )
         .is_err()
-        {
-            return;
-        }
-        activity.status = ToolCallStatus::Approved;
-        let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallApproved {
-            call_id: activity.call_id.clone(),
-            approval: Approval::Once,
-        }));
-    }
-    if activity.status == ToolCallStatus::Approved
-        && vega_store::tool_calls::mark_running(store.conn(), &activity.call_id).is_ok()
     {
-        activity.status = ToolCallStatus::Running;
-        let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallRunning {
-            call_id: activity.call_id.clone(),
-            bash_started_at: None,
-        }));
+        activity.persistence_uncertain = true;
+        return;
     }
+    activity.status = ToolCallStatus::Running;
+    let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallApproved {
+        call_id: activity.call_id.clone(),
+        approval: Approval::Once,
+    }));
+    let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallRunning {
+        call_id: activity.call_id.clone(),
+        bash_started_at: None,
+    }));
 }
 
 fn reject_codex_tool(
-    store: &Store,
+    store: &CodexWrites,
     activity: &mut CodexToolActivity,
     source: ApprovalSource,
     reason: CodexTerminalReason,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
-    if activity.status != ToolCallStatus::PendingApproval {
+    if activity.persistence_uncertain || activity.status != ToolCallStatus::PendingApproval {
         return;
     }
-    let audit = ApprovalAudit {
-        decision: Approval::Deny,
-        note: None,
-        source,
-        danger: None,
-    };
-    let Ok(approval_json) = audit.to_json() else {
-        return;
-    };
-    if vega_store::tool_calls::reject_codex(
-        store.conn(),
-        &activity.call_id,
-        &approval_json,
-        reason.canonical_output(),
-        unix_millis().unwrap_or_default(),
-        reason.as_str(),
-    )
-    .is_err()
+    if store
+        .tool(activity, CodexToolChange::Reject { source, reason })
+        .is_err()
     {
+        activity.persistence_uncertain = true;
         return;
     }
     activity.status = ToolCallStatus::Rejected;
@@ -1079,52 +1137,60 @@ fn reject_codex_tool(
 }
 
 fn finish_codex_tool(
-    store: &Store,
+    store: &CodexWrites,
     activity: &mut CodexToolActivity,
     status: ToolCallStatus,
     reason: CodexTerminalReason,
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
-    if activity.status == ToolCallStatus::PendingApproval {
-        if activity.permission_pending {
-            return;
-        }
-        start_codex_tool(store, activity, sender);
+    if reason != CodexTerminalReason::ToolIncomplete {
+        activity.observed_terminal = Some((status, reason));
     }
-    if activity.status == ToolCallStatus::Approved {
-        start_codex_tool(store, activity, sender);
-    }
-    if activity.status != ToolCallStatus::Running {
+    if activity.persistence_uncertain
+        || activity.permission_pending
+        || !matches!(
+            activity.status,
+            ToolCallStatus::PendingApproval | ToolCallStatus::Running
+        )
+    {
         return;
     }
-    if vega_store::tool_calls::finish_codex(
-        store.conn(),
-        vega_store::tool_calls::FinishToolCall {
-            id: &activity.call_id,
-            status: match status {
-                ToolCallStatus::Success => "success",
-                ToolCallStatus::Cancelled => "cancelled",
-                _ => "failed",
+    if activity.status == ToolCallStatus::PendingApproval
+        && reason == CodexTerminalReason::ToolIncomplete
+    {
+        reject_codex_tool(
+            store,
+            activity,
+            ApprovalSource::Timeout,
+            CodexTerminalReason::PermissionIncomplete,
+            sender,
+        );
+        return;
+    }
+    if store
+        .tool(
+            activity,
+            CodexToolChange::Finish {
+                status,
+                reason,
+                selected_by_user: activity.selected_by_user,
+                rejected_by_user: activity.rejected_by_user,
             },
-            output_text: reason.canonical_output(),
-            exit_code: None,
-            duration_ms: None,
-            finished_at: unix_millis().unwrap_or_default(),
-        },
-        reason.as_str(),
-    )
-    .is_ok()
+        )
+        .is_ok()
     {
         activity.status = status;
         let _ = sender.send(AgentUpdate::Event(ConversationEvent::ToolCallFinished {
             call_id: activity.call_id.clone(),
             result: codex_tool_result(activity, status, reason),
         }));
+    } else {
+        activity.persistence_uncertain = true;
     }
 }
 
 fn finalize_codex_tool_activities(
-    store: &Store,
+    store: &CodexWrites,
     thread_id: &str,
     message_id: &str,
     activities: &mut HashMap<String, CodexToolActivity>,
@@ -1132,6 +1198,16 @@ fn finalize_codex_tool_activities(
     sender: &std_mpsc::SyncSender<AgentUpdate>,
 ) {
     for activity in activities.values_mut() {
+        if activity.persistence_uncertain {
+            continue;
+        }
+        if let Some((status, reason)) = activity.observed_terminal
+            && activity.status == ToolCallStatus::PendingApproval
+        {
+            activity.permission_pending = false;
+            finish_codex_tool(store, activity, status, reason, sender);
+            continue;
+        }
         if activity.status == ToolCallStatus::PendingApproval {
             if activity.permission_pending {
                 activity.permission_pending = false;
@@ -1197,61 +1273,22 @@ fn unix_millis() -> Option<i64> {
 }
 
 fn persist_codex_messages(
-    store: &Store,
+    store: &CodexWrites,
     thread: &Thread,
     prompt: &str,
 ) -> Option<(String, String, i64, i64)> {
-    let user_message_id = ulid::Ulid::generate().to_string();
-    let assistant_message_id = ulid::Ulid::generate().to_string();
-    let transaction = store.conn().unchecked_transaction().ok()?;
-    let user_seq = vega_store::messages::next_seq(&transaction, &thread.id).ok()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis()
-        .try_into()
-        .ok()?;
-    vega_store::messages::insert(
-        &transaction,
-        &vega_store::messages::MessageRow {
-            id: user_message_id.clone(),
-            thread_id: thread.id.clone(),
-            seq: user_seq,
-            role: "user".into(),
-            kind: "text".into(),
-            content: prompt.to_owned(),
-            status: "done".into(),
-            created_at: now,
-            plan_status: None,
-            plan_review_note: None,
-            plan_reviewed_at: None,
-        },
-    )
-    .ok()?;
-    let assistant_seq = vega_store::messages::next_seq(&transaction, &thread.id).ok()?;
-    vega_store::messages::insert(
-        &transaction,
-        &vega_store::messages::MessageRow {
-            id: assistant_message_id.clone(),
-            thread_id: thread.id.clone(),
-            seq: assistant_seq,
-            role: "assistant".into(),
-            kind: "text".into(),
-            content: String::new(),
-            status: "streaming".into(),
-            created_at: now,
-            plan_status: None,
-            plan_review_note: None,
-            plan_reviewed_at: None,
-        },
-    )
-    .ok()?;
-    transaction.commit().ok()?;
-    Some((user_message_id, assistant_message_id, assistant_seq, now))
+    let _ = thread;
+    let receipt = store.messages(prompt).ok()?;
+    Some((
+        receipt.user_message_id,
+        receipt.assistant_message_id,
+        receipt.assistant_seq,
+        receipt.created_at,
+    ))
 }
 
 fn finish_codex_message(
-    store: &Store,
+    store: &CodexWrites,
     message_id: &str,
     content: &str,
     status: &str,
@@ -1259,13 +1296,7 @@ fn finish_codex_message(
 ) -> u64 {
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     let stored_duration = i64::try_from(duration_ms).unwrap_or(i64::MAX);
-    let _ = vega_store::messages::finish_streaming(
-        store.conn(),
-        message_id,
-        content,
-        status,
-        Some(stored_duration),
-    );
+    let _ = store.finish(message_id, content, status, stored_duration);
     duration_ms
 }
 

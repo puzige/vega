@@ -1,4 +1,7 @@
 use vega_store::Store;
+
+pub(crate) mod startup;
+pub use startup::{CodexStartup, prepare_codex_startup};
 use vega_store::codex_tasks as store_codex_tasks;
 use vega_store::projects as store_projects;
 use vega_store::threads as store;
@@ -332,101 +335,6 @@ pub fn codex_task_identity(
     }))
 }
 
-pub fn materialize_codex_draft(
-    store: &Store,
-    draft: &Thread,
-    snapshot: &CodexExecutionSnapshot,
-) -> Result<Thread, ConversationError> {
-    validate_codex_snapshot(snapshot, true)?;
-    let project_id = draft.project_binding();
-    if draft.backend != TaskBackend::Codex || project_id != snapshot.workspace.project_id.as_deref()
-    {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    if let Some(project_id) = project_id {
-        let exists =
-            store_projects::project_exists(store.conn(), project_id).map_err(store_error)?;
-        if !exists {
-            return Err(ConversationError::NoProject);
-        }
-    }
-    let now = now_ms();
-    let materialized = Thread {
-        created_at: now,
-        updated_at: now,
-        permission_revision: 0,
-        full_access_grant: None,
-        default_permission: None,
-        ..draft.clone()
-    };
-    if let Some(preferences) = &materialized.reasoning_preferences {
-        for preference in preferences {
-            preference.validate().map_err(store_error)?;
-        }
-    }
-    let reasoning = materialized
-        .reasoning_preferences
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(store_error)?;
-    let values = store::NewThread {
-        reasoning_preferences: reasoning.as_deref(),
-        id: &materialized.id,
-        project_id: &materialized.project_id,
-        title: &materialized.title,
-        mode: materialized.mode.as_str(),
-        permission_mode: materialized.permission_mode.as_str(),
-        permission_revision: materialized.permission_revision,
-        full_access_grant: None,
-        model: &materialized.model,
-        status: materialized.status.as_str(),
-        pinned: materialized.pinned,
-        unread: materialized.unread,
-        created_at: materialized.created_at,
-        updated_at: materialized.updated_at,
-    };
-    let snapshot = new_store_snapshot(snapshot);
-    let created = store_codex_tasks::materialize_codex_thread(
-        store.conn(),
-        project_id,
-        values,
-        &snapshot,
-        now,
-    )
-    .map_err(store_error)?;
-    if !created {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    Ok(materialized)
-}
-
-pub fn bind_codex_task(
-    store: &Store,
-    thread_id: &str,
-    snapshot: &CodexExecutionSnapshot,
-) -> Result<CodexTaskIdentity, ConversationError> {
-    validate_codex_snapshot(snapshot, true)?;
-    let thread = store::find(store.conn(), thread_id)
-        .map_err(store_error)?
-        .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;
-    if TaskBackend::parse(&thread.backend) != Some(TaskBackend::Native)
-        || (!thread.project_id.is_empty()).then_some(thread.project_id.as_str())
-            != snapshot.workspace.project_id.as_deref()
-    {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    let record = new_store_snapshot(snapshot);
-    let created =
-        store_codex_tasks::bind_to_materialized_thread(store.conn(), thread_id, &record, now_ms())
-            .map_err(store_error)?;
-    if !created {
-        return Err(ConversationError::InvalidCodexSessionTransition);
-    }
-    codex_task_identity(store, thread_id)?
-        .ok_or_else(|| ConversationError::CorruptRow("Codex task identity".to_string()))
-}
-
 fn validate_codex_project_registration(
     store: &Store,
     snapshot: &CodexExecutionSnapshot,
@@ -435,93 +343,6 @@ fn validate_codex_project_registration(
         && !store_projects::project_exists(store.conn(), project_id).map_err(store_error)?
     {
         return Err(ConversationError::NoProject);
-    }
-    Ok(())
-}
-
-pub fn begin_codex_session_creation(
-    store: &Store,
-    thread_id: &str,
-) -> Result<CodexSessionCreationState, ConversationError> {
-    let identity =
-        codex_task_identity(store, thread_id)?.ok_or(ConversationError::InvalidTaskIdentity)?;
-    validate_codex_project_registration(store, &identity.snapshot)?;
-    if identity.session_creation != CodexSessionCreationState::Absent {
-        return Err(ConversationError::InvalidCodexSessionTransition);
-    }
-    let intent_id = CodexSessionIntentId::generate();
-    let changed = store_codex_tasks::begin_session_creation(
-        store.conn(),
-        thread_id,
-        intent_id.as_str(),
-        now_ms(),
-    )
-    .map_err(store_error)?;
-    if !changed {
-        return Err(ConversationError::InvalidCodexSessionTransition);
-    }
-    Ok(CodexSessionCreationState::Intent { intent_id })
-}
-
-pub fn confirm_codex_session_creation(
-    store: &Store,
-    thread_id: &str,
-    intent_id: &CodexSessionIntentId,
-    session_id: &str,
-) -> Result<(), ConversationError> {
-    if session_id.is_empty() || session_id.len() > 512 || session_id.chars().any(char::is_control) {
-        return Err(ConversationError::InvalidTaskIdentity);
-    }
-    let changed = store_codex_tasks::confirm_session_creation(
-        store.conn(),
-        thread_id,
-        intent_id.as_str(),
-        session_id,
-        now_ms(),
-    )
-    .map_err(store_error)?;
-    if !changed {
-        return Err(ConversationError::InvalidCodexSessionTransition);
-    }
-    Ok(())
-}
-
-pub fn mark_codex_session_uncertain(
-    store: &Store,
-    thread_id: &str,
-    intent_id: &CodexSessionIntentId,
-    code: CodexSessionUncertaintyCode,
-) -> Result<(), ConversationError> {
-    let changed = store_codex_tasks::mark_session_uncertain(
-        store.conn(),
-        thread_id,
-        intent_id.as_str(),
-        code.as_str(),
-        now_ms(),
-    )
-    .map_err(store_error)?;
-    if !changed {
-        return Err(ConversationError::InvalidCodexSessionTransition);
-    }
-    Ok(())
-}
-
-pub fn mark_codex_session_definitively_failed(
-    store: &Store,
-    thread_id: &str,
-    intent_id: &CodexSessionIntentId,
-    code: CodexSessionFailureCode,
-) -> Result<(), ConversationError> {
-    let changed = store_codex_tasks::mark_session_definitively_failed(
-        store.conn(),
-        thread_id,
-        intent_id.as_str(),
-        code.as_str(),
-        now_ms(),
-    )
-    .map_err(store_error)?;
-    if !changed {
-        return Err(ConversationError::InvalidCodexSessionTransition);
     }
     Ok(())
 }

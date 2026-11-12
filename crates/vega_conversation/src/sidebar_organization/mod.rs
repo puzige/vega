@@ -21,7 +21,20 @@ pub fn record_project_visit(
     project_id: &str,
 ) -> Result<(), SidebarOrganizationError> {
     let store = Store::open_existing(database).map_err(storage)?;
-    vega_store::projects::touch_last_opened(store.conn(), project_id).map_err(storage)
+    crate::database_writer::commit(
+        database,
+        store.database_identity(),
+        ProjectVisit(project_id.to_owned()),
+    )
+    .map_err(storage)?
+}
+struct ProjectVisit(String);
+impl crate::database_writer::Sealed for ProjectVisit {}
+impl crate::database_writer::DatabaseCommand for ProjectVisit {
+    type Output = Result<(), SidebarOrganizationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::projects::touch_last_opened(store.conn(), &self.0).map_err(storage)
+    }
 }
 
 pub fn remove_project(
@@ -29,7 +42,20 @@ pub fn remove_project(
     project_id: &str,
 ) -> Result<bool, SidebarOrganizationError> {
     let store = Store::open_existing(database).map_err(storage)?;
-    vega_store::projects::remove(store.conn(), project_id).map_err(storage)
+    crate::database_writer::commit(
+        database,
+        store.database_identity(),
+        RemoveProject(project_id.to_owned()),
+    )
+    .map_err(storage)?
+}
+struct RemoveProject(String);
+impl crate::database_writer::Sealed for RemoveProject {}
+impl crate::database_writer::DatabaseCommand for RemoveProject {
+    type Output = Result<bool, SidebarOrganizationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::projects::remove(store.conn(), &self.0).map_err(storage)
+    }
 }
 
 fn read_snapshot(store: &Store) -> Result<SidebarOrganizationSnapshot, SidebarOrganizationError> {
@@ -114,34 +140,67 @@ pub fn register_and_reveal_project(
             "domain.organization.validation.not_directory",
         ));
     }
-    let tx = store.immediate_transaction().map_err(storage)?;
-    let revision = read_snapshot(store)?.revision;
-    let original = path.to_string_lossy();
-    let normalized = canonical.to_string_lossy();
-    let existing = vega_store::projects::find_by_path(store.conn(), &original)
-        .map_err(storage)?
-        .or(vega_store::projects::find_by_path(store.conn(), &normalized).map_err(storage)?);
-    let project = match existing {
-        Some(project) => project,
-        None => {
-            let name = canonical
-                .file_name()
-                .and_then(|v| v.to_str())
-                .unwrap_or(&normalized);
-            vega_store::projects::create(store.conn(), &normalized, name, branch)
-                .map_err(storage)?
-        }
-    };
-    vega_store::projects::touch_last_opened(store.conn(), &project.id).map_err(storage)?;
-    let result = mutations::apply_in_transaction(
-        store,
-        &tx,
-        revision,
-        SidebarOrganizationAction::RevealProject {
-            project_id: project.id.clone(),
+    let original = path.to_string_lossy().into_owned();
+    let normalized = canonical.to_string_lossy().into_owned();
+    let name = canonical
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&normalized)
+        .to_owned();
+    let path = store
+        .database_path()
+        .ok_or_else(|| storage("database path unavailable"))?;
+    crate::database_writer::commit(
+        path,
+        store.database_identity(),
+        RegisterProject {
+            original,
+            normalized,
+            name,
+            branch: branch.map(str::to_owned),
         },
-        None,
-    )?;
-    tx.commit().map_err(storage)?;
-    Ok((project.id, result.snapshot))
+    )
+    .map_err(storage)?
+}
+struct RegisterProject {
+    original: String,
+    normalized: String,
+    name: String,
+    branch: Option<String>,
+}
+impl crate::database_writer::Sealed for RegisterProject {}
+impl crate::database_writer::DatabaseCommand for RegisterProject {
+    type Output = Result<(String, SidebarOrganizationSnapshot), SidebarOrganizationError>;
+    fn apply(self, store: &Store) -> Self::Output {
+        let Self {
+            original,
+            normalized,
+            name,
+            branch,
+        } = self;
+        let tx = store.immediate_transaction().map_err(storage)?;
+        let revision = read_snapshot(store)?.revision;
+        let existing = vega_store::projects::find_by_path(store.conn(), &original)
+            .map_err(storage)?
+            .or(vega_store::projects::find_by_path(store.conn(), &normalized).map_err(storage)?);
+        let project = match existing {
+            Some(project) => project,
+            None => {
+                vega_store::projects::create(store.conn(), &normalized, &name, branch.as_deref())
+                    .map_err(storage)?
+            }
+        };
+        vega_store::projects::touch_last_opened(store.conn(), &project.id).map_err(storage)?;
+        let result = mutations::apply_in_transaction(
+            store,
+            &tx,
+            revision,
+            SidebarOrganizationAction::RevealProject {
+                project_id: project.id.clone(),
+            },
+            None,
+        )?;
+        tx.commit().map_err(storage)?;
+        Ok((project.id, result.snapshot))
+    }
 }

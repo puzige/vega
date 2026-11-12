@@ -33,6 +33,7 @@ impl ConversationCompactionHook<'_> {
         let model = self.model.clone();
         let admission = self.admission.clone();
         let read_cancel = cancel.clone();
+        let diagnostics = self.diagnostics.clone();
         let (source, checkpoint, admission) = tokio::task::spawn_blocking(move || {
             if read_cancel.is_cancelled() {
                 return Err(VegaError::Cancelled);
@@ -40,7 +41,7 @@ impl ConversationCompactionHook<'_> {
             let store = Store::open(path).map_err(VegaError::Store)?;
             let admission =
                 super::super::ordinary::verified_admission(&store, &thread_id, admission.as_ref())
-                    .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+                    .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?;
             let transaction = store
                 .conn()
                 .unchecked_transaction()
@@ -53,11 +54,16 @@ impl ConversationCompactionHook<'_> {
             Ok::<_, VegaError>((source, checkpoint, admission))
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        .map_err(|_| Rejection::WorkerJoin.error(self.diagnostics.as_ref()))??;
         let mut validation = request.clone();
         vega_runtime::computer_use::redact_ephemeral_messages(&mut validation.messages);
-        validate_request_source(&source, checkpoint.as_ref(), &validation)
-            .map_err(|failure| *failure.error)?;
+        validate_request_source_with_diagnostics(
+            &source,
+            checkpoint.as_ref(),
+            &validation,
+            self.diagnostics.as_ref(),
+        )
+        .map_err(|failure| *failure.error)?;
         let active = super::super::pipeline::source_after_checkpoint(&source, checkpoint.as_ref())
             .map_err(|_| context_error(ContextRuntimeError::InvalidProjection))?;
         let candidates = active
@@ -101,30 +107,30 @@ impl ConversationCompactionHook<'_> {
             .iter()
             .map(|target| target.call_id.clone())
             .collect::<Vec<_>>();
+        let diagnostics = self.diagnostics.clone();
         let source_fingerprint = tokio::task::spawn_blocking(move || {
-            let _admission = admission;
-            let store = Store::open(path).map_err(VegaError::Store)?;
-            vega_store::context_micro::install(
-                store.conn(),
+            let store = Store::open_existing(&path)?;
+            let prepared = prepare_micro(
+                &store,
                 &source,
                 &model,
                 checkpoint.map(|checkpoint| checkpoint.id),
                 &call_ids,
-                now_ms(),
-                || cancel.is_cancelled(),
+                diagnostics.as_ref(),
+            )?;
+            super::writer::commit_micro(
+                &path,
+                diagnostics.as_ref(),
+                super::writer::Micro {
+                    prepared,
+                    cancel,
+                    admission,
+                    diagnostics: diagnostics.clone(),
+                },
             )
-            .map_err(|error| match error {
-                vega_store::context_compaction::ContextCheckpointError::Cancelled => {
-                    VegaError::Cancelled
-                }
-                vega_store::context_compaction::ContextCheckpointError::Store(error) => {
-                    VegaError::Store(error)
-                }
-                _ => context_error(ContextRuntimeError::SourceChanged),
-            })
         })
         .await
-        .map_err(|_| context_error(ContextRuntimeError::SourceChanged))??;
+        .map_err(|_| Rejection::WorkerJoin.error(self.diagnostics.as_ref()))??;
         Ok(Some(MicroCompactionResult {
             source_version,
             source_fingerprint,
@@ -132,4 +138,32 @@ impl ConversationCompactionHook<'_> {
             estimated_savings,
         }))
     }
+}
+
+pub(super) fn prepare_micro(
+    store: &Store,
+    source: &vega_store::context_compaction::ContextSource,
+    model: &str,
+    previous: Option<i64>,
+    call_ids: &[String],
+    diagnostics: Option<&super::super::diagnostics::DiagnosticsContext>,
+) -> Result<vega_store::context_micro::PreparedMicro, VegaError> {
+    vega_store::context_micro::PreparedMicro::prepare(
+        store.conn(),
+        source,
+        model,
+        previous,
+        call_ids,
+        now_ms(),
+    )
+    .map_err(|error| {
+        if !matches!(
+            error,
+            vega_store::context_compaction::ContextCheckpointError::Store(_)
+                | vega_store::context_compaction::ContextCheckpointError::Cancelled
+        ) {
+            Rejection::MicroPrepare.record(diagnostics);
+        }
+        super::precompute::store_error(error)
+    })
 }

@@ -11,13 +11,17 @@ mod responses;
 mod timestamp_boundaries;
 pub(crate) use generated_notices::copy_generated_notices_in_transaction;
 pub use generated_notices::{
-    GeneratedNoticeRow, record_generated_notice, remap_generated_notices_in_transaction,
+    GeneratedNoticeRow, record_generated_notice, record_generated_notice_in_transaction,
+    remap_generated_notices_in_transaction,
 };
 pub use response_starts::{
     last_assistant_response_start, record_assistant_response_start,
     rollback_assistant_response_starts,
 };
-pub use responses::{AssistantResponseRow, completed_response_text, record_assistant_response};
+pub use responses::{
+    AssistantResponseRow, completed_response_text, record_assistant_response,
+    record_assistant_response_in_transaction,
+};
 
 pub(crate) use timestamp_boundaries::remap_timestamp_offsets;
 pub use timestamp_boundaries::{
@@ -232,14 +236,30 @@ pub fn complete_plan(
     now: i64,
     execution_duration_ms: Option<i64>,
 ) -> Result<(), PlanTransitionError> {
-    let _permit = crate::write_coordination::acquire(
-        conn,
-        crate::write_coordination::WriteCategory::Messages,
-    )?;
     let tx = crate::write_coordination::WriteTransaction::new(
         conn,
         crate::write_coordination::WriteCategory::Messages,
     )?;
+    complete_plan_in_transaction(
+        &tx,
+        thread_id,
+        message_id,
+        content,
+        now,
+        execution_duration_ms,
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn complete_plan_in_transaction(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    message_id: &str,
+    content: &str,
+    now: i64,
+    execution_duration_ms: Option<i64>,
+) -> Result<(), PlanTransitionError> {
     let mode: Option<String> = tx
         .query_row(
             "SELECT mode FROM threads WHERE id = ?1",
@@ -252,7 +272,7 @@ pub fn complete_plan(
     }
     // Validate every plan or plan-metadata candidate before an UPDATE can
     // silently skip a semantically corrupt pending row.
-    let _ = validated_plans(&tx, thread_id)?;
+    let _ = validated_plans(tx, thread_id)?;
     tx.execute(
         "UPDATE messages SET plan_status = 'abandoned', \
          plan_review_note = 'superseded', plan_reviewed_at = ?1 \
@@ -287,8 +307,7 @@ pub fn complete_plan(
     if touched != 1 {
         return Err(PlanTransitionError::CorruptState);
     }
-    crate::credential_continuation::complete(&tx, message_id)?;
-    tx.commit()?;
+    crate::credential_continuation::complete(tx, message_id)?;
     Ok(())
 }
 

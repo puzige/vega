@@ -1,6 +1,9 @@
+pub(crate) mod background;
+pub use background::shutdown as shutdown_background_writes;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex};
 
 pub use vega_store::submission_diagnostics::{
     PreparationEvent, PreparationFailure, PreparationReason, PreparationStage, PreparationState,
@@ -86,51 +89,32 @@ struct WriteStatus {
     failed: AtomicBool,
 }
 
-struct WriteRequest {
-    path: PathBuf,
-    database: DatabaseIdentity,
+struct AppendPreparationEvent {
     event: PreparationEvent,
-    status: Arc<WriteStatus>,
 }
 
-fn writer() -> Option<&'static mpsc::SyncSender<WriteRequest>> {
-    static WRITER: OnceLock<Option<mpsc::SyncSender<WriteRequest>>> = OnceLock::new();
-    WRITER
-        .get_or_init(|| {
-            let (sender, receiver) = mpsc::sync_channel::<WriteRequest>(256);
-            std::thread::Builder::new()
-                .name("submission-diagnostics".into())
-                .spawn(move || {
-                    for request in receiver {
-                        let succeeded = Store::open_existing(&request.path).is_ok_and(|store| {
-                            if store.database_identity() != request.database {
-                                return false;
-                            }
-                            vega_store::submission_diagnostics::append(store.conn(), &request.event)
-                                .is_ok()
-                        });
-                        if !succeeded {
-                            request.status.failed.store(true, Ordering::Release);
-                            tracing::warn!("submission diagnostic persistence failed");
-                        }
-                        request.status.pending.fetch_sub(1, Ordering::AcqRel);
-                    }
-                })
-                .ok()
-                .map(|_| sender)
-        })
-        .as_ref()
+impl crate::database_writer::Sealed for AppendPreparationEvent {}
+
+impl crate::database_writer::DatabaseCommand for AppendPreparationEvent {
+    type Output = Result<(), String>;
+
+    fn apply(self, store: &Store) -> Self::Output {
+        vega_store::submission_diagnostics::append(store.conn(), &self.event)
+            .map_err(|_| "submission diagnostic persistence failed".to_string())
+    }
 }
 
 #[derive(Default)]
 struct JournalState {
     events: Vec<PreparationEvent>,
     target: Option<(PathBuf, DatabaseIdentity)>,
+    next_write: usize,
+    scheduled: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct Journal {
-    state: Mutex<JournalState>,
+    state: Arc<Mutex<JournalState>>,
     status: Arc<WriteStatus>,
 }
 
@@ -141,26 +125,66 @@ impl Journal {
             return;
         }
         state.target = Some((path.to_owned(), database));
-        for event in &state.events {
-            self.enqueue(path, database, event.clone());
-        }
+        self.status
+            .pending
+            .fetch_add(state.events.len(), Ordering::AcqRel);
+        drop(state);
+        self.schedule();
     }
 
-    fn enqueue(&self, path: &Path, database: DatabaseIdentity, event: PreparationEvent) {
-        self.status.pending.fetch_add(1, Ordering::AcqRel);
-        let sent = writer().is_some_and(|sender| {
-            sender
-                .try_send(WriteRequest {
-                    path: path.to_owned(),
-                    database,
-                    event,
-                    status: self.status.clone(),
-                })
-                .is_ok()
+    fn schedule(&self) {
+        let mut journal = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if journal.scheduled
+            || journal.target.is_none()
+            || journal.next_write == journal.events.len()
+        {
+            return;
+        }
+        journal.scheduled = true;
+        drop(journal);
+        let state = self.state.clone();
+        let status = self.status.clone();
+        let worker = background::submit(move || {
+            let mut failed = false;
+            loop {
+                let request = {
+                    let mut journal = state.lock().unwrap_or_else(|error| error.into_inner());
+                    if journal.next_write == journal.events.len() {
+                        journal.scheduled = false;
+                        return if failed {
+                            Err("submission diagnostic persistence failed".into())
+                        } else {
+                            Ok(())
+                        };
+                    }
+                    let Some((path, database)) = journal.target.clone() else {
+                        journal.scheduled = false;
+                        return Err("submission diagnostic target unavailable".into());
+                    };
+                    let event = journal.events[journal.next_write].clone();
+                    journal.next_write += 1;
+                    (path, database, event)
+                };
+                let succeeded = crate::database_writer::commit(
+                    &request.0,
+                    request.1,
+                    AppendPreparationEvent { event: request.2 },
+                )
+                .is_ok_and(|result| result.is_ok());
+                if !succeeded {
+                    failed = true;
+                    status.failed.store(true, Ordering::Release);
+                    tracing::warn!("submission diagnostic persistence failed");
+                }
+                status.pending.fetch_sub(1, Ordering::AcqRel);
+            }
         });
-        if !sent {
+        if worker.is_err() {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .scheduled = false;
             self.status.failed.store(true, Ordering::Release);
-            self.status.pending.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -190,10 +214,12 @@ impl Journal {
                     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
                 }),
         };
-        if let Some((path, database)) = &journal.target {
-            self.enqueue(path, *database, event.clone());
+        if journal.target.is_some() {
+            self.status.pending.fetch_add(1, Ordering::AcqRel);
         }
         journal.events.push(event);
+        drop(journal);
+        self.schedule();
     }
 
     pub(crate) fn export(&self, attempt: u64) -> String {

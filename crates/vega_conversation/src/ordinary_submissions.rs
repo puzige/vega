@@ -511,6 +511,56 @@ impl std::fmt::Debug for OrdinarySubmission {
     }
 }
 
+pub(crate) struct PermissionCommitWorker {
+    submission: OrdinarySubmission,
+    attempt: AttemptId,
+    worker: Ulid,
+    admission: ThreadAdmission,
+}
+
+impl PermissionCommitWorker {
+    pub(crate) fn stage_permission_fence(
+        &self,
+        fence: crate::types::PermissionFence,
+    ) -> Result<PendingPermissionFence<'_>, SubmissionError> {
+        if !fence.is_valid()
+            || fence.thread_id != self.submission.0.thread_id
+            || fence.database_identity != self.submission.0.database.permission_fence_key()
+            || fence.delegation.is_some()
+        {
+            return Err(SubmissionError::AdmissionMismatch);
+        }
+        let state = self.submission.lock()?;
+        let current = state
+            .attempts
+            .last()
+            .ok_or(SubmissionError::InvalidTransition)?;
+        if current.facts.id != self.attempt {
+            return Err(SubmissionError::StaleAttempt);
+        }
+        if current.facts.sealed || state.retired {
+            return Err(SubmissionError::Sealed);
+        }
+        if !current.workers.contains(&self.worker)
+            || !state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.same_owner(&self.admission))
+            || state
+                .permission_fence
+                .as_ref()
+                .is_some_and(|existing| existing != &fence)
+        {
+            return Err(SubmissionError::AdmissionMismatch);
+        }
+        Ok(PendingPermissionFence { state, fence })
+    }
+
+    pub(crate) fn admission(&self) -> &ThreadAdmission {
+        &self.admission
+    }
+}
+
 #[must_use]
 pub struct OrdinaryWorker {
     submission: OrdinarySubmission,
@@ -1021,26 +1071,16 @@ fn retry_eligibility(state: &SubmissionState) -> RetryEligibility {
 }
 
 impl OrdinaryWorker {
-    pub(crate) fn stage_permission_fence(
+    pub(crate) fn permission_commit_worker(
         &self,
-        fence: crate::types::PermissionFence,
-    ) -> Result<PendingPermissionFence<'_>, SubmissionError> {
-        if !fence.is_valid()
-            || fence.thread_id != self.submission.0.thread_id
-            || fence.database_identity != self.submission.0.database.permission_fence_key()
-            || fence.delegation.is_some()
-        {
-            return Err(SubmissionError::AdmissionMismatch);
-        }
-        let state = self.lock()?;
-        if state
-            .permission_fence
-            .as_ref()
-            .is_some_and(|existing| existing != &fence)
-        {
-            return Err(SubmissionError::AdmissionMismatch);
-        }
-        Ok(PendingPermissionFence { state, fence })
+    ) -> Result<PermissionCommitWorker, SubmissionError> {
+        drop(self.lock()?);
+        Ok(PermissionCommitWorker {
+            submission: self.submission.clone(),
+            attempt: self.attempt,
+            worker: self.worker,
+            admission: self.admission.clone(),
+        })
     }
 
     pub fn attempt_id(&self) -> AttemptId {
