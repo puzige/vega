@@ -28,6 +28,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 revision.update(|revision| *revision = revision.wrapping_add(1));
             },
         );
+        let model_menu = snapshot.kind == Kind::ModelMenu;
         let mut content = ns::view().w_full().flex_col();
         if snapshot.kind == Kind::Thinking {
             content = content.items_center().gap(ns::px(8.));
@@ -80,6 +81,18 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     .h(ns::px(1.))
                     .bg(crate::nsh::color(snapshot.colors.border_subtle)),
             );
+        } else if model_menu {
+            for title in &snapshot.header {
+                content = content.child(
+                    ns::text(title.clone())
+                        .flex_shrink_0()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .text_size(ns::px(Typography::METADATA))
+                        .text_color(crate::nsh::color(snapshot.colors.text_tertiary)),
+                );
+            }
         } else {
             for line in &snapshot.header {
                 content = content.child(
@@ -103,6 +116,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let measure_commands = commands.clone();
             let reveal = snapshot.selected == Some(index)
                 && matches!(snapshot.kind, Kind::ModelMenu | Kind::PermissionMenu);
+            let revealed = ns::signal(false);
             ns::effect(move || {
                 let observation = revision.get();
                 let commands = measure_commands.clone();
@@ -122,17 +136,23 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                             return;
                         }
                         if reveal
-                            && let Some(destination) =
-                                reveal_destination(control, container, offset.get_untracked())
+                            && (!model_menu || !revealed.get_untracked())
+                            && container.frame.size.height.0 > 0.
+                            && control.frame.size.height.0 > 0.
                         {
-                            viewport.scroll_to(
-                                ns::Point {
-                                    x: ns::px(0.),
-                                    y: ns::px(destination),
-                                },
-                                false,
-                            );
-                            return;
+                            revealed.set(true);
+                            if let Some(destination) =
+                                reveal_destination(control, container, offset.get_untracked())
+                            {
+                                viewport.scroll_to(
+                                    ns::Point {
+                                        x: ns::px(0.),
+                                        y: ns::px(destination),
+                                    },
+                                    false,
+                                );
+                                return;
+                            }
                         }
                         if visible(control, container)
                             && let Some((target, origin)) = observed.activation
@@ -149,12 +169,22 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 });
             });
             if let Some(group) = &row.group {
+                let mut heading = ns::view()
+                    .h(ns::px(Layout::COMPOSER_PICKER_GROUP_HEIGHT))
+                    .flex_shrink_0()
+                    .justify_center()
+                    .px_2();
+                if index > 0 {
+                    heading = heading.mt(ns::px(Layout::COMPOSER_PICKER_GROUP_GAP));
+                }
                 controls.push(
-                    ns::text(group.clone())
-                        .px_2()
-                        .py_1()
-                        .text_size(ns::px(Typography::METADATA))
-                        .text_color(crate::nsh::color(snapshot.colors.text_tertiary))
+                    heading
+                        .child(
+                            ns::text(group.clone())
+                                .truncate()
+                                .text_size(ns::px(Typography::METADATA))
+                                .text_color(crate::nsh::color(snapshot.colors.text_tertiary)),
+                        )
                         .into_element(),
                 );
             }
@@ -515,6 +545,27 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             content = content.child(title).child(track);
         } else if snapshot.kind == Kind::PermissionMenu {
             content = content.child(ns::view().flex_col().p_1().children(controls));
+        } else if model_menu {
+            let groups = snapshot
+                .rows
+                .iter()
+                .filter(|row| row.group.is_some())
+                .count();
+            let rows_height = snapshot.rows.len() as f32 * Typography::SIDEBAR_LINE_HEIGHT
+                + groups as f32 * Layout::COMPOSER_PICKER_GROUP_HEIGHT
+                + groups.saturating_sub(1) as f32 * Layout::COMPOSER_PICKER_GROUP_GAP;
+            content = content
+                .max_h(ns::px(Layout::COMPOSER_PICKER_MAX_HEIGHT))
+                .flex_shrink_0()
+                .child(
+                    ns::scroll()
+                        .element_ref(&viewport)
+                        .w_full()
+                        .flex_shrink(1.)
+                        .min_h(ns::px(0.))
+                        .h(ns::px(rows_height))
+                        .child(ns::view().w_full().flex_col().children(controls)),
+                );
         } else {
             content = content.children(controls);
         }
@@ -563,6 +614,9 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         });
         if !popup {
             return content.element_ref(&viewport).size_full().into_element();
+        }
+        if model_menu {
+            return content.into_element();
         }
         ns::scroll()
             .element_ref(&viewport)
