@@ -168,6 +168,7 @@
 "settings.mcp.error.invalid" = "Invalid configuration. Check the URL, absolute paths, arguments, and variable names."
 "settings.mcp.error.missing" = "The server was removed and the list was refreshed"
 "settings.mcp.error.oauth" = "Browser authorization failed, was canceled, or timed out. Check the server status and start again."
+"settings.mcp.error.reload" = "Could not load the current server list. Try refreshing it."
 "settings.mcp.error.store" = "Could not save local settings. Try again or check the data directory."
 "settings.mcp.error.transport" = "The server uses deprecated standalone HTTP+SSE. Use a Streamable HTTP endpoint instead."
 "settings.mcp.executable_placeholder" = "Absolute executable path"

@@ -1064,7 +1064,17 @@ impl SettingsView {
                         .disconnect_oauth(&id, revision, true)
                         .map(|_| McpOperationOutput::NoData),
                 };
-                let _ = sender.send((result, service.list(), service.step_up_offers()));
+                let mut servers = service.list();
+                if reading {
+                    for delay_ms in [10, 20, 40, 80, 160, 320] {
+                        if !matches!(servers, Err(McpSettingsError::Conflict)) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                        servers = service.list();
+                    }
+                }
+                let _ = sender.send((result, servers, service.step_up_offers()));
             });
         if worker.is_err() {
             self.mcp.busy = false;
@@ -1128,7 +1138,12 @@ impl SettingsView {
                             .retain(|id, _| this.mcp.servers.iter().any(|row| &row.id == id));
                     }
                     Err(error) => {
-                        this.mcp.message = Some(mcp_error_label(error));
+                        this.mcp.message =
+                            Some(if reading && matches!(error, McpSettingsError::Conflict) {
+                                SettingsText::key("settings.mcp.error.reload")
+                            } else {
+                                mcp_error_label(error)
+                            });
                         this.mcp.message_error = true;
                     }
                 }
@@ -1222,7 +1237,9 @@ impl SettingsView {
                             this.mcp.message = Some(message);
                             this.mcp.message_error = warning;
                         }
-                        if let Some(McpEditor::Existing { id, revision }) = this.mcp.editor.as_mut()
+                        if !reading
+                            && let Some(McpEditor::Existing { id, revision }) =
+                                this.mcp.editor.as_mut()
                             && let Some(row) = this.mcp.servers.iter().find(|row| row.id == *id)
                         {
                             *revision = row.config_revision;
@@ -1244,8 +1261,9 @@ impl SettingsView {
                         ) {
                             this.mcp.editor = None;
                             this.mcp.confirmation = None;
-                        } else if let Some(McpEditor::Existing { id, revision }) =
-                            this.mcp.editor.as_mut()
+                        } else if !reading
+                            && let Some(McpEditor::Existing { id, revision }) =
+                                this.mcp.editor.as_mut()
                             && let Some(row) = this.mcp.servers.iter().find(|row| row.id == *id)
                         {
                             *revision = row.config_revision;

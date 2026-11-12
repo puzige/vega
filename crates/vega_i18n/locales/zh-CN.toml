@@ -168,6 +168,7 @@
 "settings.mcp.error.invalid" = "配置不合法；请检查 URL、绝对路径、参数和变量名"
 "settings.mcp.error.missing" = "服务器已移除，列表已刷新"
 "settings.mcp.error.oauth" = "浏览器授权失败、被取消或已超时；请核对服务器状态后重新开始"
+"settings.mcp.error.reload" = "暂时无法读取最新的服务器列表，请刷新重试。"
 "settings.mcp.error.store" = "本地配置存储失败，请重试或检查数据目录"
 "settings.mcp.error.transport" = "服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
 "settings.mcp.executable_placeholder" = "可执行文件绝对路径"
