@@ -436,12 +436,14 @@ fn measured_button(
     let owner = Owner::current();
     let attempts = stored((None::<ProjectionId>, 0usize, false, 0f32));
     let wake = signal(0u64);
+    let laid_out = signal(false);
     let measurements = commands.clone();
     effect(move || {
         let selected = state.get();
         wake.get();
         let offset = horizontal.map_or(0., |(_, offset)| offset.get());
-        if !selected.focused
+        if !laid_out.get()
+            || !selected.focused
             || selected.selected != Some(action)
             || !selected.accepts(&snapshot, action)
         {
@@ -559,6 +561,9 @@ fn measured_button(
     let observed = observed.clone();
     view()
         .element_ref(&target)
+        .on_layout(move |bounds: &Bounds<Points>| {
+            laid_out.set(bounds.size.width.0 > 0. && bounds.size.height.0 > 0.);
+        })
         .role(AccessibilityRole::Button)
         .label(name)
         .accessibility_actions(vec![nsh_core::AccessibilityActionDef {
