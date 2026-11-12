@@ -1645,7 +1645,25 @@ pub(in crate::conversation_stream) fn render_fading(
         area: None,
         retained: Default::default(),
         lease: Weak::new(),
-        height: 28.,
+        // Reserve the tallest unwrapped code block while NSH measures the document.
+        height: {
+            let lines = content
+                .fragments
+                .iter()
+                .filter(|fragment| fragment.code)
+                .map(|fragment| fragment.rendered_text().lines().count())
+                .max()
+                .unwrap_or(0);
+            let estimate = (lines as f32
+                * vega_theme::Typography::CODE
+                * vega_theme::Typography::CODE_LINE_HEIGHT)
+                .max(28.);
+            if thinking {
+                estimate.min(vega_theme::Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+            } else {
+                estimate
+            }
+        },
         menu: None,
         code_targets: Vec::new(),
         pending_remap: None,
