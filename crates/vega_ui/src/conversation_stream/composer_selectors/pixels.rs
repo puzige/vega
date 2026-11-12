@@ -165,8 +165,10 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let selected = snapshot.selected == Some(index);
             let permission_option = snapshot.kind == Kind::PermissionMenu;
             let thinking = snapshot.kind == Kind::Thinking;
-            let show_ring =
-                selected && (!(permission_option || thinking) || snapshot.keyboard_focus_visible);
+            let model_option = snapshot.kind == Kind::ModelMenu;
+            let show_ring = selected
+                && !model_option
+                && (!(permission_option || thinking) || snapshot.keyboard_focus_visible);
             let is_trigger = matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger);
             let suppress_repeat_open = is_trigger && !row.checked;
             let checked_permission = permission_option && row.checked;
@@ -181,6 +183,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 colors.text_primary
             } else if row.checked {
                 colors.brand_primary
+            } else if model_option && !selected {
+                colors.text_secondary
             } else {
                 colors.text_primary
             };
@@ -211,6 +215,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 .rounded(ns::px(
                     if matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger) {
                         Layout::COMPOSER_TEXT_TRIGGER_HEIGHT / 2.
+                    } else if model_option {
+                        0.
                     } else if permission_option {
                         6.
                     } else {
@@ -248,7 +254,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 .bg(move || {
                     crate::nsh::color(if enabled && pressed.get() {
                         colors.bg_active
-                    } else if enabled && hover.get() {
+                    } else if enabled && !model_option && hover.get() {
                         colors.bg_hover
                     } else if checked_permission {
                         crate::menu_list::selected_row_bg(colors)
@@ -258,7 +264,11 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                         colors.bg_elevated.opacity(0.)
                     })
                 })
-                .border(ns::px(if permission_option { 0. } else { 1. }))
+                .border(ns::px(if permission_option || model_option {
+                    0.
+                } else {
+                    1.
+                }))
                 .border_color(crate::nsh::color(if show_ring {
                     colors.accent
                 } else {
@@ -381,7 +391,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
             let mut label = ns::text(row.label.clone())
                 .text_size(ns::px(Typography::SIDEBAR))
                 .text_color(crate::nsh::color(foreground));
-            if matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger) {
+            if model_option || matches!(snapshot.kind, Kind::PermissionTrigger | Kind::ModelTrigger)
+            {
                 label = label.truncate();
             } else if snapshot.kind == Kind::PermissionMenu {
                 label =
@@ -408,7 +419,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                 )));
             }
             control = control.child(text);
-            if snapshot.kind == Kind::PermissionMenu {
+            if permission_option || model_option {
                 let mut marker = ns::view()
                     .w(ns::px(Typography::SIDEBAR))
                     .flex_shrink_0()
@@ -418,8 +429,6 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     marker = marker.child(icon(crate::icons::Icon::Check, colors.brand_primary));
                 }
                 control = control.child(marker);
-            } else if row.checked && snapshot.kind == Kind::ModelMenu {
-                control = control.child(icon(crate::icons::Icon::Check, colors.brand_primary));
             }
             if snapshot.kind == Kind::ModelTrigger
                 || (snapshot.kind == Kind::Thinking && index == 0)
@@ -519,8 +528,8 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
         if popup {
             if snapshot.kind == Kind::Thinking {
                 content = content.pt(ns::px(12.)).pb(ns::px(14.));
-            } else if snapshot.kind != Kind::PermissionMenu {
-                content = content.p_1();
+            } else if snapshot.kind == Kind::ModelMenu {
+                content = content.overflow_hidden();
             }
             content = content
                 .bg(crate::nsh::color(snapshot.colors.bg_elevated))
