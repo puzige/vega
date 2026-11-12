@@ -48,4 +48,10 @@ fetch 后 origin/master 仍为上述完整基线，fast-forward 无新增提交�
 
 公开开发版本重新执行：10 发现 / 10 执行 / 10 通过 / 0 忽略 / 0 过滤，执行 4.24 秒；fmt、diff check、受影响双 crate 全目标严格 Clippy 通过。三组 Python 测试分别 5/5、15/15、40/40。工具链与前文相同。日志保留本机，不将私有数据上传。
 
-下一步固定开发提交与公开可恢复源码，移除 rejection_tests 及独占模块接线；清理差异独立复核、最终 head 本地静态/Clippy/Nextest 空集验证与 required CI 尚待完成。原始故障未复现，不宣称修复。
+开发测试来源提交：`da3816c10a017993ef099c76c4ef4eaf23f21a1b`，原始[合成回归源码](https://github.com/puzige/vega/blob/da3816c10a017993ef099c76c4ef4eaf23f21a1b/crates/vega_conversation/src/agent/compaction/rejection_tests.rs)；SHA256 `98135487790153cb45aa03288d1494b0229fbdc47e9971242eb4b0c5b3dd3b85`。本地恢复性已确认，推送后另行核验 GitHub 可达性。
+
+清理只删除 527 行 rejection_tests 源码和 compaction.rs 末尾 3 行独占模块声明，生产实现与迁移逐字节不变。独立非写入者复核 execution `01M76PPWEZCCDHEDRHSE19ZGW5` 无阻塞；对应开发提交上的清理差异 SHA256 `d31f3c168ff531f2e54a1be58927915c950f795f38c871e21a0b6b94561cb7cd`。本节后续仅补验证文档，不改变该清理内容。
+
+清理后本地复验：`cargo fmt --all -- --check`、`git diff --check`、受影响双 crate 全目标严格 Clippy 均通过；`cargo nextest list --workspace --offline --message-format json` 为 0 discovered，`cargo nextest run --workspace --offline --no-tests=pass` 为 0 executed（no Rust tests，不是行为测试通过）。本轮恢复后 Clippy 0.81 秒、Nextest 0.24 秒；测试属性/条件编译/专用模块静态清点无命中。完整最终 head required CI 尚待 PR 创建后确认。
+
+原始故障未复现，不宣称修复；本轮不合并、不发布，不访问远端应用或数据。

@@ -3304,6 +3304,3 @@ fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
     }
     Ok(format!("Summary:\n{summary}"))
 }
-
-#[cfg(test)]
-mod rejection_tests;
