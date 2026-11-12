@@ -150,7 +150,10 @@ impl TerminalView {
             }
             return;
         }
-        let is_input = matches!(&request.command, Command::Input(_) | Command::Paste(_));
+        let is_input = matches!(
+            &request.command,
+            Command::Input(_) | Command::Paste(_) | Command::Submit(_)
+        );
         if is_input {
             let accepted = request
                 .sequence
@@ -170,14 +173,21 @@ impl TerminalView {
         let mut accepted = true;
         match request.command {
             Command::Input(bytes) => accepted = self.send(&bytes),
-            Command::Paste(text) => {
-                if text.len() > surface::MAX_PASTE {
+            Command::Paste(ref text) | Command::Submit(ref text) => {
+                let submit = matches!(request.command, Command::Submit(_));
+                if text.len().saturating_add(usize::from(submit)) > surface::MAX_PASTE {
                     self.input_error = true;
                     accepted = false;
-                } else if self.snapshot.as_ref().is_some_and(|s| s.bracketed_paste) {
-                    accepted = self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
                 } else {
-                    accepted = self.send(text.as_bytes());
+                    let mut bytes = if self.snapshot.as_ref().is_some_and(|s| s.bracketed_paste) {
+                        format!("\x1b[200~{text}\x1b[201~").into_bytes()
+                    } else {
+                        text.as_bytes().to_vec()
+                    };
+                    if submit {
+                        bytes.push(b'\r');
+                    }
+                    accepted = self.send(&bytes);
                 }
             }
             Command::Resize(rows, cols) => {

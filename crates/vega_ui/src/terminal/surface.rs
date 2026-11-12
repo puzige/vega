@@ -29,6 +29,7 @@ pub(super) struct Projection {
 pub(super) enum Command {
     Input(Vec<u8>),
     Paste(String),
+    Submit(String),
     Resize(u16, u16),
     ScrollTo(usize),
     Restart,
@@ -97,6 +98,7 @@ impl InputQueue {
         let bytes = match &command {
             Command::Input(bytes) => bytes.len(),
             Command::Paste(text) => text.len(),
+            Command::Submit(text) => text.len().saturating_add(1),
             _ => return false,
         };
         if bytes > MAX_PASTE
@@ -327,11 +329,82 @@ fn copy_text(snapshot: &TerminalSnapshot, selection: Option<Selection>) -> Strin
         .join("\n")
 }
 
+#[derive(Clone, Copy)]
+struct TerminalField {
+    value: Signal<String>,
+    draft: Signal<bool>,
+    recovering: Signal<bool>,
+    selection: Signal<(u32, u32)>,
+}
+
+impl TerminalField {
+    fn new() -> Self {
+        Self {
+            value: signal(String::new()),
+            draft: signal(false),
+            recovering: signal(false),
+            selection: signal((0, 0)),
+        }
+    }
+
+    fn submit(self, queue: &InputQueue) {
+        let text = if self.draft.get_untracked() {
+            self.value.get_untracked()
+        } else {
+            String::new()
+        };
+        let command = if text.is_empty() {
+            Command::Input(vec![b'\r'])
+        } else {
+            Command::Submit(text)
+        };
+        if queue.push(command) {
+            self.draft.set(false);
+            self.recovering.set(false);
+            self.value.set(String::new());
+        }
+    }
+
+    fn paste(self, pasted: &str, queue: &InputQueue, input: ElementRef) {
+        if !self.draft.get_untracked() {
+            if !queue.push(Command::Paste(pasted.to_owned())) {
+                self.draft.set(true);
+                self.recovering.set(true);
+                self.value.set(pasted.to_owned());
+            }
+            return;
+        }
+        let mut text = self.value.get_untracked();
+        let (start, end) = if self.recovering.get_untracked() {
+            (u32::MAX, u32::MAX)
+        } else {
+            self.selection.get_untracked()
+        };
+        let start = nsh_core::text_edit::utf16_to_byte(&text, start);
+        let end = nsh_core::text_edit::utf16_to_byte(&text, end);
+        let inserted = nsh_core::text_edit::pasted(pasted, false);
+        let first = start.min(end);
+        text.replace_range(first..start.max(end), &inserted);
+        let caret = nsh_core::text_edit::byte_to_utf16(&text, first + inserted.len());
+        self.selection.set((caret, caret));
+        self.value.set(text.clone());
+        after_answer(move || {
+            if self.draft.get_untracked()
+                && self.value.with_untracked(|current| current == &text)
+                && self.selection.get_untracked() == (caret, caret)
+            {
+                input.set_selection(caret, caret);
+            }
+        });
+    }
+}
+
 fn bindings(
     queue: InputQueue,
     projection: Signal<Projection>,
     selection: Signal<Option<Selection>>,
     menu_open: Signal<bool>,
+    field: TerminalField,
 ) -> impl IntoElement {
     let bind = |key: &str, bytes: Vec<u8>| {
         let queue = queue.clone();
@@ -343,14 +416,13 @@ fn bindings(
                 pass_through: false,
             },
             move |_| {
-                if !menu_open.get_untracked() {
+                if !menu_open.get_untracked() && !field.draft.get_untracked() {
                     queue.push(Command::Input(bytes.clone()));
                 }
             },
         );
     };
     for (key, value) in [
-        ("enter", "\r"),
         ("tab", "\t"),
         ("shift+tab", "\x1b[Z"),
         ("backspace", "\x7f"),
@@ -378,7 +450,7 @@ fn bindings(
                 pass_through: false,
             },
             move |_| {
-                if menu_open.get_untracked() {
+                if menu_open.get_untracked() || field.draft.get_untracked() {
                     return;
                 }
                 let application_cursor = projection
@@ -539,10 +611,13 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                         leave_menu(false);
                     }
                 });
-                let text_value = signal(String::new());
+                let field = TerminalField::new();
+                let inserted_key = Rc::new(RefCell::new(None::<String>));
+                let remember_key = inserted_key.clone();
                 let commit = queue.clone();
                 let paste = queue.clone();
                 let submit = queue.clone();
+                let enter = queue.clone();
                 let keys = queue.clone();
                 let retry = queue.clone();
                 let resize = commands.clone();
@@ -615,9 +690,37 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                 && !menu_open.get()
                                 && !composing.get()
                                 && !queue_failed.get()
-                                && text_value.get().is_empty()
+                                && !field.draft.get()
                         },
-                        move || bindings(keys.clone(), projection, selection, menu_open),
+                        move || bindings(keys.clone(), projection, selection, menu_open, field),
+                    ))
+                    .child(when(
+                        move || {
+                            focused.get()
+                                && !menu_open.get()
+                                && !composing.get()
+                                && !queue_failed.get()
+                        },
+                        move || {
+                            let enter = enter.clone();
+                            on_key_with(
+                                "enter",
+                                KeyOptions {
+                                    when: nsh_core::keymap::When::Always,
+                                    repeat: true,
+                                    pass_through: false,
+                                },
+                                move |_| {
+                                    if !menu_open.get_untracked()
+                                        && !composing.get_untracked()
+                                        && !queue_failed.get_untracked()
+                                    {
+                                        field.submit(&enter);
+                                    }
+                                },
+                            );
+                            view()
+                        },
                     ))
                     .child(when(move || menu_open.get(), {
                         let choose = choose_menu.clone();
@@ -702,7 +805,10 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                 .child(
                                     nsh_base::button()
                                         .disabled(move || !queue_failed.get())
-                                        .on_press(move || retry.drain())
+                                        .on_press(move || {
+                                            field.recovering.set(false);
+                                            retry.drain();
+                                        })
                                         .child(text(vega_i18n::t("ui.retry"))),
                                 )
                         },
@@ -861,18 +967,14 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                                     .snapshot
                                                     .and_then(|s| s.cursor)
                                                     .map_or(0., |(_, col)| f32::from(col));
-                                                px(
-                                                    if composing.get()
-                                                        || !text_value.get().is_empty()
-                                                    {
-                                                        (bounds.get().width.0
-                                                            - PAD * 2.
-                                                            - col * metrics.cell)
-                                                            .max(metrics.cell)
-                                                    } else {
-                                                        metrics.cell
-                                                    },
-                                                )
+                                                px(if composing.get() || field.draft.get() {
+                                                    (bounds.get().width.0
+                                                        - PAD * 2.
+                                                        - col * metrics.cell)
+                                                        .max(metrics.cell)
+                                                } else {
+                                                    metrics.cell
+                                                })
                                             })
                                             .h(px(metrics.line))
                                             .line_height(px(metrics.line))
@@ -881,7 +983,7 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                                 rgb(projection.get().colors.bg_base.opacity(0.))
                                             })
                                             .element_ref(&native_input)
-                                            .value(text_value)
+                                            .value(field.value)
                                             .label(vega_i18n::t("ui.terminal"))
                                             .accessibility_actions(vec![
                                                 nsh_core::AccessibilityActionDef {
@@ -897,8 +999,26 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                             })
                                             .font_family(FONT.to_owned())
                                             .text_size(px(Typography::CODE))
+                                            .text_color(move || {
+                                                let colors = projection.get().colors;
+                                                rgb(if composing.get() || field.draft.get() {
+                                                    colors.text_primary
+                                                } else {
+                                                    colors.text_primary.opacity(0.)
+                                                })
+                                                .to_hsla()
+                                            })
+                                            .selection_color(move || {
+                                                let colors = projection.get().colors;
+                                                rgb(if field.draft.get() {
+                                                    colors.brand_primary
+                                                } else {
+                                                    colors.brand_primary.opacity(0.)
+                                                })
+                                                .to_hsla()
+                                            })
                                             .auto_correct(false)
-                                            .caret(move || composing.get())
+                                            .caret(move || composing.get() || field.draft.get())
                                             .readonly(move || {
                                                 menu_open.get()
                                                     || queue_failed.get()
@@ -917,37 +1037,75 @@ pub(super) fn render(projection: Signal<Projection>, sender: mpsc::Sender<Reques
                                             .on_composition_change(move |event: &Composition| {
                                                 composing.set(event.composing)
                                             })
+                                            .on_selection_change(
+                                                move |selected: &nsh_core::element::Selection| {
+                                                    field
+                                                        .selection
+                                                        .set((selected.start, selected.end));
+                                                },
+                                            )
+                                            .on_key_press(move |key: &str| {
+                                                let is_text = composing.get_untracked()
+                                                    || !matches!(
+                                                        key,
+                                                        "Backspace" | "Enter" | "Escape"
+                                                    );
+                                                remember_key.replace(
+                                                    (is_text && !key.is_empty())
+                                                        .then(|| key.to_owned()),
+                                                );
+                                            })
                                             .on_change(move |text: &str| {
+                                                let key = inserted_key.borrow_mut().take();
                                                 if menu_open.get_untracked() {
                                                     return;
                                                 }
-                                                text_value.set(text.to_owned());
-                                                if !text.is_empty()
-                                                    && commit.push(Command::Input(
-                                                        text.as_bytes().to_vec(),
-                                                    ))
-                                                {
-                                                    text_value.set(String::new());
+                                                if field.draft.get_untracked() {
+                                                    if field.recovering.get_untracked()
+                                                        && let Some(key) = key
+                                                    {
+                                                        field
+                                                            .value
+                                                            .update(|draft| draft.push_str(&key));
+                                                    } else {
+                                                        field.value.set(text.to_owned());
+                                                    }
+                                                    return;
+                                                }
+                                                field.value.set(text.to_owned());
+                                                match key {
+                                                    Some(key)
+                                                        if commit.push(Command::Input(
+                                                            key.as_bytes().to_vec(),
+                                                        )) =>
+                                                    {
+                                                        after_answer(move || {
+                                                            if !field.draft.get_untracked() {
+                                                                field.value.set(String::new());
+                                                            }
+                                                        });
+                                                    }
+                                                    Some(key) => {
+                                                        field.value.set(key);
+                                                        field.recovering.set(true);
+                                                        field.draft.set(true);
+                                                    }
+                                                    None => field.draft.set(true),
                                                 }
                                             })
                                             .on_paste(move |event: &PasteEvent| {
                                                 if !menu_open.get_untracked()
                                                     && !event.text.is_empty()
-                                                    && !paste
-                                                        .push(Command::Paste(event.text.clone()))
                                                 {
-                                                    text_value
-                                                        .update(|text| text.push_str(&event.text));
+                                                    field.paste(&event.text, &paste, native_input);
                                                 }
                                             })
-                                            .on_submit(move |text: &str| {
+                                            .on_submit(move |_: &str| {
                                                 if !menu_open.get_untracked()
-                                                    && !composing.get()
-                                                    && !queue_failed.get()
-                                                    && !text.is_empty()
-                                                    && submit.push(Command::Paste(text.to_owned()))
+                                                    && !composing.get_untracked()
+                                                    && !queue_failed.get_untracked()
                                                 {
-                                                    text_value.set(String::new());
+                                                    field.submit(&submit);
                                                 }
                                             }),
                                     ),
