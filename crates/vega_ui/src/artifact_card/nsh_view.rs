@@ -1018,6 +1018,7 @@ pub(super) fn render(incoming: Signal<Snapshot>, commands: mpsc::Sender<Request>
                         );
                     }
                     view()
+                        .bg(crate::nsh::color(colors.bg_base))
                         .pt(px(Layout::ARTIFACT_BODY_GAP))
                         .child(body)
                         .into_element()
