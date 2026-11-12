@@ -665,8 +665,8 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .when(self.scrollable_editor, |input| input.size_full().min_h_0())
             .when(self.multiline, |input| {
-                input.relative().on_scroll_wheel(cx.listener(
-                    |this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+                input.relative().on_scroll(cx.listener(
+                    |this, event: &gpui_kit::ScrollEvent, _, cx| {
                         if this.last_line_height <= px(0.) {
                             return;
                         }

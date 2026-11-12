@@ -5,8 +5,9 @@
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
     AccessibilityCurrent, AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill,
-    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp,
-    Prop, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
+    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop,
+    MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop,
+    RevealOptions, ScrollAlignment, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
     element::TsTypes,
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
@@ -72,6 +73,49 @@ impl HostValue for ImageSource {
     }
 }
 
+/// `ref.reveal(options)`: `{ vertical?, horizontal?, animated? }`, each
+/// missing one its default. None for an alignment that is not one, so the
+/// call throws rather than scrolling somewhere the app did not ask for.
+impl HostValue for RevealOptions {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        let mut options = RevealOptions::default();
+        if input.is_nullish() {
+            return Some(options);
+        }
+        if !input.is_object() {
+            return None;
+        }
+        let mut alignment = |key: &str, default: ScrollAlignment| match input.field(key) {
+            Some(value) if !value.is_nullish() => {
+                <ScrollAlignment as HostValue>::decode(&value, cx)
+            }
+            _ => Some(default),
+        };
+        options.vertical = alignment("vertical", options.vertical)?;
+        options.horizontal = alignment("horizontal", options.horizontal)?;
+        if let Some(animated) = input.field("animated").and_then(|a| a.as_bool()) {
+            options.animated = animated;
+        }
+        Some(options)
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let alignment = <ScrollAlignment as HostValue>::ts_type(types);
+        types.declare("RevealOptions", |_| {
+            format!(
+                "/** How `reveal` places a view in the scroll views around it. */\n\
+                 export interface RevealOptions {{\n  \
+                 /** Along vertical scroll views; `\"start\"` by default. */\n  \
+                 vertical?: {alignment};\n  \
+                 /** Along horizontal scroll views; `\"nearest\"` by default. */\n  \
+                 horizontal?: {alignment};\n  \
+                 /** Animate the scrolls; `true` by default. */\n  \
+                 animated?: boolean;\n}}"
+            )
+        })
+    }
+}
+
 /// A list's `contentStyle`: the padding properties (numbers) and
 /// `gap` / `rowGap` / `columnGap`.
 impl HostValue for ListContentStyle {
@@ -101,6 +145,34 @@ impl HostValue for ListContentStyle {
              paddingBottom?: number;\n  paddingLeft?: number;\n  gap?: number;\n  rowGap?: number;\n  \
              columnGap?: number;\n}"
                 .into()
+        })
+    }
+}
+
+/// `macos={{ backdrop }}`: `{ material, blending, state }`, each field
+/// falling back to its default when left out or unknown.
+impl HostValue for MacOsBackdrop {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        Some(MacOsBackdrop {
+            material: field::<MacOsBackdropMaterial, _>(input, "material", cx).unwrap_or_default(),
+            blending: field::<MacOsBackdropBlending, _>(input, "blending", cx).unwrap_or_default(),
+            state: field::<MacOsBackdropState, _>(input, "state", cx).unwrap_or_default(),
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let material = <MacOsBackdropMaterial as HostValue>::ts_type(types);
+        let blending = <MacOsBackdropBlending as HostValue>::ts_type(types);
+        let state = <MacOsBackdropState as HostValue>::ts_type(types);
+        types.declare("MacOsBackdrop", |_| {
+            format!(
+                "/** The material a view draws with on macOS (`macos={{{{ backdrop }}}}`). */\n\
+                 export interface MacOsBackdrop {{\n  material?: {material};\n  \
+                 blending?: {blending};\n  state?: {state};\n}}"
+            )
         })
     }
 }
@@ -165,7 +237,8 @@ impl HostValue for PanActivation {
 }
 
 /// `{ disabled, selected, checked: true | false | "mixed", busy, expanded,
-/// pressed: true | false | "mixed", current: true | false | "page" | ... }`.
+/// pressed: true | false | "mixed", current: true | false | "page" | ...,
+/// hasPopup, invalid }`.
 impl HostValue for AccessibilityState {
     fn decode<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Self> {
         let flag = |key| input.field(key).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -188,6 +261,8 @@ impl HostValue for AccessibilityState {
             busy: flag("busy"),
             expanded: input.field("expanded").and_then(|v| v.as_bool()),
             pressed: tristate("pressed"),
+            has_popup: flag("hasPopup"),
+            invalid: flag("invalid"),
             // `false` and unknown words are no current item, as ARIA has it.
             current: match current.as_ref().and_then(|c| c.as_bool()) {
                 Some(true) => Some(AccessibilityCurrent::True),
@@ -213,7 +288,11 @@ impl HostValue for AccessibilityState {
              /** A toggle button that is on or off (ARIA's `aria-pressed`). */\n  \
              pressed?: boolean | \"mixed\";\n  \
              /** The current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. */\n  \
-             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n}"
+             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n  \
+             /** Opens a popup, a menu or a list (ARIA's `aria-haspopup`); `expanded` says whether it is open. */\n  \
+             hasPopup?: boolean;\n  \
+             /** The content does not pass the app's checks (ARIA's `aria-invalid`): a rejected field. */\n  \
+             invalid?: boolean;\n}"
                 .into()
         })
     }

@@ -3,7 +3,7 @@ use std::{
     rc::{Rc, Weak},
 };
 
-use gpui::{App, DispatchPhase, ScrollDelta, ScrollWheelEvent, TouchPhase, Window};
+use gpui::{App, DispatchPhase, ScrollDelta, ScrollEvent, TouchPhase, Window};
 
 use crate::{app::AppView, input::ScrollOutcome, surface::Surface};
 
@@ -24,7 +24,7 @@ pub struct ScrollRemainder {
 
 impl ScrollRemainder {
     #[doc = "Normalizes an original host event using this backend's native units and Shift axis policy, without dispatching it."]
-    pub fn from_event(event: &ScrollWheelEvent) -> Self {
+    pub fn from_event(event: &ScrollEvent) -> Self {
         let (mut dx, mut dy, precise) = super::scroll_delta(event);
         if !precise && dx == 0.0 && event.modifiers.shift { (dx, dy) = (dy, dx); }
         remainder(event, ScrollOutcome { remaining: (dx, dy), ..ScrollOutcome::default() })
@@ -65,7 +65,7 @@ impl ScrollRoute {
         let consumer: Rc<Consumer> = Rc::new(RefCell::new(Box::new(consume)));
         *self.consumer.borrow_mut() = Some(Rc::downgrade(&consumer));
         let route = self.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             let _keep_consumer = &consumer;
             if phase != DispatchPhase::Capture {
                 return;
@@ -116,7 +116,7 @@ impl ScrollRoute {
         }
     }
 
-    pub(crate) fn owner(&self, event: &ScrollWheelEvent) -> Option<Rc<Surface>> {
+    pub(crate) fn owner(&self, event: &ScrollEvent) -> Option<Rc<Surface>> {
         let (dx, dy, precise) = super::scroll_delta(event);
         let mut owner = self.owner.borrow_mut();
         let valid = owner.as_ref().is_some_and(|o| {
@@ -152,7 +152,7 @@ impl ScrollRoute {
         }
     }
 
-    pub(crate) fn claim(&self, surface: &Rc<Surface>, event: &ScrollWheelEvent) {
+    pub(crate) fn claim(&self, surface: &Rc<Surface>, event: &ScrollEvent) {
         let (dx, dy, precise) = super::scroll_delta(event);
         let previous = self.owner.borrow_mut().take();
         let same = previous.as_ref().is_some_and(|o| {
@@ -271,7 +271,7 @@ fn remaining_delta(
     }
 }
 
-pub(crate) fn remainder(event: &ScrollWheelEvent, outcome: ScrollOutcome) -> ScrollRemainder {
+pub(crate) fn remainder(event: &ScrollEvent, outcome: ScrollOutcome) -> ScrollRemainder {
     ScrollRemainder {
         outcome,
         delta: remaining_delta(event.delta, event.modifiers, outcome.remaining),

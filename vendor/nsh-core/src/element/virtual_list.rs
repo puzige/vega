@@ -18,8 +18,9 @@ use super::{
     events, when,
 };
 use crate::{
-    CellSlot, EventKind, EventPayload, ListContentStyle, ListViewport, PayloadValue, Prop, Tag,
-    Viewability, geometry::Points,
+    CellSlot, Command, EventKind, EventPayload, ListContentStyle, ListViewport, PayloadValue, Prop,
+    Tag, Viewability,
+    geometry::{Percentage, Points},
 };
 
 /// How a list lays out its rows: [`super::ListElement`] (the app's rows)
@@ -90,6 +91,16 @@ pub trait ListLayout: Sized {
         self.layout(threshold, |c, threshold: Points| {
             c.follow_end = Some(threshold.0.max(0.0));
         })
+    }
+
+    /// Where the list rests (TS: `alignment`): [`ListAlignment::Bottom`]
+    /// opens at the end and stays there as the content grows, the rows in
+    /// reading order (a chat, GPUI's `ListAlignment::Bottom`). Rows keep
+    /// their places in the content, so what is appended moves no other row.
+    /// With [`Self::follow_end`], it stays there from that far away.
+    fn alignment(mut self, alignment: crate::ListAlignment) -> Self {
+        self.config().alignment = Some(alignment);
+        self
     }
 
     /// Whether the scroll indicator shows (default yes).
@@ -171,10 +182,14 @@ pub(crate) struct VirtualListEl {
     pub(crate) keys: Option<KeysFn>,
     /// Between rows (after each row but the last; before it, inverted).
     pub(crate) separator: Option<SeparatorFn>,
-    /// The row scrolled to before the first frame.
-    pub(crate) initial_index: Option<u32>,
+    /// Where the list scrolls before the first frame.
+    pub(crate) initial_scroll: Option<Command>,
     /// How long rows stay viewable before they are reported.
     pub(crate) min_view_time: Option<Duration>,
+    /// The owner of the run that made the list (a component's view, a
+    /// branch, an `each` row): its rows are made under it, so they see its
+    /// context and go with it.
+    pub(crate) scope: Option<super::Owner>,
 }
 
 /// A virtualized, recycling list of `count` rows rendered by `row`: only
@@ -187,6 +202,11 @@ pub(crate) struct VirtualListEl {
 /// can be a signal or a closure: the list grows and shrinks in place. Give
 /// the rows' identities with [`VirtualList::keys`] when rows come and go
 /// other than at the end.
+///
+/// The rows are made under the owner of the code that called
+/// `virtual_list` (the component's view, or the run of a [`super::when`],
+/// [`super::dynamic`] or [`super::each`] row it is in): they see what it
+/// provides ([`super::use_context`]) and are disposed with it.
 pub fn virtual_list<R: IntoElement>(
     count: impl IntoReactive<usize>,
     row: impl Fn(Position) -> R + 'static,
@@ -199,8 +219,9 @@ pub fn virtual_list<R: IntoElement>(
         row: Rc::new(move |at| row(at).into_element()),
         keys: None,
         separator: None,
-        initial_index: None,
+        initial_scroll: None,
         min_view_time: None,
+        scope: Some(super::Owner::current_or_detached()).filter(|o| *o != super::Owner::detached()),
     }));
     VirtualList(node)
 }
@@ -323,9 +344,25 @@ impl VirtualList {
     }
 
     /// Scrolls to row `index` before the first frame (TS:
-    /// `initialScrollIndex`).
+    /// `initialScrollIndex`). Replaces any earlier initial scroll setting.
     pub fn initial_scroll_index(mut self, index: usize) -> Self {
-        self.list().initial_index = Some(index as u32);
+        self.list().initial_scroll = Some(Command::ScrollToIndex {
+            index: index as u32,
+            animated: false,
+            view_position: Percentage(0.0),
+            view_offset: Points::ZERO,
+        });
+        self
+    }
+
+    /// Scrolls to the end before the first frame, and stays there while
+    /// the rows in view are measured: a chat opening at its newest message,
+    /// even one longer than the viewport (LegendList's
+    /// `initialScrollAtEnd`). Content shorter than the viewport stays at
+    /// the top, unlike [`crate::ListAlignment::Bottom`]. Replaces any earlier
+    /// initial scroll setting; a later `initial_scroll_index` replaces this.
+    pub fn initial_scroll_at_end(mut self) -> Self {
+        self.list().initial_scroll = Some(Command::ScrollToEnd { animated: false });
         self
     }
 

@@ -11,8 +11,9 @@
 
 [package]
 edition = "2024"
+rust-version = "1.97"
 name = "nsh-core"
-version = "0.4.0"
+version = "0.5.0"
 build = false
 autolib = false
 autobins = false
@@ -27,11 +28,17 @@ repository = "https://github.com/longbridge/nsh"
 
 [features]
 declarations = []
-glsl = ["naga/glsl-out"]
+glsl = [
+    "shader",
+    "naga/glsl-out",
+]
 loader = ["dep:ureq"]
+shader = ["dep:naga"]
 svg = [
     "dep:resvg",
     "dep:flate2",
+    "dep:gif",
+    "dep:simplecss",
 ]
 
 [lib]
@@ -46,6 +53,10 @@ path = "tests/attachment_compat.rs"
 version = "1"
 optional = true
 
+[dependencies.gif]
+version = "0.14"
+optional = true
+
 [dependencies.imagesize]
 version = "0.15"
 
@@ -55,10 +66,11 @@ version = "0.4"
 [dependencies.naga]
 version = "29"
 features = ["wgsl-in"]
+optional = true
 default-features = false
 
 [dependencies.nsh-macros]
-version = "0.4.0"
+version = "0.5.0"
 
 [dependencies.ordered-float]
 version = "5"
@@ -66,8 +78,17 @@ default-features = false
 
 [dependencies.resvg]
 version = "0.46"
+features = [
+    "text",
+    "system-fonts",
+    "memmap-fonts",
+    "raster-images",
+]
 optional = true
 default-features = false
+
+[dependencies.rust-i18n]
+version = "4.2.4"
 
 [dependencies.rustc-hash]
 version = "2.1"
@@ -81,6 +102,10 @@ version = "1"
 
 [dependencies.sha2]
 version = "0.10"
+
+[dependencies.simplecss]
+version = "0.2"
+optional = true
 
 [dependencies.slab]
 version = "0.4"
@@ -103,6 +128,9 @@ features = [
     "time",
 ]
 default-features = false
+
+[dependencies.ttf-parser]
+version = "0.25"
 
 [dependencies.unicode-linebreak]
 version = "0.1.5"
@@ -134,8 +162,11 @@ features = [
 ]
 default-features = false
 
-[dev-dependencies.ttf-parser]
-version = "0.25"
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies.rustls-platform-verifier]
+version = "0.7"
+
+[target.'cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))'.dependencies.libc]
+version = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.cap-std]
 version = "4.0.3"
@@ -150,8 +181,8 @@ features = ["sink"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.httpdate]
 version = "1"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.libc]
-version = "0.2"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.nsh-updater]
+version = "0.5.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.rustls]
 version = "0.23"
@@ -182,9 +213,10 @@ default-features = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.ureq]
 version = "3.1"
+features = ["platform-verifier"]
 optional = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.webpki-roots]
+[target.'cfg(target_os = "android")'.dependencies.webpki-roots]
 version = "1"
 
 [target."cfg(windows)".dependencies.windows-sys]

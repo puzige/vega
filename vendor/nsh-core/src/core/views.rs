@@ -9,8 +9,10 @@
 //! field), so a change sends only what changed.
 //! A region ([`crate::element::dynamic`], `If`, `Each`) is an effect queueing its
 //! new elements; the core reconciles that region's nodes alone, in place
-//! among its parent's other children. Patches and the events components emit
-//! are taken at the start of each commit round, until none is left.
+//! among its parent's other children. Reused nodes are diffed against the
+//! latest values their bindings applied, including when replaced by static
+//! elements. Patches and the events components emit are taken at the start
+//! of each commit round, until none is left.
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -81,7 +83,7 @@ pub(super) struct BoundNode {
     pub(super) style: StyleRefinement,
     pub(super) classes: Classes,
     /// Its text's content and raw text node.
-    text: Option<(SharedString, NodeId)>,
+    pub(super) text: Option<(SharedString, NodeId)>,
 }
 
 /// A region of a parent's children.
@@ -248,12 +250,12 @@ impl<M: TextEngine> Core<M> {
     ) {
         inst.bound.insert(
             id,
-            BoundNode {
+            Box::new(BoundNode {
                 attrs: attrs.clone(),
                 style: style.clone(),
                 classes,
                 text,
-            },
+            }),
         );
     }
 
@@ -706,6 +708,29 @@ impl<M: TextEngine> Core<M> {
         // (Resolved with the host's instance back: a region after this one
         // may hold its JS children.)
         let mut before = self.anchor_node(state.anchor);
+        // Already contiguous before the anchor: every precedes check below
+        // would succeed, so no child needs to move.
+        if !nested
+            && self.key(parent).is_ok_and(|key| {
+                let children = &self.nodes[key as usize].children;
+                let end = match before {
+                    Some(id) => children
+                        .iter()
+                        .position(|&child| self.nodes[child as usize].id == id),
+                    None => Some(children.len()),
+                };
+                end.is_some_and(|end| {
+                    end.checked_sub(nodes.len()).is_some_and(|start| {
+                        children[start..end]
+                            .iter()
+                            .zip(&nodes)
+                            .all(|(&child, &id)| self.nodes[child as usize].id == id)
+                    })
+                })
+            })
+        {
+            return;
+        }
         for &child in nodes.iter().rev() {
             if nested {
                 if !self.nested_precedes(parent, child, before) {

@@ -6,7 +6,7 @@ use std::{borrow::Cow, sync::Arc};
 use super::builder::Listener;
 use crate::{
     Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, Point, Points,
-    PressEvent, Size, TouchEvent,
+    PressEvent, Size, TouchEvent, WheelEvent,
     geometry::{DevicePixels, Radians},
 };
 
@@ -16,9 +16,32 @@ use crate::{
 pub struct FileDropEvent {
     /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
     pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, in their order, by the file's name
+    /// (TS: `mimeTypes`): `""` when the name says none (a directory, no
+    /// extension), as the DOM's `File.type`.
+    pub mime_types: Vec<String>,
     /// Where the files were let go, in the window's coordinates (TS:
     /// `pagePosition`), on backends that know it (Linux).
     pub page_position: Option<Point<Points>>,
+}
+
+/// Local files or directories a drag offers to an element while it enters
+/// (`on_file_drag_enter`); nothing has been dropped yet, and no file has
+/// been read.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct FileDragEvent {
+    /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
+    pub uris: Vec<String>,
+    /// The MIME type of each of `uris`, as [`FileDropEvent::mime_types`].
+    pub mime_types: Vec<String>,
+}
+
+/// The MIME types of the files `uris` name, in their order.
+fn mime_types(uris: &[String]) -> Vec<String> {
+    uris.iter()
+        .map(|uri| crate::platform::file_mime_type(uri).to_owned())
+        .collect()
 }
 
 /// A scroll view moved (`on_scroll`): the offset, and the sizes it moves in.
@@ -83,6 +106,28 @@ pub struct Selection {
     pub start: u32,
     /// End.
     pub end: u32,
+}
+
+/// The selection of a selectable view changed
+/// ([`Interactive::on_text_selection_change`](super::Interactive::on_text_selection_change)).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TextSelectionEvent {
+    /// The selected text, as a copy gives it; empty when nothing is
+    /// selected.
+    pub text: String,
+    /// Where it starts in the copy of the whole view (what a select all
+    /// would copy), in UTF-16 code units, when the platform knows it.
+    pub start: Option<u32>,
+    /// The box around the selected text in the view's coordinates (its
+    /// border box), when something is selected and the platform knows it:
+    /// a bar of actions on the selection goes above it.
+    pub bounds: Option<Bounds<Points>>,
+    /// The same box in the view's root view (the surface, or the dialog
+    /// around it), as of the event:
+    /// [`crate::overlay::OverlayAnchor::Bounds`] places an overlay against
+    /// it.
+    pub page_bounds: Option<Bounds<Points>>,
 }
 
 /// Where an input's caret is (`on_caret_move`): what opens at it (an `@`
@@ -174,6 +219,43 @@ pub struct OverlayPosition {
     pub bounds: Bounds<Points>,
     /// The room on that side, inside the safe area less the margin.
     pub available: Size<Points>,
+}
+
+/// Why a hint asks to show or hide (`Overlay::on_hint_show` /
+/// `on_hint_hide`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HintReason {
+    /// The pointer rested on its anchor, or left or pressed it.
+    #[default]
+    Pointer,
+    /// The keyboard focus came to its anchor, or left it.
+    Focus,
+    /// Escape was pressed while it was shown.
+    Escape,
+    /// It left the view.
+    View,
+}
+
+impl HintReason {
+    /// Its name in an event's payload.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pointer => "pointer",
+            Self::Focus => "focus",
+            Self::Escape => "escape",
+            Self::View => "view",
+        }
+    }
+}
+
+pub(crate) fn hint_reason(p: &EventPayload) -> Option<Cow<'_, HintReason>> {
+    Some(Cow::Owned(match string(p, "reason") {
+        Some("focus") => HintReason::Focus,
+        Some("escape") => HintReason::Escape,
+        Some("view") => HintReason::View,
+        _ => HintReason::Pointer,
+    }))
 }
 
 /// A field of a map payload.
@@ -297,10 +379,36 @@ pub(crate) fn data(p: &EventPayload) -> Option<Cow<'_, str>> {
     string(p, "data").map(Cow::Borrowed)
 }
 
+/// An error's message when its `code` says the platform has no such
+/// feature (`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`).
+pub(crate) fn unavailable(p: &EventPayload) -> Option<Cow<'_, str>> {
+    (string(p, "code") == Some(crate::element::codes::UNAVAILABLE))
+        .then(|| message(p))
+        .flatten()
+}
+
 pub(crate) fn selection(p: &EventPayload) -> Option<Cow<'_, Selection>> {
     Some(Cow::Owned(Selection {
         start: number(p, "start") as u32,
         end: number(p, "end") as u32,
+    }))
+}
+
+/// The selection of a selectable view (`text`, `start`).
+pub(crate) fn selected_text(p: &EventPayload) -> Option<Cow<'_, TextSelectionEvent>> {
+    let start = match field(p, "start") {
+        Some(PayloadValue::Number(n)) if *n >= 0.0 => Some(*n as u32),
+        _ => None,
+    };
+    let optional_bounds = |key| match field(p, key) {
+        Some(PayloadValue::Bounds(b)) => Some(*b),
+        _ => None,
+    };
+    Some(Cow::Owned(TextSelectionEvent {
+        text: string(p, "text").unwrap_or_default().to_owned(),
+        start,
+        bounds: optional_bounds("bounds"),
+        page_bounds: optional_bounds("pageBounds"),
     }))
 }
 
@@ -494,10 +602,18 @@ pub(crate) fn context_menu(p: &EventPayload) -> Option<Cow<'_, ContextMenuEvent>
     }
 }
 
+pub(crate) fn wheel(p: &EventPayload) -> Option<Cow<'_, WheelEvent>> {
+    match p {
+        EventPayload::Wheel(e) => Some(Cow::Borrowed(e)),
+        _ => None,
+    }
+}
+
 pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
     match p {
         EventPayload::FileDrop(uris) => Some(Cow::Owned(FileDropEvent {
             uris: uris.clone(),
+            mime_types: mime_types(uris),
             page_position: None,
         })),
         EventPayload::FileDropAt {
@@ -505,8 +621,21 @@ pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
             page_position,
         } => Some(Cow::Owned(FileDropEvent {
             uris: uris.clone(),
+            mime_types: mime_types(uris),
             page_position: Some(*page_position),
         })),
+        _ => None,
+    }
+}
+
+pub(crate) fn file_drag(p: &EventPayload) -> Option<Cow<'_, FileDragEvent>> {
+    match p {
+        EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. } => {
+            Some(Cow::Owned(FileDragEvent {
+                uris: uris.clone(),
+                mime_types: mime_types(uris),
+            }))
+        }
         _ => None,
     }
 }
@@ -540,6 +669,29 @@ mod tests {
                 .uris,
             uris
         );
+    }
+
+    #[test]
+    fn file_drags_and_drops_type_each_offered_file_by_its_name() {
+        use crate::{EventPayload, Points, geometry::point};
+        let uris: Vec<String> = vec![
+            "file:///tmp/a%20b.png".into(),
+            "file:///tmp/c.JPG".into(),
+            "file:///tmp/folder/".into(),
+        ];
+        let types = ["image/png", "image/jpeg", ""];
+        let offered = EventPayload::FileDrop(uris.clone());
+        let drag = super::file_drag(&offered).unwrap();
+        assert_eq!(drag.uris, uris);
+        assert_eq!(drag.mime_types, types);
+        let at = EventPayload::FileDropAt {
+            uris: uris.clone(),
+            page_position: point(Points(3.0), Points(4.0)),
+        };
+        let drop = super::file_drop(&at).unwrap();
+        assert_eq!(drop.mime_types, types);
+        assert_eq!(drop.page_position, Some(point(Points(3.0), Points(4.0))));
+        assert!(super::file_drag(&EventPayload::None).is_none());
     }
 
     #[test]

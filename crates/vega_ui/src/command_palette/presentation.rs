@@ -508,6 +508,7 @@ fn register_keys(
                 ns::KeyOptions {
                     when: nsh_core::keymap::When::Always,
                     repeat,
+                    pass_through: false,
                 },
                 move |_| {
                     if focused.get_untracked() && !composing.get_untracked() {

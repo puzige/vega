@@ -1720,7 +1720,7 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
 
 pub(crate) fn contain_disclosure_scroll(
     scroll: &ScrollHandle,
-) -> impl Fn(&gpui_kit::ScrollWheelEvent, &mut gpui_kit::Window, &mut App) + 'static {
+) -> impl Fn(&gpui_kit::ScrollEvent, &mut gpui_kit::Window, &mut App) + 'static {
     let scroll = scroll.clone();
     move |event, window, cx| {
         let delta = event.delta.pixel_delta(window.line_height());

@@ -8,8 +8,8 @@ use gpui_kit::base::{TextSelectionEvent, TextSelectionHandle};
 use gpui_kit::{
     AnyElement, App, AppContext, Bounds, Element, ElementId, Entity, FocusHandle, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, PlatformInput, Point, ScrollWheelEvent, Subscription, Task, Window,
-    WindowId, point, px,
+    MouseUpEvent, Pixels, PlatformInput, Point, ScrollEvent, Subscription, Task, Window, WindowId,
+    point, px,
 };
 
 use super::{code_viewport::CodeScrollHandle, model::MessageCopy};
@@ -428,7 +428,7 @@ impl Element for CodeDragElement {
             window.defer(cx, move |window, cx| schedule(&weak, window, cx));
         });
         let scrolled = state.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if !phase.capture() {
                 return;
             }

@@ -340,6 +340,7 @@ fn bindings(
             KeyOptions {
                 when: nsh_core::keymap::When::Always,
                 repeat: true,
+                pass_through: false,
             },
             move |_| {
                 if !menu_open.get_untracked() {
@@ -374,6 +375,7 @@ fn bindings(
             KeyOptions {
                 when: nsh_core::keymap::When::Always,
                 repeat: true,
+                pass_through: false,
             },
             move |_| {
                 if menu_open.get_untracked() {

@@ -17,7 +17,7 @@ struct Owner {
 }
 
 impl Owner {
-    fn holds(&self, event: &ScrollWheelEvent) -> bool {
+    fn holds(&self, event: &ScrollEvent) -> bool {
         let age = self.last.elapsed().as_secs_f64() * 1000.;
         let delta = event.delta.pixel_delta(px(1.));
         if event.delta.precise() {
@@ -139,7 +139,7 @@ pub(crate) fn listener(
         |_, _, _| (),
         move |_, (), window, _| {
             let generation = state.borrow().generation.clone();
-            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                 if !phase.bubble() {
                     return;
                 }
@@ -269,12 +269,7 @@ fn forward(
     moved || parent.is_some()
 }
 
-fn ordinary(
-    state: &Rc<RefCell<State>>,
-    event: &ScrollWheelEvent,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn ordinary(state: &Rc<RefCell<State>>, event: &ScrollEvent, window: &mut Window, cx: &mut App) {
     let delta = event.delta.pixel_delta(window.line_height());
     let remaining = ScrollRemainder::from_event(event);
     if !finite(remaining) {
@@ -413,7 +408,7 @@ impl Element for Group {
     ) {
         let current = self.state.clone();
         let generation = generation.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if !phase.capture() {
                 return;
             }

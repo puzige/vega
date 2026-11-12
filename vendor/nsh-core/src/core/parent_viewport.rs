@@ -173,7 +173,8 @@ impl<M: TextEngine> Core<M> {
                 .as_ref()
                 .is_some_and(|s| s.refreshing);
             let flags = match (parent, refreshing) {
-                (true, _) => dirty::VIEW,
+                // Its children are read in screen order (`ViewProps::screen_order`).
+                (true, _) => dirty::VIEW | dirty::VIEW_PROPS,
                 (false, false) => dirty::VIEW | dirty::SCROLL,
                 (false, true) => dirty::VIEW | dirty::SCROLL | dirty::REFRESHING,
             };
@@ -704,6 +705,16 @@ impl<M: TextEngine> Core<M> {
 /// replay while it has any.
 fn issue(scroll: &mut ScrollState, pending: PendingScroll) {
     scroll.issued = scroll.issued.wrapping_add(1);
+    if let Some((n, (x, y))) = scroll.target.as_mut() {
+        *n = scroll.issued;
+        if let PendingScroll::By(by) = pending {
+            if scroll.horizontal {
+                *x += by;
+            } else {
+                *y += by;
+            }
+        }
+    }
     if !scroll.dependents.is_empty() {
         scroll.pending.push((scroll.issued, pending));
     }
@@ -713,9 +724,10 @@ const AROUND: &str = "the scroll view around the list scrolls it";
 const OWN: &str = "it needs a scroll view of its own (viewport=\"own\")";
 
 /// What each [`ignored`] bit stands for, and why.
-const IGNORED: [(u16, &str, &str); 7] = [
+const IGNORED: [(u16, &str, &str); 8] = [
     (ignored::INVERTED, "`inverted`", OWN),
     (ignored::FOLLOW_END, "`maintainVisibleContentPosition`", OWN),
+    (ignored::ALIGNMENT, "`alignment`", OWN),
     (
         ignored::ON_SCROLL,
         "`onScroll` and the other scroll events",

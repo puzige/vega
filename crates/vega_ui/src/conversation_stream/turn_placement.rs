@@ -3,8 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, FollowMode, GlobalElementId,
     InspectorElementId, IntoElement, KeyDownEvent, LayoutId, ListOffset, ListState, MouseDownEvent,
-    Pixels, Refineable, ScrollWheelEvent, Size, Style, StyleRefinement, Styled, Window, list, px,
-    size,
+    Pixels, Refineable, ScrollEvent, Size, Style, StyleRefinement, Styled, Window, list, px, size,
 };
 
 #[derive(Default)]
@@ -358,7 +357,7 @@ impl Element for TurnList {
     ) {
         let placement = self.placement.clone();
         let list = self.list.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, _| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, _, _| {
             if phase.capture() && bounds.contains(&event.position) {
                 let mut placement = placement.borrow_mut();
                 placement.interrupt(&list);

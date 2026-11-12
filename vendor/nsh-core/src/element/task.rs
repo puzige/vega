@@ -75,14 +75,25 @@ pub(crate) enum Action {
     /// its failure) resolves the slot.
     Fetch(
         Box<crate::platform::HttpRequest>,
-        AnswerSlot<Result<super::services::HttpResponse, String>>,
+        AnswerSlot<Result<super::services::HttpResponse, super::services::FetchFailure>>,
     ),
     /// Reads the system clipboard; the answer resolves the slot.
     ReadClipboard(ClipboardRead),
+    /// Runs a function on the platform's main thread, after the commit.
+    MainThread(crate::main_thread::MainThreadTask),
+    /// Registers a font (TrueType, OpenType, WOFF or WOFF2 data); its family
+    /// name, or why it is no font, resolves the slot.
+    RegisterFont(Vec<u8>, AnswerSlot<Result<String, String>>),
     /// Shows the system's picker for images; the files picked (none when
     /// cancelled) resolve the slot.
     PickImages(
         crate::picker::PickRequest,
+        AnswerSlot<Vec<crate::picker::PickedFile>>,
+    ),
+    /// Shows the system's picker for files of any type; the files picked
+    /// (none when cancelled) resolve the slot.
+    PickFiles(
+        crate::picker::FilePickRequest,
         AnswerSlot<Vec<crate::picker::PickedFile>>,
     ),
     /// Calls function `name` of the embedding app (`nsh/host`); its
@@ -91,6 +102,12 @@ pub(crate) enum Action {
         name: String,
         args: crate::JsonValue,
         answer: AnswerSlot<Result<crate::JsonValue, super::JsError>>,
+    },
+    /// Hands data to function `name` of the embedding app, with no answer
+    /// (`nsh/host`'s `post`).
+    HostPost {
+        name: String,
+        args: crate::JsonValue,
     },
     /// Drops the slots of the host calls whose answers are gone (they
     /// timed out).
@@ -104,10 +121,38 @@ pub(crate) enum Action {
     PickScreenColor(AnswerSlot<Option<crate::Hsla>>),
     /// A speech recognition session's request ([`crate::speech`]).
     Speech(SpeechAction),
+    /// A notification's request ([`crate::notifications`]).
+    Notification(NotificationAction),
+    /// The next link the system hands the app ([`crate::url_scheme`])
+    /// resolves the slot, those that came before first.
+    NextUrlSchemeOpen(AnswerSlot<String>),
+    /// The next files the system opens the app with
+    /// ([`crate::file_type`]) resolve the slot, all that came before at
+    /// once.
+    NextOpenFiles(AnswerSlot<Vec<std::path::PathBuf>>),
+    /// The next later launch of the app
+    /// ([`crate::single_instance::SecondInstance`]) resolves the slot, those
+    /// that came before first.
+    NextSecondInstance(AnswerSlot<crate::single_instance::SecondInstance>),
+    /// The next address move the app did not make
+    /// ([`crate::url_scheme::AppUrlChange`]) resolves the slot.
+    NextAppUrlChange(AnswerSlot<crate::url_scheme::AppUrlChange>),
+    /// The app's address resolves the slot ([`crate::url_scheme`]).
+    AppUrl(AnswerSlot<Option<String>>),
+    /// The app sets its address ([`crate::url_scheme`]), replacing the
+    /// history entry's or pushing one.
+    SetAppUrl(String, crate::url_scheme::HistoryBehavior),
+    /// A sound's or a player's request ([`crate::audio`]).
+    Audio(AudioAction),
     /// Whether a web view's ref gives its page trusted input here
     /// (`sendInput`): the platform delivers it and the app holds
     /// `webview.input`; the answer resolves the slot.
     WebInputAvailable(AnswerSlot<bool>),
+    /// Whether a web view's ref evaluates scripts here.
+    WebEvaluateAvailable(AnswerSlot<bool>),
+    /// Whether a web view shows a page here: the platform shows web views
+    /// and the app holds `webview`; the answer resolves the slot.
+    WebViewAvailable(AnswerSlot<bool>),
     /// A request on local paths for the platform
     /// ([`crate::file_dialog`]); its answer resolves the slot.
     FileRequest(crate::file_dialog::FileRequest, FileAnswer),
@@ -136,15 +181,38 @@ pub(crate) enum Action {
     Appearance(crate::platform::Appearance),
     /// Sets the app's design tokens.
     Tokens(super::Tokens),
+    /// Sets the app's translations ([`crate::i18n`]).
+    Translations(crate::i18n::Translations),
+    /// Shows the app in a language whatever the user's (`None`: the
+    /// user's again).
+    Locale(Option<crate::platform::Locale>),
     /// Draws the scroll views' bars with the built-in bar the source makes
     /// of the theme, or (no theme) with the platform's indicator.
     BuiltInScrollbars(super::ScrollbarSource, Option<super::AnyValue>),
     /// Measures the node with the layout of the commit the action goes out
     /// with; the measurement resolves the slot.
     Measure(NodeId, AnswerSlot<Option<crate::Measurement>>),
+    /// Measures where the list's viewport starts among its rows with the
+    /// layout of the commit the action goes out with; the position
+    /// resolves the slot.
+    MeasureScrollPosition(NodeId, AnswerSlot<Option<crate::ListScrollPosition>>),
+    /// Evaluates a web view's script within a timeout, with its answer
+    /// kept by the core.
+    Evaluate(
+        NodeId,
+        String,
+        std::time::Duration,
+        crate::platform::web_evaluation::Slot,
+    ),
+    /// Rejects a request that exceeded its deadline.
+    WebEvaluationTimeout(u32),
     /// How long the node's transitions run with the styles of the commit
     /// the action goes out with; the time resolves the slot.
     TransitionTime(NodeId, AnswerSlot<std::time::Duration>),
+    /// Presses what a pointer at the press's page position would inside
+    /// the node, with the layout of the commit the action goes out with;
+    /// whether a view took it resolves the slot.
+    PressAt(NodeId, crate::PressEvent, AnswerSlot<bool>),
 }
 
 /// What a speech recognition session asks of the core
@@ -163,6 +231,42 @@ pub(crate) enum SpeechAction {
     Abort(u32),
     /// Whether speech can be recognized; the answer resolves the slot.
     Available(AnswerSlot<bool>),
+}
+
+/// What a sound or a player asks of the core ([`Action::Audio`]).
+pub(crate) enum AudioAction {
+    /// Opens sound or player `id` (its first command, a
+    /// [`crate::audio::AudioCommand::Load`] or
+    /// [`crate::audio::AudioCommand::Open`]), reporting to `sink`.
+    Open {
+        command: crate::audio::AudioCommand,
+        sink: crate::audio::AudioSink,
+    },
+    /// A command of an open sound or player; an unload or close ends it.
+    Command(crate::audio::AudioCommand),
+    /// Whether sound plays here; the answer resolves the slot.
+    Available(AnswerSlot<bool>),
+}
+
+/// What the app asks about notifications ([`Action::Notification`]).
+pub(crate) enum NotificationAction {
+    /// The permission; with `ask`, the user is asked first when they were
+    /// not yet. The answer resolves the slot.
+    Permission {
+        ask: bool,
+        answer: AnswerSlot<crate::notifications::NotificationPermission>,
+    },
+    /// Shows a notification; whether the system took it resolves the slot.
+    Show {
+        notification: crate::notifications::Notification,
+        answer: AnswerSlot<bool>,
+    },
+    /// Removes the notification called this.
+    Close(String),
+    /// Sets the app's badge.
+    SetBadge(u32),
+    /// The id of the next notification pressed resolves the slot.
+    NextPress(AnswerSlot<String>),
 }
 
 /// A request on local paths waiting for the platform's answer
@@ -319,6 +423,10 @@ pub(crate) struct Executor {
     derived: RefCell<super::animated::Derived>,
     /// The components' listeners of the back button.
     pub(crate) back: Rc<RefCell<super::back::BackListeners>>,
+    /// What runs as the app quits ([`super::desktop::on_app_quit`]).
+    pub(crate) quit: Rc<RefCell<super::quit::QuitListeners>>,
+    /// The quit listeners' work still running ([`crate::Core::start_quit`]).
+    pub(crate) quitting: Rc<std::cell::Cell<usize>>,
     /// The views' keyboard shortcuts.
     pub(crate) keys: Rc<RefCell<super::keys::ViewKeys>>,
     /// The views' menus' handlers.
@@ -333,6 +441,8 @@ pub(crate) struct Executor {
     /// What waits for the app to answer the events emitted before it
     /// ([`super::after_answer`]).
     answers: RefCell<Answers>,
+    /// The engine's sounds ([`super::audio`]).
+    pub(crate) sounds: RefCell<super::audio::Sounds>,
 }
 
 /// The closures of [`super::after_answer`], by how far their events went.
@@ -424,6 +534,12 @@ impl Executor {
 
     pub(crate) fn set_runtime(&self, runtime: Handle) {
         *self.runtime.borrow_mut() = Some(runtime);
+    }
+
+    /// The runtime tasks are polled in the context of, if one is set.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn runtime(&self) -> Option<Handle> {
+        self.runtime.borrow().clone()
     }
 
     pub(crate) fn set_notify(&self, notify: Notify) {

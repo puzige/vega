@@ -67,6 +67,19 @@ pub trait SelectionTexts {
     /// Text `i`'s content (attachments are U+FFFC, left out of copies).
     fn content(&self, i: usize) -> &str;
 
+    /// The UTF-16 range `range` of text `i` as a copy gives it. By default
+    /// its content's characters without attachments' placeholders; a
+    /// backend that has the texts' runs gives
+    /// [`crate::AttributedText::copied_text`], which also leaves hidden
+    /// runs out (`visibility: "hidden"` on a span).
+    fn copied(&self, i: usize, range: Range<u32>) -> String {
+        let content = self.content(i);
+        content[byte_offset(content, range.start)..byte_offset(content, range.end)]
+            .chars()
+            .filter(|&c| c != OBJECT_REPLACEMENT)
+            .collect()
+    }
+
     /// Text `i`'s content box.
     fn frame(&self, i: usize) -> Bounds<Points>;
 
@@ -81,6 +94,26 @@ pub trait SelectionTexts {
     /// are then only clamped.
     fn key(&self, i: usize) -> u64 {
         i as u64
+    }
+
+    /// Whether text `i` continues text `i - 1`: the next part of a long
+    /// line drawn as several texts, one per wrapped part (the view's
+    /// [`ViewProps::continues_text`](crate::ViewProps::continues_text)).
+    /// A copy joins the two with nothing between them, and a word or a
+    /// paragraph (a double or triple click) runs on across them. By
+    /// default none does; the first text never does.
+    fn continues(&self, i: usize) -> bool {
+        let _ = i;
+        false
+    }
+
+    /// The box around what the characters `range` of text `i` cover, in
+    /// the coordinates of the content boxes ([`Self::frame`]): what
+    /// [`SelectionModel::selected_bounds`] unites. `None` by default: the
+    /// platform's text engine places characters, the model does not.
+    fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+        let _ = (i, range);
+        None
     }
 }
 
@@ -367,23 +400,73 @@ impl SelectionModel {
     }
 
     /// The selected text, as a copy gives it: each text's selected part,
-    /// attachments left out, texts on one row (their frames overlap
-    /// vertically) joined by a tab, the others by a line break.
+    /// attachments and hidden runs left out ([`SelectionTexts::copied`]),
+    /// a text that continues the one before it
+    /// ([`SelectionTexts::continues`]) joined to it with nothing between,
+    /// other texts on one row (their frames overlap vertically) joined by a
+    /// tab, the others by a line break; an empty text inside the selection
+    /// counts as a text, so a blank line stays in the copy.
     pub fn text(&self, texts: &impl SelectionTexts) -> String {
         let mut out = String::new();
-        let mut previous: Option<Bounds<Points>> = None;
-        for (i, range) in self.ranges(texts) {
+        let mut previous: Option<(usize, Bounds<Points>)> = None;
+        let ranges = self.ranges(texts);
+        let (Some(&(first, _)), Some(&(last, _))) = (ranges.first(), ranges.last()) else {
+            return out;
+        };
+        let mut ranges = ranges.into_iter().peekable();
+        for i in first..=last {
+            // An empty text between the ends (a blank line of code) has
+            // nothing to highlight but still takes its line in a copy.
+            let range = match ranges.next_if(|&(at, _)| at == i) {
+                Some((_, range)) => range,
+                None if texts.content(i).is_empty() => 0..0,
+                None => continue,
+            };
             let frame = texts.frame(i);
-            if let Some(previous) = previous {
+            if let Some((before, previous)) = previous
+                && (before + 1 != i || !continues(texts, i))
+            {
                 let same_row = previous.top() < frame.bottom() && frame.top() < previous.bottom();
                 out.push(if same_row { '\t' } else { '\n' });
             }
-            previous = Some(frame);
-            let content = texts.content(i);
-            let part = &content[byte_offset(content, range.start)..byte_offset(content, range.end)];
-            out.extend(part.chars().filter(|&c| c != OBJECT_REPLACEMENT));
+            previous = Some((i, frame));
+            out.push_str(&texts.copied(i, range));
         }
         out
+    }
+
+    /// The box around what is selected in `texts`, in their coordinates:
+    /// each text's part of the selection ([`SelectionTexts::range_bounds`])
+    /// united. `None` while nothing is selected, or where the texts cannot
+    /// place their characters.
+    pub fn selected_bounds(&self, texts: &impl SelectionTexts) -> Option<Bounds<Points>> {
+        self.ranges(texts)
+            .into_iter()
+            .filter_map(|(i, range)| texts.range_bounds(i, range))
+            .reduce(|a, b| a.union(&b))
+    }
+
+    /// Where the selection starts in the copy of all of `texts` (what
+    /// [`Self::text`] gives once everything is selected), in UTF-16 code
+    /// units: what maps it back to the document the texts show.
+    pub fn start_offset(&self, texts: &impl SelectionTexts) -> u32 {
+        let Some((start, _)) = self.bounds() else {
+            return 0;
+        };
+        if texts.is_empty() || (start.text == 0 && start.offset == 0) {
+            return 0;
+        }
+        let before = Self {
+            anchor: Some(TextPosition { text: 0, offset: 0 }),
+            focus: Some(start),
+            ..Self::default()
+        };
+        let mut len = utf16_len(&before.text(texts));
+        // A selection from the start of a text: the break before it.
+        if start.offset == 0 && len > 0 {
+            len += 1;
+        }
+        len
     }
 
     /// Puts the anchor at `pos` and selects the unit of `granularity`
@@ -596,15 +679,72 @@ fn unit_at(
     granularity: Granularity,
 ) -> (TextPosition, TextPosition) {
     let content = texts.content(pos.text);
-    let range = match granularity {
-        Granularity::Character => pos.offset..pos.offset,
-        Granularity::Word => word_range(content, pos.offset),
-        Granularity::Paragraph => 0..utf16_len(content),
+    match granularity {
+        Granularity::Character => (pos, pos),
+        Granularity::Word => {
+            let range = word_range(content, pos.offset);
+            let mut start = TextPosition::new(pos.text, range.start);
+            let mut end = TextPosition::new(pos.text, range.end);
+            // A word a wrap cut runs on into the parts around it: while the
+            // word reaches its text's start and the text continues one
+            // whose last character is of the same kind, it goes on there
+            // (and the same forward).
+            while start.offset == 0
+                && continues(texts, start.text)
+                && joins_word(texts, start.text - 1, start.text)
+            {
+                let before = texts.content(start.text - 1);
+                let range = word_range(before, utf16_len(before));
+                start = TextPosition::new(start.text - 1, range.start);
+            }
+            while end.offset == utf16_len(texts.content(end.text))
+                && end.text + 1 < texts.len()
+                && continues(texts, end.text + 1)
+                && joins_word(texts, end.text, end.text + 1)
+            {
+                let after = texts.content(end.text + 1);
+                let range = word_range(after, 0);
+                end = TextPosition::new(end.text + 1, range.end);
+            }
+            (start, end)
+        }
+        // The whole line: the text and the texts it continues and that
+        // continue it.
+        Granularity::Paragraph => {
+            let mut first = pos.text;
+            while continues(texts, first) {
+                first -= 1;
+            }
+            let mut last = pos.text;
+            while last + 1 < texts.len() && continues(texts, last + 1) {
+                last += 1;
+            }
+            (
+                TextPosition::new(first, 0),
+                TextPosition::new(last, utf16_len(texts.content(last))),
+            )
+        }
+    }
+}
+
+/// Whether text `i` continues the text before it (never the first).
+fn continues(texts: &impl SelectionTexts, i: usize) -> bool {
+    i > 0 && i < texts.len() && texts.continues(i)
+}
+
+/// Whether the characters on both sides of the join of texts `a` and `b`
+/// (`b` continuing `a`) are of one kind that makes words longer than a
+/// character (letters and digits, or spaces): a word a wrap cut there is
+/// one word.
+fn joins_word(texts: &impl SelectionTexts, a: usize, b: usize) -> bool {
+    let (Some(last), Some(first)) = (
+        texts.content(a).chars().next_back(),
+        texts.content(b).chars().next(),
+    ) else {
+        return false;
     };
-    (
-        TextPosition::new(pos.text, range.start),
-        TextPosition::new(pos.text, range.end),
-    )
+    let kind = CharKind::of(last);
+    kind != CharKind::Single && kind == CharKind::of(first)
 }
 
 /// What kind of character `c` is, for word boundaries.
@@ -797,6 +937,27 @@ mod tests {
                 .sum();
             before + within
         }
+
+        // ASCII only: a character is a UTF-16 unit.
+        fn range_bounds(&self, i: usize, range: Range<u32>) -> Option<Bounds<Points>> {
+            let (text, frame) = &self.0[i];
+            let place = |offset: u32| {
+                let before = &text[..offset as usize];
+                let line = before.matches('\n').count();
+                let column = before.len() - before.rfind('\n').map_or(0, |n| n + 1);
+                (line as f32, column as f32)
+            };
+            let ((l0, c0), (l1, c1)) = (place(range.start), place(range.end));
+            let (left, width) = if l0 == l1 {
+                (c0 * 8.0, (c1 - c0) * 8.0)
+            } else {
+                (0.0, frame.size.width.0)
+            };
+            Some(bounds(
+                point(frame.left() + px(left), frame.top() + px(l0 * 20.0)),
+                size(px(width), px((l1 - l0 + 1.0) * 20.0)),
+            ))
+        }
     }
 
     /// Three texts in a column: one line, two lines, one line, with gaps.
@@ -852,6 +1013,27 @@ mod tests {
         assert_eq!(
             model.ranges(&texts),
             vec![(0, 2..11), (1, 0..21), (2, 0..3)]
+        );
+    }
+
+    /// The selected part of each text, united: on one line, then across
+    /// the texts of the column; nothing for nothing selected.
+    #[test]
+    fn the_selected_bounds_unite_each_texts_part() {
+        let texts = column();
+        let mut model = SelectionModel::new();
+        assert_eq!(model.selected_bounds(&texts), None);
+        model.press(&texts, at(16.0, 5.0), 1, false);
+        assert_eq!(model.selected_bounds(&texts), None);
+        model.drag(&texts, at(40.0, 5.0));
+        assert_eq!(
+            model.selected_bounds(&texts),
+            Some(bounds(point(px(16.0), px(0.0)), size(px(24.0), px(20.0))))
+        );
+        model.drag(&texts, at(24.0, 105.0));
+        assert_eq!(
+            model.selected_bounds(&texts),
+            Some(bounds(point(px(0.0), px(0.0)), size(px(200.0), px(120.0))))
         );
     }
 
@@ -1035,7 +1217,9 @@ mod tests {
         ]);
         let mut model = SelectionModel::new();
         model.select_all(&texts);
-        assert_eq!(model.text(&texts), "abc\tde\nfg\nh");
+        // The empty text is a blank line inside the selection: it keeps its
+        // line in the copy, though it has nothing to highlight.
+        assert_eq!(model.text(&texts), "abc\tde\nfg\n\nh");
         assert_eq!(model.ranges(&texts).len(), 4, "the empty text has no range");
     }
 
@@ -1219,5 +1403,109 @@ mod tests {
         assert_eq!(step(400.0 - 16.0 + 96.0), AUTOSCROLL_MAX);
         assert_eq!(step(-500.0), Points(-AUTOSCROLL_MAX.0));
         assert!(step(420.0) > step(390.0));
+    }
+
+    /// Texts of which some continue the one before them (a long line's
+    /// wrapped parts).
+    struct Wrapped(Fake, Vec<bool>);
+
+    impl SelectionTexts for Wrapped {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        fn content(&self, i: usize) -> &str {
+            self.0.content(i)
+        }
+
+        fn frame(&self, i: usize) -> Bounds<Points> {
+            self.0.frame(i)
+        }
+
+        fn offset_at(&self, i: usize, point: Point<Points>) -> u32 {
+            self.0.offset_at(i, point)
+        }
+
+        fn continues(&self, i: usize) -> bool {
+            self.1[i]
+        }
+    }
+
+    /// `first line` alone, then `a long li` + `ne wrapped` (one line in two
+    /// parts, the second continuing the first), then `last`.
+    #[test]
+    fn a_copy_keeps_the_blank_lines_inside_the_selection() {
+        let texts = Fake::new(&[
+            ("}", (0.0, 0.0, 200.0, 20.0)),
+            ("", (0.0, 20.0, 0.0, 20.0)),
+            ("next", (0.0, 40.0, 200.0, 20.0)),
+        ]);
+        let mut model = SelectionModel::new();
+        model.select_all(&texts);
+        assert_eq!(model.text(&texts), "}\n\nnext");
+    }
+
+    fn wrapped() -> Wrapped {
+        Wrapped(
+            Fake::new(&[
+                ("first line", (0.0, 0.0, 200.0, 20.0)),
+                ("a long li", (0.0, 20.0, 200.0, 20.0)),
+                ("ne wrapped", (0.0, 40.0, 200.0, 20.0)),
+                ("last", (0.0, 60.0, 200.0, 20.0)),
+            ]),
+            vec![false, false, true, false],
+        )
+    }
+
+    #[test]
+    fn a_copy_joins_a_wrapped_lines_parts_with_nothing_between() {
+        let texts = wrapped();
+        let mut model = SelectionModel::new();
+        model.select_all(&texts);
+        assert_eq!(model.text(&texts), "first line\na long line wrapped\nlast");
+        // From inside the first part into the second.
+        model.press(&texts, at(16.0, 25.0), 1, false);
+        model.drag(&texts, at(16.0, 45.0));
+        assert_eq!(model.text(&texts), "long line");
+    }
+
+    #[test]
+    fn a_continued_text_whose_part_before_is_not_selected_starts_the_copy() {
+        let texts = wrapped();
+        let mut model = SelectionModel::new();
+        // From the second part to the last line: no break before the part,
+        // one after it.
+        model.press(&texts, at(0.0, 45.0), 1, false);
+        model.drag(&texts, at(32.0, 65.0));
+        assert_eq!(model.text(&texts), "ne wrapped\nlast");
+    }
+
+    #[test]
+    fn a_triple_click_selects_a_wrapped_line_whole() {
+        let texts = wrapped();
+        let mut model = SelectionModel::new();
+        model.press(&texts, at(16.0, 45.0), 3, false);
+        assert_eq!(model.bounds(), Some((pos(1, 0), pos(2, 10))));
+        assert_eq!(model.text(&texts), "a long line wrapped");
+        // A text that continues none and that none continues: itself.
+        model.press(&texts, at(8.0, 5.0), 3, false);
+        assert_eq!(model.text(&texts), "first line");
+    }
+
+    #[test]
+    fn a_double_click_selects_a_word_a_wrap_cut_across_its_parts() {
+        let texts = wrapped();
+        let mut model = SelectionModel::new();
+        // On `li` at the first part's end, and on `ne` at the second's
+        // start: the word `line` both times.
+        model.press(&texts, at(60.0, 25.0), 2, false);
+        assert_eq!(model.text(&texts), "line");
+        model.press(&texts, at(8.0, 45.0), 2, false);
+        assert_eq!(model.text(&texts), "line");
+        // A word that ends where its text does, the next text not
+        // continuing it, stays its own.
+        model.press(&texts, at(60.0, 5.0), 2, false);
+        assert_eq!(model.text(&texts), "line");
+        assert_eq!(model.bounds(), Some((pos(0, 6), pos(0, 10))));
     }
 }

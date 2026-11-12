@@ -160,8 +160,9 @@ pub fn keyframe_list<I: HostInput>(input: &I) -> Vec<Keyframe> {
         .collect()
 }
 
-/// How keyframes play: `{ duration, delay, easing, iterations, direction
-/// }` (CSS's defaults: 300 ms, `ease`, once, `normal`).
+/// How keyframes play: `{ duration, delay, easing, iterations, direction,
+/// frameRate }` (CSS's defaults: 300 ms, `ease`, once, `normal`; no rate:
+/// the screen's highest).
 pub fn keyframe_timing<I: HostInput>(input: &I) -> KeyframeTiming {
     let number = |key| {
         input
@@ -193,6 +194,7 @@ pub fn keyframe_timing<I: HostInput>(input: &I) -> KeyframeTiming {
             .and_then(|d| d.as_string())
             .and_then(|d| PlaybackDirection::parse(&d))
             .unwrap_or_default(),
+        frame_rate: crate::style::frame_rate(number("frameRate")),
     }
 }
 
@@ -285,7 +287,9 @@ type MakeLayoutCurve = fn(f32) -> LayoutCurve;
 /// the default.
 const LAYOUT_TYPES: &[(&str, MakeLayoutCurve)] = &[
     ("easeInEaseOut", |_| LayoutCurve::EaseInEaseOut),
-    ("spring", |damping| LayoutCurve::Spring { damping }),
+    ("spring", |damping_ratio| LayoutCurve::FittedSpring {
+        damping_ratio,
+    }),
     ("linear", |_| LayoutCurve::Linear),
     ("easeIn", |_| LayoutCurve::EaseIn),
     ("easeOut", |_| LayoutCurve::EaseOut),
@@ -579,8 +583,10 @@ pub fn tables() -> crate::JsonValue {
             LayoutCurve::EaseIn => ("easeIn", None),
             LayoutCurve::EaseOut => ("easeOut", None),
             LayoutCurve::EaseInEaseOut => ("easeInEaseOut", None),
-            LayoutCurve::Spring { damping } => ("spring", Some(damping)),
+            LayoutCurve::FittedSpring { damping_ratio } => ("spring", Some(damping_ratio)),
             LayoutCurve::Keyboard => ("keyboard", None),
+            // JS names no spring by its physics, and no preset is one.
+            LayoutCurve::Spring(_) => ("spring", None),
         };
         let property = match t.property {
             LayoutProperty::Opacity => "opacity",

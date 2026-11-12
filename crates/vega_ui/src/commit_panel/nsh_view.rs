@@ -315,6 +315,7 @@ pub(super) fn panel(state: Signal<Snapshot>, sender: mpsc::Sender<Request>) -> A
                         KeyOptions {
                             when: nsh_core::keymap::When::Always,
                             repeat: false,
+                            pass_through: false,
                         },
                         move |_| sender.send(Request::TraverseDraft(displayed.clone(), backwards)),
                     );

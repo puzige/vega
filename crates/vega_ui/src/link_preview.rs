@@ -658,7 +658,7 @@ impl Element for MarkdownLinkPreviewLayer {
             }
         });
         let weak = entity.downgrade();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if !phase.capture() {
                 return;
             }

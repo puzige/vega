@@ -496,8 +496,8 @@ impl ConversationStream {
                 }
                 cx.notify();
             }))
-            .on_scroll_wheel(
-                cx.listener(move |this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+            .on_scroll(
+                cx.listener(move |this, event: &gpui_kit::ScrollEvent, _, cx| {
                     let delta = f32::from(
                         event
                             .delta
@@ -650,16 +650,14 @@ fn render_message_anchor_preview(
                 cx.notify();
             }
         }))
-        .on_scroll_wheel(
-            cx.listener(|this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
-                let delta = event.delta.pixel_delta(px(
-                    Typography::CONVERSATION_LINE_HEIGHT * Typography::CONVERSATION
-                ));
-                this.list.scroll_by(-delta.y);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
+        .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
+            let delta = event.delta.pixel_delta(px(
+                Typography::CONVERSATION_LINE_HEIGHT * Typography::CONVERSATION
+            ));
+            this.list.scroll_by(-delta.y);
+            cx.stop_propagation();
+            cx.notify();
+        }))
         .into_any_element()
 }
 

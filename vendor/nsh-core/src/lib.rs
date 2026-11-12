@@ -12,6 +12,7 @@ mod byte_size;
 pub use byte_size::ByteSize;
 pub mod access;
 pub mod animation;
+pub mod audio;
 pub mod canvas;
 pub mod clipboard;
 pub mod color;
@@ -23,17 +24,22 @@ mod effects;
 pub mod element;
 mod fenwick;
 pub mod file_dialog;
+pub mod file_type;
 pub mod filesystem;
 pub mod geometry;
 mod grid;
 pub mod host_channel;
+pub mod i18n;
+pub mod id_table;
 pub mod image;
 pub mod input;
 pub mod js;
 pub mod keymap;
+pub mod main_thread;
 pub mod mobile;
 mod mount;
 pub mod navigation;
+pub mod notifications;
 pub mod open_url;
 mod ops;
 pub mod overlay;
@@ -43,12 +49,15 @@ pub mod prelude;
 mod props;
 pub mod reactive;
 pub mod resource;
+#[doc(hidden)]
+pub mod restart;
 pub mod runtime;
 pub mod runtime_data;
 pub mod scroll;
 pub mod selection;
 pub mod shader;
 pub mod shape;
+pub mod single_instance;
 pub mod speech;
 pub mod storage;
 mod style;
@@ -60,6 +69,8 @@ pub mod text_edit;
 pub mod time;
 mod transform;
 pub mod transition;
+pub mod url_scheme;
+pub mod web_resource;
 pub mod websocket;
 
 // The derive macros name `::nsh_core`, also in this crate's own tests.
@@ -71,10 +82,11 @@ pub use serde_json::Value as JsonValue;
 
 pub use crate::{
     color::{Hsla, Rgba},
-    core::{ApplyError, Core, ListBind, Measurement},
+    core::{ApplyError, Core, ListBind, ListScrollPosition, Measurement},
     effects::{
         BackdropMaterial, BlendMode, BoxShadow, ColorStop, Cursor, Effects, Filter, GlassEffect,
-        Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes, Outline, Transition,
+        Gradient, GradientKind, GradientSize, KeyframeAnimation, Keyframes, MacOsBackdrop,
+        MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, Outline, Transition,
         TransitionProps, blur_radius, compose_color_matrices,
     },
     geometry::{Bounds, Corners, Edges, Point, Points, Size},
@@ -86,14 +98,16 @@ pub use crate::{
     },
     ops::{
         AutoCapitalize, AutoFill, CellSlot, Command, ContextMenuEvent, Dialog, DialogButton,
-        DialogButtonStyle, EventKind, EventMask, EventPayload, HeaderSlot, HeaderSystemItem,
-        IMAGE_SCALES, ImageProp, ImageScales, ImageSource, KeyboardAppearance, KeyboardDismissMode,
-        KeyboardTaps, KeyboardType, ListContentStyle, ListViewport, ModalAnimation,
-        ModalPresentation, ModalProp, MouseButton, MouseEvent, NativeProp, NodeId, Op, OverlayProp,
-        PasteBehavior, PasteEvent, PastedFile, PayloadValue, PressEvent, Prop, ROOT_ID, ResizeMode,
-        ReturnKeyType, ScreenAnimation, ScreenProp, ScrollProp, ScrollbarSetting, SnapAlignment,
-        StatusBarConfig, StatusBarSetting, StatusBarStyle, SubmitBehavior, Tag, TouchEvent,
-        TouchPhase, TouchPoint, TransitionFallback, Viewability, WebInput, WebKey, WebSource,
+        DialogButtonStyle, EditAction, EventKind, EventMask, EventPayload, Haptic, HapticImpact,
+        HapticNotification, HeaderSlot, HeaderSystemItem, IMAGE_SCALES, ImageProp, ImageScales,
+        ImageSource, KeyboardAppearance, KeyboardDismissMode, KeyboardTaps, KeyboardType,
+        ListAlignment, ListContentStyle, ListViewport, ModalAnimation, ModalPresentation,
+        ModalProp, MouseButton, MouseEvent, NativeProp, NodeId, Op, OverlayProp, PasteBehavior,
+        PasteEvent, PastedFile, PayloadValue, PointerType, PressEvent, Prop, ROOT_ID, ResizeMode,
+        ReturnKeyType, RevealOptions, ScreenAnimation, ScreenProp, ScrollAlignment, ScrollProp,
+        ScrollbarSetting, SnapAlignment, StatusBarConfig, StatusBarSetting, StatusBarStyle,
+        SubmitBehavior, Tag, TouchEvent, TouchPhase, TouchPoint, TransitionFallback, Viewability,
+        WebElement, WebInput, WebKey, WebLoad, WebSource, WheelDelta, WheelEvent,
     },
     props::{
         Accessibility, AccessibilityActionDef, AccessibilityCurrent, AccessibilityProp,
@@ -112,7 +126,7 @@ pub use crate::{
         ATTACHMENT_CHAR, Affinity, ApproxTextEngine, AttachmentAlignments, AttributedText,
         BackgroundBox, FontExtent, LinePiece, ResolvedTextStyle, SpanTestId, TextAttachment,
         TextBackground, TextEngine, TextLayout, TextLine, TextLink, TextPosition, TextSpan,
-        font_data,
+        font_data, font_family, keep_font,
     },
     transform::{
         Decomposed, MAX_TRANSFORMS, Matrix, Transform, TransformKind, TransformOp, translation,

@@ -1457,6 +1457,9 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
             sets(K::Overflow, "hidden")
         }
         "overflow-visible" => sets(K::Overflow, "visible"),
+        // Corner shapes: the names of `corner-shape`'s keywords.
+        "corner-squircle" => sets(K::BorderCurve, "continuous"),
+        "corner-round" => sets(K::BorderCurve, "circular"),
         // Flexbox.
         "flex-row" => sets(K::FlexDirection, "row"),
         "flex-row-reverse" => sets(K::FlexDirection, "row-reverse"),
@@ -2309,10 +2312,16 @@ static PREFIXES: &[(&str, Handler)] = &[
         })
     }),
     ("bg", |t, v, _| {
-        if let Some(a) = arbitrary(v)
+        // `[image:…]` says the value is an image, as Tailwind's type hint
+        // does; gradients are the images there are.
+        let value = arbitrary(v);
+        let image = value
+            .as_deref()
+            .map(|a| arbitrary_hinted(a, "image").unwrap_or(a));
+        if let Some(a) = image
             && a.contains("gradient(")
         {
-            if css::gradient(&css::with_current_color(&a, Color::BLACK)).is_none() {
+            if css::gradient(&css::with_current_color(a, Color::BLACK)).is_none() {
                 // Reported here: the class is also unknown, but that does
                 // not say the gradient is what was rejected.
                 log::warn!("invalid gradient in class `bg-{v}`: {a}");
@@ -2320,7 +2329,7 @@ static PREFIXES: &[(&str, Handler)] = &[
             }
             return one(Decl::Style(StyleDecl::Set(
                 K::BackgroundImage,
-                K::BackgroundImage.parse_value(StyleValue::Str(&a)).ok()?,
+                K::BackgroundImage.parse_value(StyleValue::Str(a)).ok()?,
             )));
         }
         if let Some(a) = current(v) {
@@ -2971,12 +2980,15 @@ fn text(theme: &Theme, v: &str, _neg: bool) -> Option<Vec<Decl>> {
         }
         return Some(out);
     }
-    if base.starts_with('[') {
-        let a = arbitrary(base)?;
+    // A color with an opacity (`[#ff0000]/50`, `[color:rgb(0_0_255)]/25`)
+    // is no size: it is read as a color below, modifier and all.
+    if let Some(a) = arbitrary(base) {
         if let Some(l) = arbitrary_hinted(&a, "length").and_then(|s| class_length(theme, s)) {
             return one(setn(K::FontSize, l));
         }
-        if let Some(c) = arbitrary_hinted(&a, "color").and_then(css::color) {
+        if line.is_none()
+            && let Some(c) = arbitrary_hinted(&a, "color").and_then(css::color)
+        {
             return one(setc(K::Color, c));
         }
         if let Some(l) = class_length(theme, &a) {
@@ -3029,6 +3041,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.0, 0.0, 1.0, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Ping => KeyframeAnimation {
             keyframes,
@@ -3036,6 +3049,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.0, 0.0, 0.2, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Pulse => KeyframeAnimation {
             keyframes,
@@ -3043,6 +3057,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.4, 0.0, 0.6, 1.0],
             iterations: None,
+            frame_rate: None,
         },
         Keyframes::Bounce => KeyframeAnimation {
             keyframes,
@@ -3050,6 +3065,7 @@ fn preset(keyframes: Keyframes) -> KeyframeAnimation {
             delay: 0.0,
             easing: [0.8, 0.0, 1.0, 1.0],
             iterations: None,
+            frame_rate: None,
         },
     }
 }

@@ -2248,7 +2248,7 @@ impl Element for LinkedBody {
         cx: &mut App,
     ) {
         let wheel = self.state.clone();
-        window.on_mouse_event(move |_: &ScrollWheelEvent, phase, _, cx| {
+        window.on_mouse_event(move |_: &ScrollEvent, phase, _, cx| {
             if phase.capture() {
                 let _ = wheel.update(cx, |state, _| state.interrupt_anchor());
             }

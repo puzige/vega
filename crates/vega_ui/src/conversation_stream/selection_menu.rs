@@ -892,7 +892,7 @@ impl Render for MenuState {
                 this.close(false, window, cx);
                 cx.notify();
             }))
-            .on_scroll_wheel(cx.listener(|this, _, window, cx| {
+            .on_scroll(cx.listener(|this, _, window, cx| {
                 this.close(true, window, cx);
                 cx.notify();
                 cx.stop_propagation();

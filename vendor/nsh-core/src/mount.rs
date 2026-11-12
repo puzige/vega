@@ -78,6 +78,15 @@ pub struct WebProps {
     pub javascript_enabled: bool,
     /// Swipes go back and forward (iOS).
     pub back_forward_gestures: bool,
+    /// Website data (cookies, storage, the cache) lives only as long as
+    /// the web view, apart from the app's other web views (Android: no
+    /// HTTP cache and no saved form data). Read when the platform makes the
+    /// web view: the core keeps it from changing afterwards.
+    pub incognito: bool,
+    /// The URL schemes the page loads from the app
+    /// ([`crate::web_resource`]). Read when the platform makes the web
+    /// view, as `incognito`.
+    pub url_schemes: Vec<crate::web_resource::WebUrlScheme>,
 }
 
 impl Default for WebProps {
@@ -92,6 +101,8 @@ impl Default for WebProps {
             scrollable: true,
             javascript_enabled: true,
             back_forward_gestures: false,
+            incognito: false,
+            url_schemes: Vec::new(),
         }
     }
 }
@@ -496,6 +507,12 @@ pub struct ModalConfig {
     pub close_on_backdrop_press: bool,
     /// Swiping a sheet down closes it natively (`closeOnSwipe`).
     pub close_on_swipe: bool,
+    /// The window it shows in (desktops): [`crate::ROOT_ID`], the main
+    /// window, or the root of the app's window of its own that holds it
+    /// (a dialog opened from a `<Window>`'s content shows over that
+    /// window, not the main one). For a window's own root: the window
+    /// holding its node. The core works it out from where the node is.
+    pub window: NodeId,
 }
 
 impl Default for ModalConfig {
@@ -508,6 +525,7 @@ impl Default for ModalConfig {
             close_on_escape: true,
             close_on_backdrop_press: true,
             close_on_swipe: true,
+            window: crate::ROOT_ID,
         }
     }
 }
@@ -647,6 +665,10 @@ pub struct ImageOptions {
     /// `objectPosition`: where the image sits in its box once the resize
     /// mode has sized it ([`crate::ResizeMode::fit`]).
     pub position: crate::style::ObjectPosition,
+    /// The color an SVG source's `currentColor` paints with: the element's
+    /// text color, for an `svg()` the platform draws as an image (the web
+    /// runtime); `None` for an image, whose `currentColor` stays the SVG's.
+    pub current_color: Option<crate::style::Color>,
 }
 
 /// One instruction for the platform backend.
@@ -655,6 +677,12 @@ pub struct ImageOptions {
 /// created by the preceding items.
 #[derive(Debug, Clone)]
 pub enum MountItem {
+    /// Mounted nodes in depth-first logical tree order, independent of native
+    /// stacking (`Insert`); a list's cells, which it recycles, in the order
+    /// they are on screen. Opt-in through `Core::set_tree_order_tracking`;
+    /// emitted after structural changes and when a list's cells move, in the
+    /// same batch as the affected views.
+    TreeOrder(Vec<NodeId>),
     /// Create a native view. It starts detached and invisible.
     Create {
         /// Node id, used to address the view in later items.
@@ -669,6 +697,17 @@ pub enum MountItem {
     /// platform keep `states & tracked`), so the two never disagree about
     /// a state the platform stopped reporting.
     TrackStates {
+        /// View id.
+        id: NodeId,
+        /// The states.
+        states: u16,
+    },
+    /// The states the view shows as a part of a control (`tailwind::state`
+    /// bits: a list's highlighted option is focused while the focus stays
+    /// on its search field), for a platform that marks them itself. Opt-in
+    /// through `Core::set_projected_state_mounting`; the platform shows
+    /// them and never reports them back.
+    ProjectStates {
         /// View id.
         id: NodeId,
         /// The states.
@@ -761,7 +800,7 @@ pub enum MountItem {
         scrollbar_visible: bool,
         /// A built-in bar of the app's takes the indicator's place (the
         /// core's, over the viewport): the platform shows none on either
-        /// axis, also where a horizontal view keeps its own.
+        /// axis.
         replaced: bool,
         /// Native animation value fed with the main-axis offset.
         scroll_value: Option<crate::animation::NodeId>,
