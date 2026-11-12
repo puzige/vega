@@ -278,11 +278,7 @@ pub(super) fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>)
                     }
                 });
             if let Some(hint) = &row.hint {
-                control = control.hint(hint.clone()).tooltip(
-                    ns::text(hint.clone())
-                        .text_size(ns::px(Typography::SIDEBAR))
-                        .text_color(crate::nsh::color(colors.text_primary)),
-                );
+                control = control.hint(hint.clone());
             }
             if let Some(icon) = row.icon {
                 control = control.child(svg(

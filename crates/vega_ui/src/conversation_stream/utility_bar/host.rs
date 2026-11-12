@@ -1297,7 +1297,10 @@ impl Render for Host {
                     }
                 });
             if let Some(hint) = &row.hint {
-                proxy = proxy.aria_description(hint.clone());
+                let hint = hint.clone();
+                proxy = proxy
+                    .aria_description(hint.clone())
+                    .tooltip(move |_, cx| crate::icons::tooltip(hint.clone(), cx));
             }
             if let Some(checked) = row.checked {
                 proxy = proxy.aria_selected(checked).aria_toggled(if checked {
