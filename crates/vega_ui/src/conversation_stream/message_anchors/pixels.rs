@@ -7,8 +7,14 @@ use vega_theme::{Layout, ThemeColors, Typography};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Content {
-    Mark { width: f32, color: Rgba },
-    Preview { label: String, colors: [Rgba; 3] },
+    Marks {
+        selected: Vec<bool>,
+        colors: [Rgba; 2],
+    },
+    Preview {
+        label: String,
+        colors: [Rgba; 3],
+    },
 }
 
 #[derive(Clone, PartialEq)]
@@ -28,19 +34,11 @@ struct Host {
     _release: Subscription,
 }
 
-pub(super) fn mark(selected: bool, colors: ThemeColors) -> AnyElement {
+pub(super) fn marks(selected: impl Iterator<Item = bool>, colors: ThemeColors) -> AnyElement {
     Leaf {
-        content: Content::Mark {
-            width: if selected {
-                Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
-            } else {
-                Layout::CONVERSATION_MARKER_WIDTH
-            },
-            color: if selected {
-                colors.text_secondary
-            } else {
-                colors.conversation_marker
-            },
+        content: Content::Marks {
+            selected: selected.collect(),
+            colors: [colors.conversation_marker, colors.text_secondary],
         },
     }
     .into_any_element()
@@ -111,10 +109,7 @@ impl Element for Leaf {
             padding: (rem * 0.5).into(),
         };
         let mut element = match &self.content {
-            Content::Mark { width, .. } => div()
-                .w(px(*width))
-                .h(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH))
-                .into_any_element(),
+            Content::Marks { .. } => div().size_full().into_any_element(),
             Content::Preview { label, .. } => div()
                 .w_full()
                 .max_h(px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT))
@@ -221,9 +216,30 @@ fn pixels(state: ns::Signal<Snapshot>, _: tokio::sync::mpsc::Sender<()>) -> ns::
     root.child(ns::dynamic(move || {
         let snapshot = state.get();
         match snapshot.content {
-            Content::Mark { color, .. } => ns::view()
+            Content::Marks { selected, colors } => ns::view()
                 .size_full()
-                .bg(crate::nsh::color(color))
+                .flex()
+                .flex_col()
+                .children(selected.into_iter().map(|active| {
+                    let width = if active {
+                        Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
+                    } else {
+                        Layout::CONVERSATION_MARKER_WIDTH
+                    };
+                    ns::view()
+                        .w_full()
+                        .h(ns::px(Layout::CONVERSATION_MARKER_PITCH))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            ns::view()
+                                .w(ns::px(width))
+                                .h(ns::px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH))
+                                .bg(crate::nsh::color(colors[usize::from(active)])),
+                        )
+                }))
                 .into_element(),
             Content::Preview { label, colors } => {
                 let text = ns::text(label)

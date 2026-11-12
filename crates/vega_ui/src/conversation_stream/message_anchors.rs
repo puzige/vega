@@ -474,6 +474,11 @@ impl ConversationStream {
         });
         let default_id = current_id.clone();
         let key_anchors = anchors.clone();
+        let visible = &geometry.anchors[start..start + count];
+        let marks = visible.iter().map(|anchor| {
+            selected_id.as_deref() == Some(anchor.message_id.as_str())
+                || current_id.as_deref() == Some(anchor.message_id.as_str())
+        });
         let rail = div()
             .id("message-anchor-rail")
             .aria_label(vega_i18n::t(
@@ -566,54 +571,49 @@ impl ConversationStream {
                     cx.notify();
                 }),
             )
-            .children(
-                geometry
-                    .anchors
-                    .iter()
-                    .skip(start)
-                    .take(count)
-                    .map(|anchor| {
-                        let id = anchor.message_id.clone();
-                        let hover_id = id.clone();
-                        let click_id = id.clone();
-                        let selected = selected_id.as_deref() == Some(id.as_str())
-                            || current_id.as_deref() == Some(id.as_str());
-                        div()
-                            .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
-                            .aria_label(anchor_preview_label(anchor))
-                            .w_full()
-                            .h(px(Layout::CONVERSATION_MARKER_PITCH))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                                if this.message_anchor_hovered.as_deref() != Some(hover_id.as_str())
-                                {
-                                    this.message_anchor_hovered = Some(hover_id.clone());
-                                    cx.notify();
-                                }
-                            }))
-                            .on_mouse_down(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.message_anchor_focus.focus(window, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .on_mouse_up(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.message_anchor_keyboard_id = Some(click_id.clone());
-                                    this.message_anchor_hovered = Some(click_id.clone());
-                                    this.request_message_location(&click_id, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .child(pixels::mark(selected, colors))
-                    }),
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(pixels::marks(marks, colors)),
             )
+            .children(visible.iter().map(|anchor| {
+                let id = anchor.message_id.clone();
+                let hover_id = id.clone();
+                let click_id = id.clone();
+                div()
+                    .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
+                    .aria_label(anchor_preview_label(anchor))
+                    .w_full()
+                    .h(px(Layout::CONVERSATION_MARKER_PITCH))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.message_anchor_hovered.as_deref() != Some(hover_id.as_str()) {
+                            this.message_anchor_hovered = Some(hover_id.clone());
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.message_anchor_focus.focus(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.message_anchor_keyboard_id = Some(click_id.clone());
+                            this.message_anchor_hovered = Some(click_id.clone());
+                            this.request_message_location(&click_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+            }))
             .child(observer)
             .into_any_element();
         (rail, preview, false)
