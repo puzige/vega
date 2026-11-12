@@ -70,6 +70,7 @@ struct PendingInput {
 
 #[derive(Clone)]
 struct InputQueue {
+    owner: Owner,
     sender: mpsc::Sender<Request>,
     items: Rc<RefCell<VecDeque<PendingInput>>>,
     next_sequence: Signal<u64>,
@@ -83,6 +84,7 @@ struct InputQueue {
 impl InputQueue {
     fn new(sender: mpsc::Sender<Request>, epoch: u64) -> Self {
         Self {
+            owner: Owner::current(),
             sender,
             items: Rc::new(RefCell::new(VecDeque::new())),
             next_sequence: signal(1),
@@ -134,36 +136,38 @@ impl InputQueue {
         self.running.set(true);
         self.failed.set(false);
         let queue = self.clone();
-        spawn(async move {
-            loop {
-                let Some(pending) = queue.items.borrow_mut().pop_front() else {
-                    break;
-                };
-                let (reply, accepted) = oneshot::channel();
-                let request = Request {
-                    epoch: queue.epoch,
-                    command: pending.command.clone(),
-                    sequence: Some(pending.sequence),
-                    reply: Some(reply),
-                };
-                if queue.sender.send(request).await.is_err() {
-                    queue.items.borrow_mut().push_front(pending);
-                    queue.failed.set(true);
-                    break;
-                }
-                match accepted.await {
-                    Ok(true) => {
-                        queue.count.update(|count| *count -= 1);
-                        queue.bytes.update(|bytes| *bytes -= pending.bytes);
-                    }
-                    Ok(false) | Err(_) => {
+        self.owner.run(|| {
+            spawn(async move {
+                loop {
+                    let Some(pending) = queue.items.borrow_mut().pop_front() else {
+                        break;
+                    };
+                    let (reply, accepted) = oneshot::channel();
+                    let request = Request {
+                        epoch: queue.epoch,
+                        command: pending.command.clone(),
+                        sequence: Some(pending.sequence),
+                        reply: Some(reply),
+                    };
+                    if queue.sender.send(request).await.is_err() {
                         queue.items.borrow_mut().push_front(pending);
                         queue.failed.set(true);
                         break;
                     }
+                    match accepted.await {
+                        Ok(true) => {
+                            queue.count.update(|count| *count -= 1);
+                            queue.bytes.update(|bytes| *bytes -= pending.bytes);
+                        }
+                        Ok(false) | Err(_) => {
+                            queue.items.borrow_mut().push_front(pending);
+                            queue.failed.set(true);
+                            break;
+                        }
+                    }
                 }
-            }
-            queue.running.set(false);
+                queue.running.set(false);
+            })
         });
     }
 }
