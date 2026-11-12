@@ -234,21 +234,23 @@ impl Snapshot {
             });
             if !file.reading {
                 if self.mode != Mode::Row(1) {
+                    let enabled = policy.allows(FileAction::Menu, self.mode);
                     controls.push(Control {
                         action: Action::File(index, FileAction::Menu),
                         label: vega_i18n::t("ui.open_file_in").into(),
-                        hint: hint.into(),
-                        enabled: policy.allows(FileAction::Menu, self.mode),
+                        hint: if enabled { String::new() } else { hint.into() },
+                        enabled,
                         expanded: Some(file.menu),
                     });
                 }
                 if self.mode == Mode::Row(1) || file.menu {
                     for (target, label) in OPEN_TARGETS {
+                        let enabled = policy.allows(FileAction::Open(target), self.mode);
                         controls.push(Control {
                             action: Action::File(index, FileAction::Open(target)),
                             label: target_label(target, label).into(),
-                            hint: hint.into(),
-                            enabled: policy.allows(FileAction::Open(target), self.mode),
+                            hint: if enabled { String::new() } else { hint.into() },
+                            enabled,
                             expanded: None,
                         });
                     }
