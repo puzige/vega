@@ -145,10 +145,30 @@ impl DatabaseCommand for Consume {
     }
 }
 
+pub(super) fn commit_micro(
+    path: &std::path::Path,
+    diagnostics: Option<&super::super::diagnostics::DiagnosticsContext>,
+    command: Micro,
+) -> Result<String, VegaError> {
+    let store = Store::open_existing(path).map_err(VegaError::Store)?;
+    micro_writer_result(
+        crate::database_writer::commit(path, store.database_identity(), command),
+        diagnostics,
+    )
+}
+
+pub(super) fn micro_writer_result(
+    result: Result<Result<String, VegaError>, String>,
+    diagnostics: Option<&super::super::diagnostics::DiagnosticsContext>,
+) -> Result<String, VegaError> {
+    result.map_err(|_| Rejection::WriterAdmission.error(diagnostics))?
+}
+
 pub(super) struct Micro {
     pub prepared: vega_store::context_micro::PreparedMicro,
     pub cancel: CancellationToken,
     pub admission: vega_store::thread_admission::ThreadAdmission,
+    pub diagnostics: Option<super::super::diagnostics::DiagnosticsContext>,
 }
 impl Sealed for Micro {}
 impl DatabaseCommand for Micro {
@@ -158,9 +178,10 @@ impl DatabaseCommand for Micro {
             prepared,
             cancel,
             admission,
+            diagnostics,
         } = self;
         crate::thread_access::verify(store, prepared.thread(), &admission)
-            .map_err(|_| context_error(ContextRuntimeError::SourceChanged))?;
+            .map_err(|_| Rejection::Ownership.error(diagnostics.as_ref()))?;
         prepared
             .install(store.conn(), || cancel.is_cancelled())
             .map_err(|error| match error {
@@ -170,7 +191,7 @@ impl DatabaseCommand for Micro {
                 vega_store::context_compaction::ContextCheckpointError::Store(error) => {
                     VegaError::Store(error)
                 }
-                _ => context_error(ContextRuntimeError::SourceChanged),
+                _ => Rejection::MicroCommit.error(diagnostics.as_ref()),
             })
     }
 }

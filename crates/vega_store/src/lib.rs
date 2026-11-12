@@ -123,6 +123,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0064_persistence_receipts.sql"),
     include_str!("../migrations/0065_configuration_intents.sql"),
     include_str!("../migrations/0066_source_validation.sql"),
+    include_str!("../migrations/0067_compaction_rejection.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
