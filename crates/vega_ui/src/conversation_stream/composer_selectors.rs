@@ -863,6 +863,37 @@ impl RenderOnce for Native {
                     cx.notify();
                 }),
             );
+            if self.kind == Kind::PermissionMenu {
+                let host = cx.weak_entity();
+                subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+                    if event.keystroke.key != "escape"
+                        || event.input_preference == gpui_kit::InputPreference::CharacterInput
+                        || event.keystroke.modifiers != gpui_kit::Modifiers::default()
+                    {
+                        return;
+                    }
+                    let _ = host.update(cx, |host: &mut Host, cx| {
+                        let Some(owner) = host.owner.upgrade() else {
+                            return;
+                        };
+                        let stream = owner.read(cx);
+                        if host.valid(&host.snapshot, window, cx)
+                            && stream
+                                .permission_editor
+                                .options
+                                .iter()
+                                .any(|option| option.is_focused(window))
+                        {
+                            owner.update(cx, |stream, cx| {
+                                stream.permission_picker_open = false;
+                                window.focus(&stream.permission_editor.trigger, cx);
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                        }
+                    });
+                }));
+            }
             subscriptions.push(Host::observe_owner(&owner, cx));
             Host {
                 owner: self.owner.clone(),
