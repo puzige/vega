@@ -864,7 +864,21 @@ impl RenderOnce for NativeChrome {
             let same = host.snapshot.same_source(&snapshot);
             let previous = host.snapshot.clone();
             if !same {
-                host.stop(cx);
+                // A changed draft or enabled state needs fresh action authority, but the
+                // same mounted toolbar button can paint its next projection in place.
+                let reuse = host.snapshot.kind != Kind::Menu
+                    && host.snapshot.epoch.matches(&snapshot.epoch)
+                    && host.lease.upgrade().is_some()
+                    && host
+                        .surface
+                        .as_ref()
+                        .is_some_and(|surface| surface.errors().borrow().is_none());
+                if reuse {
+                    host.displayed.fill(false);
+                    host.activation_focus = None;
+                } else {
+                    host.stop(cx);
+                }
                 host.height = None;
             }
             host.snapshot = snapshot;
