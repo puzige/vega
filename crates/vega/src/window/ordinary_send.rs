@@ -597,7 +597,10 @@ impl VegaWindow {
                         && this.agent_controller.preparation_stream.as_ref() == Some(&stream)
                     {
                         this.agent_controller.preparation_stream = None;
-                        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                        stream.update(cx, |stream, cx| {
+                            stream.set_trusted_action_busy(false, cx);
+                            stream.finish_composer_preparation(cx);
+                        });
                     }
                     let Ok(outcome) = outcome else {
                         return;

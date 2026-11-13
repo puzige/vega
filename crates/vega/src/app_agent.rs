@@ -10,6 +10,10 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
+fn run_owner_matches(active: (u64, &str, EntityId), incoming: (u64, &str, EntityId)) -> bool {
+    active == incoming
+}
+
 type CredentialReader =
     Arc<dyn Fn() -> Result<Vec<String>, vega_runtime::CredentialReadError> + Send + Sync>;
 
@@ -652,9 +656,14 @@ impl AppAgentController {
         stream: &Entity<ConversationStream>,
     ) -> bool {
         self.active.get(thread_id).is_some_and(|active| {
-            active.generation == generation
-                && active.thread_id == thread_id
-                && active.stream == *stream
+            run_owner_matches(
+                (
+                    active.generation,
+                    &active.thread_id,
+                    active.stream.entity_id(),
+                ),
+                (generation, thread_id, stream.entity_id()),
+            )
         })
     }
 

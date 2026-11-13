@@ -1317,11 +1317,13 @@ impl ConversationStream {
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
+    pub fn finish_composer_preparation(&mut self, cx: &mut Context<Self>) {
+        self.actions.finish_preparation(&mut self.controller_error);
+        cx.notify();
+    }
+
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
-        self.controller_runtime_error = None;
-        self.controller_error = Some(crate::localized_copy::LocalizedCopy::new(
-            "ui.this_conversation_is_running_wait_for_it_to",
-        ));
+        ComposerActions::apply_busy(&mut self.controller_error);
         cx.notify();
     }
 

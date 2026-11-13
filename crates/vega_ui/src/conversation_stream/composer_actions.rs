@@ -211,7 +211,34 @@ pub(crate) struct ComposerActions {
 }
 
 impl ComposerActions {
-    fn finish_run(&mut self, cancelled: bool) -> bool {
+    pub(super) fn apply_busy(controller_error: &mut Option<crate::localized_copy::LocalizedCopy>) {
+        controller_error.get_or_insert(crate::localized_copy::LocalizedCopy::AgentBusy);
+    }
+
+    pub(super) fn finish_preparation(
+        &self,
+        controller_error: &mut Option<crate::localized_copy::LocalizedCopy>,
+    ) {
+        if !self.running {
+            Self::clear_busy(controller_error);
+        }
+    }
+
+    fn clear_busy(controller_error: &mut Option<crate::localized_copy::LocalizedCopy>) {
+        if matches!(
+            controller_error,
+            Some(crate::localized_copy::LocalizedCopy::AgentBusy)
+        ) {
+            *controller_error = None;
+        }
+    }
+
+    fn finish_run(
+        &mut self,
+        cancelled: bool,
+        controller_error: &mut Option<crate::localized_copy::LocalizedCopy>,
+    ) -> bool {
+        Self::clear_busy(controller_error);
         self.running = false;
         self.restore_focus = self.stopping;
         self.stopping = false;
@@ -383,7 +410,9 @@ impl ConversationStream {
         }
         self.permission_editor.active_mode = None;
         self.composer_resume_pending = false;
-        let stopped = self.actions.finish_run(cancelled);
+        let stopped = self
+            .actions
+            .finish_run(cancelled, &mut self.controller_error);
         self.sync_retained_thinking_actions(cx);
         cx.notify();
         stopped
