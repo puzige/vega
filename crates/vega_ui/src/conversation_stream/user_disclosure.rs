@@ -2,6 +2,9 @@ use super::inline_code::{RunIndex, shape_flow};
 use super::*;
 use std::rc::Rc;
 
+mod native;
+pub(super) use native::control;
+
 #[derive(Default)]
 pub(super) struct UserDisclosure {
     pub(super) expanded: bool,
@@ -14,8 +17,33 @@ pub(super) struct UserDisclosure {
 pub(super) struct UserPreview {
     pub(super) model: StreamModel,
     pub(super) collapsible: bool,
+    content_width: f32,
     pub(super) height: f32,
     full_height: f32,
+}
+
+impl UserPreview {
+    pub(super) fn content_width(&self, window: &Window) -> f32 {
+        if !self.collapsible {
+            return self.content_width;
+        }
+        [false, true]
+            .into_iter()
+            .map(|expanded| {
+                let label = native::label(expanded);
+                let run = window.text_style().to_run(label.len());
+                let shaped = window.text_system().shape_line(
+                    label.into(),
+                    px(Typography::BODY),
+                    &[run],
+                    None,
+                );
+                f32::from(shaped.width).ceil()
+                    + Layout::CONVERSATION_INLINE_GAP
+                    + Layout::CONVERSATION_CHEVRON_SIZE
+            })
+            .fold(self.content_width, f32::max)
+    }
 }
 
 pub(super) fn bubble_width(text_width: f32) -> f32 {
@@ -45,6 +73,7 @@ pub(super) fn preview(
     let target = (Layout::USER_MESSAGE_COLLAPSE_LINES - 1) as f32 * line_height;
     let mut height = 0.;
     let mut visible_height = 0.;
+    let mut content_width: f32 = 0.;
     let mut visible = Vec::new();
     let mut stopped = false;
     let mut index = 0;
@@ -61,6 +90,7 @@ pub(super) fn preview(
         let mut end = index + 1;
         let mut table_preview = None;
         let (block_height, cutoff) = if line.kind == LineKind::Code {
+            content_width = width;
             while end < lines.len() && lines[end].continues_code_block(line) {
                 end += 1;
             }
@@ -76,6 +106,7 @@ pub(super) fn preview(
                 None,
             )
         } else if let Some(table) = &line.table {
+            content_width = width;
             let row_heights = table_row_heights(line, table, width, colors, window);
             let mut preview_height = 0.;
             let mut rows = 0;
@@ -95,6 +126,7 @@ pub(super) fn preview(
             }
             (row_heights.iter().sum(), None)
         } else if line.kind == LineKind::Rule {
+            content_width = width;
             (9., None)
         } else {
             let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
@@ -124,6 +156,7 @@ pub(super) fn preview(
                 px((width - inset).max(1.)),
                 window,
             );
+            content_width = content_width.max(inset + f32::from(flow.size.width));
             let remaining = target - height - gap;
             let cutoff = flow
                 .fragments
@@ -162,6 +195,7 @@ pub(super) fn preview(
     let preview = Rc::new(UserPreview {
         model: StreamModel::from_visible_lines(visible),
         collapsible,
+        content_width: content_width.ceil().clamp(1., width.max(1.)),
         height: visible_height,
         full_height: height,
     });
@@ -204,7 +238,9 @@ fn measure_text(
     };
     let mut offset = 0;
     let mut y = px(0.);
+    let mut widest = px(0.);
     for line in lines {
+        widest = widest.max(line.width());
         let mut from = 0;
         for to in line
             .wrap_boundaries
@@ -223,7 +259,7 @@ fn measure_text(
         }
         offset += line.len() + 1;
     }
-    result.size = gpui_kit::size(width, y);
+    result.size = gpui_kit::size(widest.min(width), y);
     result
 }
 
@@ -343,23 +379,46 @@ pub(super) fn estimated_height(copy: &MessageCopy, width: f32, fallback: f32) ->
     content + Layout::USER_MESSAGE_TOGGLE_GAP + line_height
 }
 
-pub(super) fn toggle(
-    copy: &MessageCopy,
-    stream: &Option<gpui_kit::WeakEntity<ConversationStream>>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    copy.invalidate_selection();
-    let mut state = copy.user_disclosure.borrow_mut();
-    state.expanded = !state.expanded;
-    state.revision = state.revision.wrapping_add(1);
-    drop(state);
-    if let Some(stream) = stream {
-        let _ = stream.update(cx, |stream, cx| {
-            let index = stream.entries.iter().position(|entry| matches!(entry, StreamEntry::User { copy: owner, .. } if owner.id == copy.id));
-            stream.invalidate_item(index);
-            cx.notify();
-        });
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisclosureStamp {
+    source: u64,
+    generation: u64,
+    revision: u64,
+    expanded: bool,
+}
+
+impl DisclosureStamp {
+    fn capture(copy: &MessageCopy) -> Self {
+        let state = copy.user_disclosure.borrow();
+        Self {
+            source: copy.id,
+            generation: copy.content_generation(),
+            revision: state.revision,
+            expanded: state.expanded,
+        }
     }
-    window.refresh();
+
+    fn matches(self, copy: &MessageCopy) -> bool {
+        self == Self::capture(copy)
+    }
+
+    fn toggle(self, copy: &MessageCopy) -> bool {
+        if !self.matches(copy) {
+            return false;
+        }
+        let mut state = copy.user_disclosure.borrow_mut();
+        if state.generation != self.generation
+            || !state
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.collapsible)
+        {
+            return false;
+        }
+        state.expanded = !state.expanded;
+        state.revision = state.revision.wrapping_add(1);
+        drop(state);
+        copy.invalidate_selection();
+        true
+    }
 }

@@ -2,8 +2,8 @@ use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::{
-    AnyElement, App, ElementId, IntoElement, OngoingScroll, Pixels, RenderOnce, Rgba, ScrollHandle,
-    ScrollWheelEvent, TouchPhase, Window, div, prelude::*,
+    AnyElement, App, ElementId, IntoElement, OngoingScroll, Pixels, RenderOnce, Rgba, ScrollEvent,
+    ScrollHandle, TouchPhase, Window, div, prelude::*,
 };
 
 use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
@@ -37,11 +37,7 @@ struct CodeScrollGesture {
 }
 
 impl CodeScrollGesture {
-    fn horizontal_delta(
-        &mut self,
-        event: &ScrollWheelEvent,
-        line_height: Pixels,
-    ) -> Option<Pixels> {
+    fn horizontal_delta(&mut self, event: &ScrollEvent, line_height: Pixels) -> Option<Pixels> {
         let mut delta = event.delta.pixel_delta(line_height);
         if !event.delta.precise() {
             *self = Self::default();
@@ -89,18 +85,8 @@ impl CodeViewport {
         }
     }
 
-    pub(super) fn scroll(mut self, scroll: CodeScrollHandle) -> Self {
-        self.scroll = Some(scroll);
-        self
-    }
-
     pub(super) fn selection(mut self, selection: Option<CodeDragSelection>) -> Self {
         self.selection = selection;
-        self
-    }
-
-    pub(super) fn height(mut self, height: Pixels) -> Self {
-        self.height = Some(height);
         self
     }
 }
@@ -135,7 +121,7 @@ impl RenderOnce for CodeViewport {
             .when_some(self.height, |body, height| body.h(height))
             .overflow_hidden()
             .track_scroll(&scroll)
-            .on_scroll_wheel(move |event, window, cx| {
+            .on_scroll(move |event, window, cx| {
                 let delta = gesture
                     .borrow_mut()
                     .horizontal_delta(event, window.line_height());

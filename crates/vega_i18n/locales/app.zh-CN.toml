@@ -9,6 +9,8 @@
 "app.startup.loading" = "正在打开 Vega…"
 "app.startup.failed" = "无法打开 Vega"
 "app.startup.quit" = "退出"
+"app.startup.reload_view" = "重新加载启动界面"
+"app.startup.view_failed" = "无法显示启动界面，请重新加载界面。"
 "app.startup.paths" = "数据位置不可用。请检查用户主目录后重试。"
 "app.startup.storage" = "无法安全打开数据库。请检查文件访问权限，并使用兼容的 Vega 版本后重试。"
 "app.startup.configuration" = "无法读取或创建配置。请检查配置格式和文件访问权限后重试。"

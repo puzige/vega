@@ -466,12 +466,48 @@ impl VegaWindow {
 }
 
 impl VegaWindow {
+    fn reading_navigation_authority(
+        stream: &WeakEntity<ConversationStream>,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        let Some(stream) = stream.upgrade() else {
+            return false;
+        };
+        let Some(root) = window.root::<VegaWindow>().flatten() else {
+            return false;
+        };
+        let root = root.read(cx);
+        if cx.global::<SettingsOpen>().0
+            || cx.global::<PendingDeleteConfirm>().0.is_some()
+            || root.palette.view.is_some()
+            || root.sidebar.read(cx).opening_thread(cx).is_some()
+        {
+            return false;
+        }
+        let thread = stream.read(cx).thread_snapshot().id;
+        (root.workspace_fullscreen_index().is_none()
+            && root.owns_stream_request(&stream, &thread, cx))
+            || root.owns_subagent_read(&stream, &thread, cx)
+    }
+
+    pub(super) fn bind_reading_navigation(
+        &self,
+        view: &Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        view.update(cx, |stream, cx| {
+            stream.set_reading_navigation_authority(Self::reading_navigation_authority, cx);
+        });
+    }
+
     pub(crate) fn bind_conversation_stream(
         &mut self,
         view: &Entity<ConversationStream>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.bind_reading_navigation(view, cx);
         self.bind_question_attention(view, cx);
         cx.subscribe(
             view,

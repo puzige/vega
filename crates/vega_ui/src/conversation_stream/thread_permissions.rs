@@ -1,6 +1,7 @@
 use super::*;
-use crate::interaction::InteractionExt;
 use vega_conversation::types::ThreadPermissionError;
+
+mod native;
 
 pub(crate) struct PermissionEditor {
     operation: u64,
@@ -13,6 +14,7 @@ pub(crate) struct PermissionEditor {
     focus_pending: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 enum Phase {
     Idle,
     Saving(u64),
@@ -205,65 +207,6 @@ impl ConversationStream {
     }
 
     pub(crate) fn render_thread_permission_feedback(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Phase::Failed(error) = self.permission_editor.phase else {
-            return div().into_any_element();
-        };
-        let key = match error {
-            ThreadPermissionError::Conflict => "ui.permission_error_conflict",
-            ThreadPermissionError::ResetPending => "ui.permission_error_reset",
-            ThreadPermissionError::OutcomeUnknown => "ui.permission_error_unknown",
-            ThreadPermissionError::ConfirmationRequired => "ui.permission_error_confirmation",
-            ThreadPermissionError::Unavailable => "ui.permission_error_unavailable",
-        };
-        let colors = theme(cx).colors;
-        let reload_label = vega_i18n::t("ui.permission_reload");
-        div()
-            .id("thread-permission-feedback")
-            .w_full()
-            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-            .mx_auto()
-            .mb_2()
-            .px_2()
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(px(Typography::METADATA))
-            .child(
-                div()
-                    .flex_1()
-                    .text_color(colors.danger)
-                    .child(vega_i18n::t(key)),
-            )
-            .child(
-                div()
-                    .id("thread-permission-reload")
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(reload_label)
-                    .track_focus(&self.permission_editor.reload)
-                    .tab_stop(true)
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_color(colors.text_primary)
-                    .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
-                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.reload_thread_permissions(window, cx)
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.reload_thread_permissions(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-                    .child(reload_label),
-            )
-            .into_any_element()
+        native::render(self, cx)
     }
 }

@@ -1,11 +1,9 @@
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+mod nsh_editor;
+
+use crate::text_input::TextInput;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use vega_conversation::types::{AutomationCommand, AutomationKind, AutomationTask};
-use vega_theme::{Layout, Typography, theme};
-
-use crate::interaction::InteractionExt;
-use crate::text_input::TextInput;
 
 actions!(
     vega_automation_editor,
@@ -64,8 +62,9 @@ pub struct AutomationEditor {
     request: u64,
     error: Option<crate::localized_copy::LocalizedCopy>,
     elapsed_ms: u64,
-    save_focus: FocusHandle,
-    revert_focus: FocusHandle,
+    draft: nsh_editor::Draft,
+    carrier_text: String,
+    presentation: Option<nsh_editor::Presentation>,
 }
 
 impl EventEmitter<AutomationEditorEvent> for AutomationEditor {}
@@ -80,12 +79,17 @@ impl AutomationEditor {
             input.set_text(&task.instruction, cx);
             input
         });
-        cx.observe(&input, |_, _, cx| {
+        cx.observe(&input, |this, _, cx| {
+            this.observe_carrier(cx);
+            this.publish_nsh(cx);
             cx.emit(AutomationEditorEvent::Changed);
             cx.notify();
         })
         .detach();
         Self {
+            draft: nsh_editor::Draft::new(task.instruction.clone()),
+            carrier_text: task.instruction.clone(),
+            presentation: None,
             elapsed_ms: task.elapsed_ms,
             latest: Some(task.clone()),
             base: task,
@@ -93,8 +97,6 @@ impl AutomationEditor {
             pending: None,
             request: 0,
             error: None,
-            save_focus: cx.focus_handle().tab_stop(true),
-            revert_focus: cx.focus_handle().tab_stop(true),
         }
     }
     pub fn key(&self) -> AutomationEditorKey {
@@ -107,7 +109,11 @@ impl AutomationEditor {
         self.input.clone()
     }
     pub fn is_dirty(&self, cx: &App) -> bool {
-        self.instruction(cx) != self.base.instruction
+        if self.input.read(cx).text() != self.carrier_text {
+            self.instruction(cx) != self.base.instruction
+        } else {
+            self.draft.text() != self.base.instruction
+        }
     }
     pub fn has_conflict(&self) -> bool {
         self.latest.as_ref().is_some_and(|task| {
@@ -115,13 +121,16 @@ impl AutomationEditor {
         })
     }
     pub fn can_save(&self, cx: &App) -> bool {
-        let text = self.instruction(cx);
+        let valid = if self.input.read(cx).text() != self.carrier_text {
+            let text = self.instruction(cx);
+            text != self.base.instruction && !text.trim().is_empty() && text.len() <= 16384
+        } else {
+            self.draft.can_save(&self.base.instruction)
+        };
         self.latest.is_some()
             && !self.has_conflict()
             && self.pending.is_none()
-            && self.is_dirty(cx)
-            && !text.trim().is_empty()
-            && text.len() <= 16384
+            && valid
             && !self.input.read(cx).is_composing()
     }
     pub fn refresh(
@@ -130,6 +139,7 @@ impl AutomationEditor {
         elapsed_ms: Option<u64>,
         cx: &mut Context<Self>,
     ) {
+        self.observe_carrier(cx);
         let latest = tasks
             .iter()
             .find(|task| task.thread_id == self.base.thread_id && task.kind == self.base.kind)
@@ -144,35 +154,45 @@ impl AutomationEditor {
             return;
         }
         self.elapsed_ms = elapsed_ms;
-        if !self.is_dirty(cx)
-            && self.pending.is_none()
+        if self.pending.is_none()
             && let Some(task) = &latest
             && task.identity == self.base.identity
+            && self
+                .draft
+                .rebase_if_clean(&self.base.instruction, &task.instruction)
         {
-            if task.instruction != self.base.instruction {
-                self.input
-                    .update(cx, |input, cx| input.set_text(&task.instruction, cx));
-            }
             self.base = task.clone();
+            self.sync_carrier(cx);
         }
         self.latest = latest;
+        self.publish_nsh(cx);
         cx.notify();
     }
     pub fn save(&mut self, cx: &mut Context<Self>) {
+        self.observe_carrier(cx);
+        self.save_observed(&self.draft.read(), cx);
+    }
+    fn save_observed(&mut self, observed: &nsh_editor::Values, cx: &mut Context<Self>) -> bool {
         if !self.can_save(cx) {
-            return;
+            return false;
         }
+        let Some(instruction) = self.draft.claim(observed, &self.base.instruction) else {
+            return false;
+        };
+        self.sync_carrier(cx);
         self.request = self.request.wrapping_add(1);
         let submission = AutomationEditSubmission {
             key: self.key(),
             revision: self.base.revision,
-            instruction: self.instruction(cx).to_string(),
+            instruction,
             request: self.request,
         };
         self.pending = Some(submission.clone());
         self.error = None;
+        self.publish_nsh(cx);
         cx.emit(AutomationEditorEvent::Save(submission));
         cx.notify();
+        true
     }
     pub fn finish_save(
         &mut self,
@@ -192,6 +212,7 @@ impl AutomationEditor {
             return;
         }
         self.pending = None;
+        self.draft.release();
         match result {
             Ok(tasks) => {
                 if let Some(task) = tasks
@@ -209,6 +230,8 @@ impl AutomationEditor {
             }
             Err(error) => self.error = Some(error),
         }
+        self.sync_carrier(cx);
+        self.publish_nsh(cx);
         cx.emit(AutomationEditorEvent::Changed);
         cx.notify();
     }
@@ -221,79 +244,14 @@ impl AutomationEditor {
                 cx.emit(AutomationEditorEvent::OpenLatest(Box::new(task)));
                 return;
             }
-            self.input
-                .update(cx, |input, cx| input.set_text(&task.instruction, cx));
+            self.draft.reset(task.instruction.clone());
+            self.sync_carrier(cx);
             self.base = task;
             self.error = None;
+            self.publish_nsh(cx);
             cx.emit(AutomationEditorEvent::Changed);
             cx.notify();
         }
-    }
-    fn button(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        enabled: bool,
-        focus: &FocusHandle,
-        cx: &mut Context<Self>,
-        action: fn(&mut Self, &mut Context<Self>),
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let primary = id == "automation-editor-save";
-        div()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(label)
-            .track_focus(focus)
-            .tab_stop(enabled)
-            .h(px(Layout::AUTOMATION_ACTION_SIZE))
-            .px_3()
-            .flex()
-            .items_center()
-            .rounded_full()
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .text_color(if primary && enabled {
-                colors.bg_base
-            } else if enabled {
-                colors.text_primary
-            } else {
-                colors.text_tertiary
-            })
-            .interaction_surface(
-                if primary && enabled {
-                    colors.text_primary
-                } else {
-                    colors.bg_base
-                },
-                if primary && enabled {
-                    colors.text_secondary
-                } else {
-                    colors.bg_hover
-                },
-                if primary && enabled {
-                    colors.text_secondary
-                } else {
-                    colors.bg_active
-                },
-                enabled,
-            )
-            .focus_visible(move |style| style.border_1().border_color(colors.accent))
-            .when(enabled, |button| button.cursor_pointer())
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if enabled {
-                    cx.stop_propagation();
-                    action(this, cx);
-                }
-            }))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    action(this, cx);
-                }
-            }))
-            .child(label)
-            .into_any_element()
     }
 }
 
@@ -314,22 +272,8 @@ pub fn format_elapsed(elapsed_ms: u64) -> String {
     }
 }
 
-impl Render for AutomationEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        let conflict = self.has_conflict();
-        let dirty = self.is_dirty(cx);
-        let error = if self.latest.is_none() {
-            Some(vega_i18n::t("ui.goal_cleared").to_string())
-        } else if conflict {
-            Some(vega_i18n::t("ui.goal_updated_load_the_latest_content_and_try").to_string())
-        } else if dirty && self.instruction(cx).trim().is_empty() {
-            Some(vega_i18n::t("ui.enter_task_content").to_string())
-        } else if self.instruction(cx).len() > 16384 {
-            Some(vega_i18n::t("ui.task_content_is_limited_to_16_kib_shorten").to_string())
-        } else {
-            self.error.as_ref().map(|error| error.render())
-        };
+impl AutomationEditor {
+    fn details(&self) -> Vec<String> {
         let task = self
             .latest
             .as_ref()
@@ -378,12 +322,15 @@ impl Render for AutomationEditor {
                 ));
             }
         }
+        details
+    }
+}
+
+impl Render for AutomationEditor {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let surface = self.render_nsh(window, cx);
         div()
-            .id("automation-editor")
             .size_full()
-            .flex()
-            .flex_col()
-            .min_w_0()
             .key_context("AutomationEditor")
             .on_action(cx.listener(|this, _: &SaveAutomation, _, cx| {
                 this.save(cx);
@@ -393,104 +340,7 @@ impl Render for AutomationEditor {
                 cx.emit(AutomationEditorEvent::Close);
                 cx.stop_propagation();
             }))
-            .text_size(px(Typography::BODY))
-            .text_color(colors.text_primary)
-            .child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap_2()
-                    .p_3()
-                    .border_b_1()
-                    .border_color(colors.border_subtle)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_color(colors.text_secondary)
-                            .child(if self.pending.is_some() {
-                                vega_i18n::t("ui.saving")
-                            } else if dirty {
-                                vega_i18n::t("ui.unsaved")
-                            } else {
-                                ""
-                            }),
-                    )
-                    .child(self.button(
-                        "automation-editor-revert",
-                        if conflict {
-                            vega_i18n::t("ui.load_latest")
-                        } else {
-                            vega_i18n::t("ui.revert")
-                        },
-                        self.pending.is_none()
-                            && self.latest.is_some()
-                            && (dirty || conflict || self.error.is_some()),
-                        &self.revert_focus,
-                        cx,
-                        Self::revert,
-                    ))
-                    .child(self.button(
-                        "automation-editor-save",
-                        vega_i18n::t("ui.save"),
-                        self.can_save(cx),
-                        &self.save_focus,
-                        cx,
-                        Self::save,
-                    )),
-            )
-            .children(error.map(|error| {
-                div()
-                    .flex_shrink_0()
-                    .px_3()
-                    .pt_2()
-                    .text_color(colors.danger)
-                    .child(error)
-            }))
-            .child(
-                div()
-                    .id("automation-editor-body")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_color(colors.text_secondary)
-                            .child(vega_i18n::t("ui.task_content")),
-                    )
-                    .child(
-                        div()
-                            .id("automation-editor-input")
-                            .role(Role::TextInput)
-                            .aria_label(vega_i18n::t("ui.task_content"))
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT * 2.))
-                            .child(self.input.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("automation-editor-details")
-                            .min_h_0()
-                            .max_h(px(112.))
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .children(details.into_iter().map(|value| div().child(value)))
-                            .scroll_edge_fade(colors.bg_base, ScrollFade::compact()),
-                    ),
-            )
+            .child(surface)
     }
 }
 

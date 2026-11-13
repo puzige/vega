@@ -1,5 +1,5 @@
 use super::*;
-use crate::scroll_edge_fade::{ScrollFade, ScrollFadeMetrics};
+use crate::scroll_edge_fade::{PreparedScrollFade, ScrollFade, ScrollFadeMetrics};
 use gpui_kit::base::{Scrollbar, ScrollbarHandle, ScrollbarMode};
 use std::{cell::RefCell, rc::Rc};
 use vega_theme::Layout;
@@ -76,6 +76,7 @@ struct PrepaintState {
     total_visual_rows: usize,
     editor_scroll: Option<(Range<usize>, u64, usize)>,
     fade: ScrollFadeMetrics,
+    fade_pixels: PreparedScrollFade,
 }
 
 impl IntoElement for TextElement {
@@ -508,9 +509,25 @@ impl Element for TextElement {
             state.revision = input.content_revision;
         }
 
+        let content_revision = input.content_revision;
+        let colors = theme(cx).colors;
+        let color = if input.scroll_fade_on_base {
+            colors.bg_base
+        } else {
+            colors.bg_elevated
+        };
+        let fade_pixels = window.with_element_namespace(
+            ("text-input-scroll-edge-fade", self.input.entity_id()),
+            |window| {
+                window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+                    fade.prepaint(color, ScrollFade::compact(), window, cx)
+                })
+            },
+        );
+
         PrepaintState {
             navigation_lines,
-            content_revision: input.content_revision,
+            content_revision,
             editor_scroll: manual_scroll
                 .map(|(selection, revision, _)| (selection, revision, first_visible_row)),
             total_visual_rows,
@@ -521,6 +538,7 @@ impl Element for TextElement {
             visible_rows,
             first_visible_row,
             fade,
+            fade_pixels,
         }
     }
 
@@ -563,15 +581,19 @@ impl Element for TextElement {
             }
         });
         let line_height = prepaint.line_height;
-        let colors = theme(cx).colors;
-        let color = if self.input.read(cx).scroll_fade_on_base {
-            colors.bg_base
-        } else {
-            colors.bg_elevated
-        };
-        window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
-            prepaint.fade.paint(color, ScrollFade::compact(), window);
-        });
+        window.with_element_namespace(
+            ("text-input-scroll-edge-fade", self.input.entity_id()),
+            |window| {
+                window.with_content_mask(Some(gpui_kit::ContentMask { bounds }), |window| {
+                    prepaint.fade.paint(
+                        &mut prepaint.fade_pixels,
+                        ScrollFade::compact(),
+                        window,
+                        cx,
+                    );
+                });
+            },
+        );
 
         self.input.update(cx, |input, cx| {
             let layout_changed = input.rows != prepaint.visible_rows
@@ -643,8 +665,8 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .when(self.scrollable_editor, |input| input.size_full().min_h_0())
             .when(self.multiline, |input| {
-                input.relative().on_scroll_wheel(cx.listener(
-                    |this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+                input.relative().on_scroll(cx.listener(
+                    |this, event: &gpui_kit::ScrollEvent, _, cx| {
                         if this.last_line_height <= px(0.) {
                             return;
                         }

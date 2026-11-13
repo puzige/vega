@@ -15,6 +15,7 @@ pub mod interaction;
 pub mod link_preview;
 pub mod localized_copy;
 pub mod menu_list;
+pub mod nsh;
 pub mod permission_card;
 pub mod plan_card;
 pub mod scroll_edge_fade;
@@ -96,7 +97,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),
-        KeyBinding::new("escape", DismissEnvironmentOverlay, None),
+        KeyBinding::new(
+            "escape",
+            DismissEnvironmentOverlay,
+            Some("!NshCommandPalette"),
+        ),
         KeyBinding::new("down", command_palette::PaletteNext, Some("CommandPalette")),
         KeyBinding::new(
             "up",
@@ -121,7 +126,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(
             "tab",
             conversation_stream::NextComposerControl,
-            Some("Composer"),
+            Some("Composer && !PermissionOptions"),
         ),
         KeyBinding::new(
             "enter",
@@ -161,7 +166,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(
             "shift-tab",
             conversation_stream::PreviousComposerControl,
-            Some("Composer"),
+            Some("Composer && !PermissionOptions"),
         ),
         KeyBinding::new(
             "up",
@@ -248,48 +253,6 @@ pub fn init(cx: &mut App) {
             settings::PreviousPricingAction,
             Some("PricingSettings"),
         ),
-        KeyBinding::new("tab", settings::NextSkillsAction, Some("SkillsSettings")),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousSkillsAction,
-            Some("SkillsSettings"),
-        ),
-        KeyBinding::new("enter", text_input::InsertNewline, Some("McpSettings")),
-        KeyBinding::new("tab", settings::NextMcpAction, Some("McpSettings")),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousMcpAction,
-            Some("McpSettings"),
-        ),
-        // Provider form: multiline models use Enter for a new line; the
-        // focused Save/Edit controls accept Enter/Space, and Cmd+Enter saves
-        // from any provider input without changing the current thread model.
-        KeyBinding::new("enter", text_input::InsertNewline, Some("ProviderSettings")),
-        KeyBinding::new(
-            "cmd-enter",
-            settings::ActivateProviderAction,
-            Some("ProviderSettings"),
-        ),
-        KeyBinding::new(
-            "enter",
-            settings::ActivateProviderAction,
-            Some("ProviderAction"),
-        ),
-        KeyBinding::new(
-            "space",
-            settings::ActivateProviderAction,
-            Some("ProviderAction"),
-        ),
-        KeyBinding::new(
-            "tab",
-            settings::NextProviderAction,
-            Some("ProviderSettings"),
-        ),
-        KeyBinding::new(
-            "shift-tab",
-            settings::PreviousProviderAction,
-            Some("ProviderSettings"),
-        ),
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
         // Session rows expose low-frequency actions through one compact menu
         // trigger. The row keeps its own key context while the menu is open,
@@ -352,41 +315,11 @@ pub fn init(cx: &mut App) {
             conversation_stream::SendMessage,
             Some("Composer"),
         ),
-        KeyBinding::new("up", conversation_stream::PreviousMessage, Some("Composer")),
         KeyBinding::new(
-            "enter",
-            permission_card::PermissionEnter,
-            Some("PermissionCard"),
+            "up",
+            conversation_stream::PreviousMessage,
+            Some("Composer && !PermissionOptions"),
         ),
-        KeyBinding::new(
-            "cmd-enter",
-            permission_card::PermissionAlways,
-            Some("PermissionCard"),
-        ),
-        KeyBinding::new(
-            "escape",
-            permission_card::PermissionDeny,
-            Some("PermissionCard"),
-        ),
-        KeyBinding::new(
-            "tab",
-            permission_card::PermissionNextFocus,
-            Some("PermissionCard"),
-        ),
-        KeyBinding::new(
-            "shift-tab",
-            permission_card::PermissionPreviousFocus,
-            Some("PermissionCard"),
-        ),
-        KeyBinding::new(
-            "space",
-            permission_card::PermissionActivate,
-            Some("PermissionCard"),
-        ),
-        KeyBinding::new("enter", plan_card::PlanActivate, Some("PlanCard")),
-        KeyBinding::new("space", plan_card::PlanActivate, Some("PlanCard")),
-        KeyBinding::new("tab", plan_card::PlanNext, Some("PlanCard")),
-        KeyBinding::new("shift-tab", plan_card::PlanPrevious, Some("PlanCard")),
         KeyBinding::new("enter", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("tab", file_selector::AcceptFile, Some("FileSelect")),
         KeyBinding::new("up", file_selector::PreviousFile, Some("FileSelect")),

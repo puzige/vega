@@ -191,17 +191,6 @@ impl ConversationStream {
         self.focus_composer(window, cx);
     }
 
-    /// Retry button for a failed bounded index. The input token remains
-    /// editable while the previous generation is fenced and replaced.
-    pub(crate) fn on_selector_retry(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.retry_file_index(window, cx);
-    }
-
     pub(crate) fn on_selector_retry_action(
         &mut self,
         _: &RetryFile,

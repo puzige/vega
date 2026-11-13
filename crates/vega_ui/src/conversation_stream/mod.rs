@@ -1,13 +1,15 @@
 mod automation_permission;
 mod privacy;
-pub(crate) mod shell_recovery;
+mod shell_recovery;
 pub use shell_recovery::{ShellRecoveryAction, ShellRecoveryOutcome, ShellRecoveryRequested};
 mod thread_permissions;
 pub use privacy::{PrivacyAction, PrivacyRequested};
 pub use vega_conversation::types::ThreadPermissionReloadRequested;
 mod attachments;
+mod message_footer;
 mod ordinary_submissions;
 mod pending_messages;
+mod reasoning_feedback;
 pub use ordinary_submissions::{OrdinaryAction, OrdinaryActionRequested};
 mod user_questions;
 pub use pending_messages::{PendingQueueAction, PendingQueueRequested, RunningMessageDefault};
@@ -50,8 +52,8 @@ use crate::artifact_card::{ArtifactCard, ArtifactGroup};
 use crate::branch_selector::{BranchListRequested, BranchSelector};
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
-    AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, FocusPreviousRetry,
-    FocusRetry, NextFile, PreviousFile, RetryFile,
+    AcceptFile, CancelFile, FileSelectorModel, FocusPreviousRetry, FocusRetry, NextFile,
+    PreviousFile, RetryFile,
 };
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
@@ -307,27 +309,32 @@ mod composer_predictions;
 pub(crate) use composer_predictions::ComposerPredictionsEnabled;
 pub use composer_predictions::set_composer_predictions_enabled;
 mod composer_actions;
+mod nsh_composer;
 use composer_actions::ComposerActions;
 mod code_drag;
 mod code_viewport;
 mod content;
 mod context_control;
+mod conversation_status;
 mod copy_receipt;
 mod history_preparation;
 pub use context_control::ContextUsageProjection;
-pub(crate) use copy_receipt::tool_text_copy_button;
 mod context_usage;
 pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,
     MessageLocationStatus,
 };
+mod composer_selectors;
 mod core;
 mod file_reference;
+mod foreground_chrome;
 mod message_anchors;
 mod model;
+mod nsh_parent;
 mod phase;
 mod render;
 mod render_rows;
+mod resume_tail;
 mod run_activity;
 mod run_notice;
 mod shimmer;
@@ -342,8 +349,8 @@ use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod autolinks;
 mod inline_code;
 pub(crate) mod links;
-mod selection;
 mod selection_menu;
+pub use selection_menu::body::SettingsReaders;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;

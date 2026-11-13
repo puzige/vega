@@ -62,6 +62,13 @@ pub struct ConversationStream {
         HashMap<(String, String), vega_conversation::types::SubagentSnapshot>,
     pub(crate) subagent_groups: HashMap<String, Entity<super::subagents::SubagentGroup>>,
     pub(crate) subagent_parent_focus: FocusHandle,
+    pub(crate) parent_navigation: super::nsh_parent::ParentNavigation,
+    pub(super) resume_tail_ui: std::rc::Rc<std::cell::RefCell<super::resume_tail::ResumeTailUi>>,
+    pub(super) resume_tail_authority: Option<super::resume_tail::Authority>,
+    pub(super) reading_navigation_epoch: crate::nsh::ProjectionId,
+    pub(super) reading_navigation_blocked: bool,
+    pub(super) ui_presentations_suspended: bool,
+    pub(crate) run_notice_epoch: crate::nsh::ProjectionId,
     pub(crate) delegated_run_active: bool,
     pub(crate) automation: super::automation::AutomationUi,
     pub(crate) privacy: super::privacy::PrivacyPanel,
@@ -99,6 +106,7 @@ pub struct ConversationStream {
     pub(crate) injecting: Option<InjectionState>,
     /// Composer 输入状态（独立 `TextInput` Entity，1–8 行自适应多行）。
     pub(crate) input: Entity<TextInput>,
+    pub(super) nsh_composer_subscription: Option<gpui_kit::Subscription>,
     pub(crate) selection_focus: FocusHandle,
     pub(crate) selection_view_initialized: bool,
     /// Synthetic block-id counter for user echo rows (diagnostics only).
@@ -289,10 +297,76 @@ pub(crate) struct PendingEcho {
 }
 
 impl ConversationStream {
+    pub fn suspend_shell_recovery_presentation(&mut self) {
+        self.hide_shell_recovery_surface();
+    }
+
+    pub fn set_reading_navigation_authority(
+        &mut self,
+        authority: fn(&gpui_kit::WeakEntity<Self>, &Window, &App) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .resume_tail_authority
+            .is_some_and(|current| std::ptr::fn_addr_eq(current, authority))
+        {
+            return;
+        }
+        self.suspend_reading_navigation(cx);
+        self.resume_tail_authority = Some(authority);
+    }
+
+    pub fn set_reading_navigation_blocked(stream: &Entity<Self>, blocked: bool, cx: &mut App) {
+        if stream.read(cx).reading_navigation_blocked != blocked {
+            stream.update(cx, |this, cx| {
+                this.reading_navigation_blocked = blocked;
+                if blocked {
+                    this.commit_panel
+                        .update(cx, |panel, cx| panel.suspend_presentation(cx));
+                }
+                this.suspend_reading_navigation(cx);
+                cx.notify();
+            });
+        }
+    }
+
+    pub fn suspend_reading_navigation(&mut self, cx: &mut Context<Self>) {
+        self.reading_navigation_epoch = crate::nsh::ProjectionId::new();
+        self.resume_tail_ui.borrow_mut().hide(cx);
+    }
+
+    pub fn suspend_ui_presentations(&mut self, cx: &mut Context<Self>) {
+        if self.ui_presentations_suspended {
+            return;
+        }
+        self.ui_presentations_suspended = true;
+        self.suspend_reading_navigation(cx);
+        self.input
+            .update(cx, |input, cx| input.suspend_nsh_composer(cx));
+        self.suspend_business_presentations(cx);
+    }
+
+    pub(super) fn suspend_business_presentations(&mut self, cx: &mut Context<Self>) {
+        self.run_notice_epoch = crate::nsh::ProjectionId::new();
+        self.hide_shell_recovery_surface();
+        self.parent_navigation.hide(cx);
+        self.commit_panel
+            .update(cx, |panel, cx| panel.suspend_presentation(cx));
+        for entry in &self.entries {
+            if let StreamEntry::ToolGroup { group } = entry {
+                group.update(cx, |group, cx| group.suspend_presentation(cx));
+            }
+        }
+        for group in self.run_activity_groups.values() {
+            group.update(cx, |group, cx| group.suspend_child_presentations(cx));
+        }
+    }
+
     pub fn set_reading_preview(&mut self, reading: bool, cx: &mut Context<Self>) {
         if self.reading_preview == reading {
             return;
         }
+        self.suspend_ui_presentations(cx);
         self.reading_preview = reading;
         for card in self.artifact_cards.values() {
             card.update(cx, |card, cx| card.set_reading_preview(reading, cx));
@@ -528,6 +602,13 @@ impl ConversationStream {
             subagent_groups: HashMap::new(),
             subagent_executions: HashMap::new(),
             subagent_parent_focus: cx.focus_handle().tab_stop(true),
+            parent_navigation: super::nsh_parent::ParentNavigation::default(),
+            resume_tail_ui: std::rc::Rc::default(),
+            resume_tail_authority: None,
+            reading_navigation_epoch: crate::nsh::ProjectionId::new(),
+            reading_navigation_blocked: false,
+            ui_presentations_suspended: false,
+            run_notice_epoch: crate::nsh::ProjectionId::new(),
             delegated_run_active: false,
             context_control: context_control::ContextControl::new(cx),
             computer_use_control: None,
@@ -565,6 +646,7 @@ impl ConversationStream {
             next_local_entry_id: 0,
             injecting: None,
             input,
+            nsh_composer_subscription: None,
             selection_focus: cx.focus_handle(),
             selection_view_initialized: false,
             user_block_seq: USER_BLOCK_BASE,
@@ -964,6 +1046,9 @@ impl ConversationStream {
 
     pub fn apply_thread(&mut self, mut thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            if thread.backend != self.thread.backend {
+                self.hide_shell_recovery_surface();
+            }
             if thread.reasoning_preferences.is_none() {
                 thread.reasoning_preferences = self.thread.reasoning_preferences.clone();
             }
@@ -1037,6 +1122,7 @@ impl ConversationStream {
         {
             return None;
         }
+        self.hide_shell_recovery_surface();
         self.thread.backend = backend;
         self.reset_shell_recovery(cx);
         self.backend_selector_open = false;
@@ -1080,6 +1166,7 @@ impl ConversationStream {
         if thread.project_id == self.thread.project_id {
             return true;
         }
+        self.hide_shell_recovery_surface();
         self.close_composer_popovers(cx);
         self.clear_skill_route_state();
         self.branch_selector.update(cx, |selector, cx| {
@@ -1685,6 +1772,19 @@ impl ConversationStream {
             .unwrap_or(&self.composer_defaults.model)
     }
 
+    pub(super) fn can_restore_default_effort(&self, cx: &App) -> bool {
+        let slider = self.thinking_slider.read(cx);
+        slider.has_tiers() && !slider.is_provider_default()
+    }
+
+    pub(super) fn restore_default_effort(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.can_restore_default_effort(cx) {
+            self.thinking_slider
+                .update(cx, |slider, cx| slider.select_provider_default(cx));
+            self.on_model_close(&CloseModel, window, cx);
+        }
+    }
+
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
@@ -1721,6 +1821,8 @@ impl ConversationStream {
             .cloned()
         {
             self.select_model_option(&option.model, cx);
+        } else if self.model_selector_highlight == self.model_options.len() {
+            self.restore_default_effort(window, cx);
         }
         cx.notify();
     }
@@ -1799,7 +1901,9 @@ impl ConversationStream {
         if self.model_picker_level != ModelPickerLevel::List || self.trusted_action_busy {
             return;
         }
-        if self.model_selector_highlight + 1 < self.model_options.len() {
+        if self.model_selector_highlight + 1
+            < self.model_options.len() + usize::from(self.can_restore_default_effort(cx))
+        {
             self.model_selector_highlight += 1;
         }
         self.model_menu_scroll

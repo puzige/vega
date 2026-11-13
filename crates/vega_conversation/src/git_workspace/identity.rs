@@ -227,7 +227,7 @@ pub(crate) fn project_untracked(
     if before.size() > *remaining_bytes as u64 {
         return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
     }
-    let mut reader = File::open(&path).map_err(|_| error(GitWorkspaceErrorCode::MetadataOnly))?;
+    let mut reader = File::open(&path).map_err(|_| error(GitWorkspaceErrorCode::FileReadFailed))?;
     let opened = reader
         .metadata()
         .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
@@ -239,7 +239,7 @@ pub(crate) fn project_untracked(
     loop {
         let read = reader
             .read(&mut chunk)
-            .map_err(|_| error(GitWorkspaceErrorCode::MetadataOnly))?;
+            .map_err(|_| error(GitWorkspaceErrorCode::FileReadFailed))?;
         if read == 0 {
             break;
         }

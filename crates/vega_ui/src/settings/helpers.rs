@@ -1,5 +1,4 @@
 use super::*;
-use crate::interaction::InteractionExt;
 
 pub(crate) fn read_rate_inputs(inputs: &[Entity<TextInput>], cx: &App) -> PricingRateInputs {
     PricingRateInputs {
@@ -47,23 +46,33 @@ pub(crate) fn settings_section() -> Div {
         .gap(px(Layout::SETTINGS_CONTENT_GAP))
 }
 
-pub(crate) fn settings_group(colors: vega_theme::ThemeColors) -> Div {
+pub(crate) fn settings_group(
+    colors: vega_theme::ThemeColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     settings_section()
         .gap_0()
         .p(px(Layout::SETTINGS_GROUP_PADDING))
         .rounded(px(Layout::PANEL_RADIUS))
         .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_subtle)
+        .border_color(gpui_kit::transparent_black())
+        .relative()
+        .child(super::nsh_tail::group(colors, window, cx))
 }
 
 pub(crate) fn settings_field(
+    key: &'static str,
     label: &'static str,
     description: Option<String>,
     control: impl IntoElement,
     colors: vega_theme::ThemeColors,
-) -> Div {
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::Stateful<Div> {
     div()
+        .id(key)
+        .relative()
         .min_w_0()
         .flex_shrink_0()
         .flex()
@@ -73,7 +82,8 @@ pub(crate) fn settings_field(
         .gap_y_2()
         .py(px(Layout::SETTINGS_ROW_PADDING_Y))
         .border_b_1()
-        .border_color(colors.border_subtle)
+        .border_color(gpui_kit::transparent_black())
+        .child(super::nsh_tail::rule(key, colors.border_subtle, window, cx))
         .child(
             div()
                 .w(px(Layout::SETTINGS_LABEL_WIDTH))
@@ -84,13 +94,27 @@ pub(crate) fn settings_field(
                 .flex_col()
                 .gap_1()
                 .text_size(px(Typography::BODY))
-                .child(label)
+                .child(super::nsh_tail::label(
+                    "settings-field-label",
+                    label.to_string(),
+                    colors.text_primary,
+                    Typography::BODY,
+                    window,
+                    cx,
+                ))
                 .when_some(description, |view, description| {
                     view.child(
                         div()
                             .text_size(px(Typography::METADATA))
                             .text_color(colors.text_secondary)
-                            .child(description),
+                            .child(super::nsh_tail::label(
+                                "settings-field-description",
+                                description,
+                                colors.text_secondary,
+                                Typography::METADATA,
+                                window,
+                                cx,
+                            )),
                     )
                 }),
         )
@@ -106,203 +130,6 @@ pub(crate) fn settings_field(
                 .justify_center()
                 .child(control),
         )
-}
-
-pub(crate) fn settings_switch(
-    id: impl Into<String>,
-    label: impl Into<gpui_kit::SharedString>,
-    value: bool,
-    enabled: bool,
-    colors: vega_theme::ThemeColors,
-) -> crate::interaction::Interaction {
-    let id = id.into();
-    div()
-        .id(id.clone())
-        .interaction_surface(
-            if value {
-                colors.brand_primary
-            } else {
-                colors.bg_hover
-            },
-            if value {
-                colors.brand_primary_strong
-            } else {
-                colors.border_subtle
-            },
-            if value {
-                colors.brand_primary_strong
-            } else {
-                colors.bg_active
-            },
-            enabled,
-        )
-        .aria_label(label)
-        .w(px(Layout::SETTINGS_SWITCH_WIDTH))
-        .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
-        .flex_shrink_0()
-        .p(px(1.))
-        .rounded_full()
-        .border_1()
-        .border_color(if value {
-            colors.brand_primary
-        } else {
-            colors.border_subtle
-        })
-        .flex()
-        .items_center()
-        .when(value, |switch| switch.justify_end())
-        .when(!value, |switch| switch.justify_start())
-        .when(enabled, |switch| {
-            switch.focusable().tab_stop(true).cursor_pointer()
-        })
-        .when(!enabled, |switch| switch.opacity(0.5))
-        .focus_visible(move |style| style.border_color(colors.text_primary))
-        .child(
-            div()
-                .size(px(Layout::ICON_SIZE))
-                .flex_shrink_0()
-                .rounded_full()
-                .bg(colors.bg_elevated),
-        )
-}
-
-pub(crate) fn settings_actions() -> Div {
-    div().min_w_0().flex().flex_wrap().items_center().gap_2()
-}
-
-pub(crate) fn settings_action_chrome(colors: vega_theme::ThemeColors) -> Div {
-    div()
-        .min_w_0()
-        .max_w_full()
-        .self_start()
-        .flex_shrink_0()
-        .min_h(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
-        .px(px(Layout::SETTINGS_CONTROL_PADDING_X))
-        .py_1()
-        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_elevated)
-        .text_size(px(Typography::BODY))
-        .line_height(relative(Typography::BODY_LINE_HEIGHT))
-        .text_color(colors.text_primary)
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap_2()
-}
-
-pub(crate) fn settings_status(
-    label: impl Into<String>,
-    color: gpui_kit::Rgba,
-    colors: vega_theme::ThemeColors,
-) -> Div {
-    let icon = if color == colors.danger || color == colors.warning {
-        crate::icons::Icon::Warning
-    } else if color == colors.success {
-        crate::icons::Icon::Check
-    } else {
-        crate::icons::Icon::Summary
-    };
-    div()
-        .min_w_0()
-        .flex_shrink_0()
-        .flex()
-        .items_start()
-        .gap_2()
-        .p_2()
-        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-        .border_1()
-        .border_color(colors.border_subtle)
-        .text_size(px(Typography::BODY))
-        .line_height(relative(Typography::BODY_LINE_HEIGHT))
-        .text_color(color)
-        .child(
-            div()
-                .w(px(Layout::ICON_SIZE))
-                .h(px(Typography::BODY * Typography::BODY_LINE_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(Layout::ICON_SIZE))
-                        .child(crate::icons::icon(icon, color)),
-                ),
-        )
-        .child(div().min_w_0().flex_1().child(label.into()))
-}
-
-pub(crate) fn action_button(
-    label: &'static str,
-    colors: vega_theme::ThemeColors,
-    focus: Option<FocusHandle>,
-    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
-) -> AnyElement {
-    action_button_owned(label.to_string(), colors, focus, listener)
-}
-
-/// Button variant for settings controls whose label reflects the current
-/// explicit capability value. It shares the same tracked focus and mouse
-/// listener behavior as the pricing controls, so keyboard and pointer paths
-/// remain one action route.
-pub(crate) fn action_button_owned(
-    label: String,
-    colors: vega_theme::ThemeColors,
-    focus: Option<FocusHandle>,
-    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
-) -> AnyElement {
-    let enabled = focus.is_some();
-    let id = focus
-        .as_ref()
-        .map(gpui_kit::ElementId::from)
-        .unwrap_or_else(|| label.clone().into());
-    let destructive = label == t("settings.action.delete");
-    let primary = label.starts_with(t("settings.action.save"));
-    settings_action_chrome(colors)
-        .id(id)
-        .interaction_surface(
-            if enabled && primary {
-                colors.brand_primary
-            } else {
-                gpui_kit::transparent_black().into()
-            },
-            if primary {
-                colors.brand_primary_strong
-            } else {
-                colors.bg_hover
-            },
-            if primary {
-                colors.brand_primary_strong
-            } else {
-                colors.bg_active
-            },
-            enabled,
-        )
-        .border_color(if destructive || primary {
-            colors.border_subtle
-        } else {
-            gpui_kit::transparent_black().into()
-        })
-        .when_some(focus, |button, focus| button.track_focus(&focus))
-        .focus_visible(move |style| style.border_color(colors.accent))
-        .when(enabled && destructive, |button| {
-            button.text_color(colors.danger)
-        })
-        .when(enabled && primary, |button| {
-            button
-                .bg(colors.brand_primary)
-                .text_color(colors.brand_on_accent)
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .on_mouse_up(MouseButton::Left, listener)
-        })
-        .when(!enabled, |button| button.text_color(colors.text_tertiary))
-        .child(label)
-        .into_any_element()
 }
 
 pub(crate) fn pricing_error_label(code: PricingSettingsErrorCode) -> &'static str {
@@ -326,12 +153,24 @@ pub(crate) fn pricing_notice_label(notice: PricingNotice) -> &'static str {
     }
 }
 
-pub(crate) fn section_title(label: &'static str, color: gpui_kit::Rgba) -> Div {
+pub(crate) fn section_title(
+    label: &'static str,
+    color: gpui_kit::Rgba,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     div()
         .text_size(px(Typography::HEADING_BLOCK))
         .font_weight(Typography::HEADING_BLOCK_WEIGHT)
         .text_color(color)
-        .child(label)
+        .child(super::nsh_tail::label(
+            "settings-defaults-title",
+            label.to_string(),
+            color,
+            Typography::HEADING_BLOCK,
+            window,
+            cx,
+        ))
 }
 
 /// Maximum UTF-8 bytes retained for one provider model ID.

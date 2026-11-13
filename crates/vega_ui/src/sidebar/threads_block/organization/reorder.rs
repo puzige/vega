@@ -66,17 +66,16 @@ struct ReorderDrag {
 
 impl Render for ReorderDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        div()
-            .px_3()
-            .py_2()
-            .rounded_md()
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_primary)
-            .child(self.label.clone())
+        let _ = cx;
+        div().w(px(Layout::SIDEBAR_WIDTH)).child(nsh_leaf::host(
+            "sidebar-reorder-preview",
+            Some(self.label.clone()),
+            Vec::new(),
+            false,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            |_| true,
+            |_, _, _, _| {},
+        ))
     }
 }
 
@@ -301,96 +300,99 @@ impl ThreadsBlock {
         cx.notify();
     }
 
+    pub(in crate::sidebar::threads_block) fn reorder_drag_source(
+        &self,
+        element: gpui_kit::Stateful<gpui_kit::Div>,
+        item: ReorderItem,
+        label: String,
+        cx: &Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let drag_entity = cx.entity().downgrade();
+        let drag_item = item;
+        element.on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
+            drag_entity
+                .update(cx, |this, cx| {
+                    this.close_actions();
+                    this.hold_reorder_projection(&drag_item);
+                    if let Some(org) = this.organization.as_mut() {
+                        org.menu = None;
+                        org.menu_anchor = None;
+                        org.reorder.source = Some(drag_item.clone());
+                        org.reorder.gesture = true;
+                        org.reorder.previous_focus = window.focused(cx);
+                        window.focus(&org.reorder.focus, cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            cx.new(|_| drag.clone())
+        })
+    }
+
     pub(in crate::sidebar::threads_block) fn render_reorder_row(
         &self,
         item: ReorderItem,
         label: String,
-        row: crate::interaction::Interaction,
+        row: gpui_kit::Stateful<gpui_kit::Div>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(org) = &self.organization else {
             return row.into_any_element();
         };
-        let colors = theme(cx).colors;
         let bounds_cache = org.reorder.bounds.clone();
         let bounds_item = item.clone();
-        let valid_target = !org.pending
+        let valid_target = org.pending != Some(PendingRequest::Write)
             && org.reorder.source.as_ref().is_some_and(|source| {
                 source != &item
                     && std::mem::discriminant(source) == std::mem::discriminant(&item)
                     && org.reorder.targets.contains(item.id())
             });
-        let drag_entity = cx.entity().downgrade();
-        let drag_item = item.clone();
+        let row = self.reorder_drag_source(row, item.clone(), label, cx);
         let hover_item = item.clone();
-        row.relative()
-            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button.is_none()
-                    && this.organization.as_ref().is_some_and(|org| {
-                        org.reorder
-                            .pointer_order
-                            .as_ref()
-                            .is_some_and(|(source, _)| source != &hover_item)
-                    })
-                {
-                    this.clear_reorder_projection(cx);
-                }
-            }))
-            .on_drag(ReorderDrag { label }, move |drag, _, window, cx| {
-                drag_entity
-                    .update(cx, |this, cx| {
-                        this.close_actions();
-                        this.hold_reorder_projection(&drag_item);
-                        if let Some(org) = this.organization.as_mut() {
-                            org.menu = None;
-                            org.menu_anchor = None;
-                            org.reorder.source = Some(drag_item.clone());
-                            org.reorder.gesture = true;
-                            org.reorder.previous_focus = window.focused(cx);
-                            window.focus(&org.reorder.focus, cx);
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                cx.new(|_| drag.clone())
-            })
-            .child(
-                gpui_kit::canvas(
-                    move |bounds, window, _| {
-                        bounds_cache.borrow_mut().insert(
-                            bounds_item,
-                            RowBounds {
-                                full: bounds,
-                                visible: bounds.intersect(&window.content_mask().bounds),
-                            },
-                        );
-                    },
-                    move |bounds, _, window, cx| {
-                        if valid_target
-                            && cx.has_active_drag()
-                            && bounds.contains(&window.mouse_position())
-                        {
-                            let height = px(Layout::SIDEBAR_REORDER_LINE_HEIGHT);
-                            let top = if window.mouse_position().y < bounds.center().y {
-                                bounds.top()
-                            } else {
-                                bounds.bottom() - height
-                            };
-                            window.paint_quad(gpui_kit::fill(
-                                gpui_kit::Bounds::new(
-                                    point(bounds.left(), top),
-                                    gpui_kit::size(bounds.size.width, height),
-                                ),
-                                colors.accent,
-                            ));
-                        }
-                    },
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-            .into_any_element()
+        let line_key = format!(
+            "sidebar-reorder-line-{}-{}",
+            match &item {
+                ReorderItem::Project(_) => "project",
+                ReorderItem::Thread(_) => "thread",
+                ReorderItem::RecentThread(_) => "recent",
+            },
+            item.id()
+        );
+        nsh_leaf::chrome::insertion_overlay(
+            row.relative()
+                .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_none()
+                        && this.organization.as_ref().is_some_and(|org| {
+                            org.reorder
+                                .pointer_order
+                                .as_ref()
+                                .is_some_and(|(source, _)| source != &hover_item)
+                        })
+                    {
+                        this.clear_reorder_projection(cx);
+                    }
+                }))
+                .child(
+                    gpui_kit::canvas(
+                        move |bounds, window, _| {
+                            bounds_cache.borrow_mut().insert(
+                                bounds_item,
+                                RowBounds {
+                                    full: bounds,
+                                    visible: bounds.intersect(&window.content_mask().bounds),
+                                },
+                            );
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                ),
+            line_key,
+            valid_target,
+        )
+        .into_any_element()
     }
 }

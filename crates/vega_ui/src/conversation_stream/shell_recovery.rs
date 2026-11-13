@@ -1,5 +1,7 @@
 use super::*;
-use crate::interaction::InteractionExt;
+mod nsh_view;
+
+use crate::nsh::ProjectionId;
 use vega_conversation::types::{
     ShellRecoveryConfirmation, ShellRecoveryError, ShellRecoveryProjection,
 };
@@ -79,6 +81,11 @@ pub(crate) struct ShellRecoveryUi {
     refresh: Option<gpui_kit::Task<()>>,
     review_focus: FocusHandle,
     safe_focus: FocusHandle,
+    observation: ProjectionId,
+    projection_identity: ProjectionId,
+    confirmation_identity: ProjectionId,
+    presentation: Option<nsh_view::Presentation>,
+    summary: Option<nsh_view::Presentation>,
 }
 
 struct RecoveryDecision<T> {
@@ -118,6 +125,11 @@ impl ShellRecoveryUi {
             refresh: None,
             review_focus: cx.focus_handle(),
             safe_focus: cx.focus_handle(),
+            observation: ProjectionId::new(),
+            projection_identity: ProjectionId::new(),
+            confirmation_identity: ProjectionId::new(),
+            presentation: None,
+            summary: None,
         }
     }
 }
@@ -134,11 +146,13 @@ impl ConversationStream {
     }
 
     pub(super) fn dismiss_shell_recovery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.opened = false;
         self.shell_recovery.decision.dismiss(
             &mut self.shell_recovery.sequence,
             &mut self.shell_recovery.pending,
         );
+        self.shell_recovery.confirmation_identity = ProjectionId::new();
         self.shell_recovery.review_focus.focus(window, cx);
         cx.notify();
     }
@@ -153,11 +167,13 @@ impl ConversationStream {
         }
     }
 
-    pub(super) fn request_shell_control(&mut self, operation: String, cx: &mut Context<Self>) {
-        if self.shell_recovery.pending.is_some() && !self.shell_recovery.pending_read {
+    pub(super) fn request_shell_control(&mut self, operation_id: String, cx: &mut Context<Self>) {
+        if (self.shell_recovery.pending.is_some() && !self.shell_recovery.pending_read)
+            || self.shell_recovery.sequence.checked_add(1).is_none()
+        {
             for card in self.tool_cards.values() {
                 card.update(cx, |card, cx| {
-                    if card.finish_shell_control(&operation, true) {
+                    if card.finish_shell_control(&operation_id, true) {
                         cx.notify();
                     }
                 });
@@ -165,7 +181,7 @@ impl ConversationStream {
             return;
         }
         self.shell_recovery.pending = None;
-        self.request_shell_recovery(ShellRecoveryAction::Cancel(operation), cx);
+        self.request_shell_recovery(ShellRecoveryAction::Cancel(operation_id), cx);
     }
 
     pub(super) fn request_shell_recovery(
@@ -188,6 +204,7 @@ impl ConversationStream {
         if matches!(&action, ShellRecoveryAction::Resume(_)) {
             self.shell_recovery.decision.submitted = true;
         }
+        self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.sequence = sequence;
         self.shell_recovery.pending = Some(label);
         self.shell_recovery.pending_read = matches!(&action, ShellRecoveryAction::Read);
@@ -210,22 +227,23 @@ impl ConversationStream {
         if !request.matches_route(&self.thread, self.draft_route, self.shell_recovery.sequence) {
             return;
         }
+        self.shell_recovery.observation = ProjectionId::new();
         self.shell_recovery.pending = None;
         self.shell_recovery.pending_read = false;
         let mut card_control = false;
-        if let ShellRecoveryAction::Cancel(operation) = &request.action {
+        if let ShellRecoveryAction::Cancel(operation_id) = &request.action {
             for card in self.tool_cards.values() {
-                card_control |= card.update(cx, |card, cx| {
-                    let matched = card.finish_shell_control(operation, result.is_err());
-                    if matched {
+                card.update(cx, |card, cx| {
+                    if card.finish_shell_control(operation_id, result.is_err()) {
+                        card_control = true;
                         cx.notify();
                     }
-                    matched
                 });
             }
         }
         match result {
             Ok(ShellRecoveryOutcome::Projection(projection)) => {
+                self.shell_recovery.projection_identity = ProjectionId::new();
                 for command in &projection.commands {
                     if command.thread_id == self.thread.id
                         && let Some(card) = self.tool_cards.get(&command.call_id)
@@ -244,6 +262,7 @@ impl ConversationStream {
                 self.shell_recovery.projection = Some(projection);
             }
             Ok(ShellRecoveryOutcome::Confirmation(confirmation)) => {
+                self.shell_recovery.confirmation_identity = ProjectionId::new();
                 self.shell_recovery.decision = RecoveryDecision {
                     confirmation: Some(confirmation),
                     submitted: false,
@@ -285,299 +304,6 @@ impl ConversationStream {
         }
         cx.notify();
     }
-
-    pub(super) fn render_shell_recovery(&self, cx: &mut Context<Self>) -> AnyElement {
-        let state = &self.shell_recovery;
-        let blocked = state
-            .projection
-            .as_ref()
-            .is_some_and(|p| !p.rows.is_empty());
-        let label = match recovery_presentation(self.draft_route, blocked, state.error.is_some()) {
-            RecoveryPresentation::Hidden => return div().into_any_element(),
-            RecoveryPresentation::Details => return self.render_shell_recovery_details(cx),
-            RecoveryPresentation::Summary(label) => label,
-        };
-        let colors = theme(cx).colors;
-        div()
-            .w_full()
-            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-            .mx_auto()
-            .px(px(Layout::CONVERSATION_PADDING))
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_color(colors.text_secondary)
-            .child(vega_i18n::t(label))
-            .child(focused_button(
-                "shell-draft-review",
-                "ui.shell_recovery.review",
-                Some(&state.review_focus),
-                true,
-                colors,
-                cx.listener(|this, _, window, cx| {
-                    this.shell_recovery.opened = true;
-                    this.shell_recovery.safe_focus.focus(window, cx);
-                    this.refresh_shell_recovery(cx);
-                    cx.notify();
-                }),
-            ))
-            .into_any_element()
-    }
-
-    pub(super) fn render_shell_recovery_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.draft_route || !self.shell_recovery.opened {
-            return div().into_any_element();
-        }
-        let colors = theme(cx).colors;
-        gpui_kit::deferred(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .id("draft-shell-recovery-details")
-                        .track_focus(&self.shell_recovery.safe_focus)
-                        .w_full()
-                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                        .max_h(px(Layout::COMPOSER_PICKER_MAX_HEIGHT))
-                        .overflow_y_scroll()
-                        .rounded(px(Layout::MENU_RADIUS))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .shadow_sm()
-                        .child(button(
-                            "shell-draft-close",
-                            "ui.shell_recovery.not_now",
-                            true,
-                            colors,
-                            cx.listener(|this, _, window, cx| {
-                                this.dismiss_shell_recovery(window, cx);
-                            }),
-                        ))
-                        .child(self.render_shell_recovery_details(cx)),
-                ),
-        )
-        .with_priority(3)
-        .into_any_element()
-    }
-
-    fn render_shell_recovery_details(&self, cx: &mut Context<Self>) -> AnyElement {
-        let state = &self.shell_recovery;
-        let rows = state
-            .projection
-            .as_ref()
-            .map(|p| p.rows.as_slice())
-            .unwrap_or_default();
-        let active = state
-            .projection
-            .as_ref()
-            .map(|p| p.active.as_slice())
-            .unwrap_or_default();
-        if rows.is_empty() && active.is_empty() && state.error.is_none() {
-            return div().into_any_element();
-        }
-        let colors = theme(cx).colors;
-        let busy = state.pending.is_some();
-        let mut panel = div()
-            .w_full()
-            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-            .mx_auto()
-            .px(px(Layout::CONVERSATION_PADDING))
-            .py_2()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_color(colors.text_secondary);
-        for command in active {
-            let operation_id = command.operation_id.clone();
-            let label = match command.state.as_str() {
-                "stopping" => "ui.shell_session.stopping",
-                "finishing" => "ui.shell_session.finishing",
-                _ => "ui.shell_session.running",
-            };
-            panel = panel.child(div().child(vega_i18n::t(label)).child(button(
-                "shell-cancel",
-                "ui.shell_session.cancel",
-                !busy && command.state == "running",
-                colors,
-                cx.listener(move |this, _, _, cx| {
-                    this.request_shell_recovery(
-                        ShellRecoveryAction::Cancel(operation_id.clone()),
-                        cx,
-                    )
-                }),
-            )));
-        }
-        if !rows.is_empty() {
-            panel = panel.child(
-                div()
-                    .text_color(colors.danger)
-                    .child(vega_i18n::t("ui.shell_recovery.paused")),
-            );
-        }
-        if let Some(label) = state.pending {
-            panel = panel.child(vega_i18n::t(label));
-        }
-        if let Some(error) = state.error {
-            panel = panel.child(vega_i18n::t(match error {
-                ShellRecoveryError::Changed => "ui.shell_recovery.changed",
-                ShellRecoveryError::KnownProcessOrResource => "ui.shell_recovery.unsettled",
-                ShellRecoveryError::Unavailable => "ui.shell_recovery.unavailable",
-            }));
-        }
-        if rows.is_empty() {
-            if state.error.is_some() {
-                panel = panel.child(button(
-                    "shell-read-again",
-                    "ui.shell_recovery.check",
-                    !busy,
-                    colors,
-                    cx.listener(|this, _, _, cx| {
-                        this.request_shell_recovery(ShellRecoveryAction::Read, cx)
-                    }),
-                ));
-            }
-            return panel.into_any_element();
-        }
-        if !state.opened {
-            return panel
-                .child(focused_button(
-                    "shell-review",
-                    "ui.shell_recovery.review",
-                    Some(&state.review_focus),
-                    !busy,
-                    colors,
-                    cx.listener(|this, _, _, cx| {
-                        this.shell_recovery.opened = true;
-                        this.refresh_shell_recovery(cx);
-                        cx.notify();
-                    }),
-                ))
-                .into_any_element();
-        }
-        if let Some(projection) = &state.projection {
-            panel = panel.child(div().min_w_0().child(projection.workspace.clone()));
-            for (index, row) in rows.iter().enumerate() {
-                let result = match row.exit_code {
-                    Some(code) => {
-                        vega_i18n::t_args("ui.shell_recovery.exit", &[("code", &code.to_string())])
-                    }
-                    None => vega_i18n::t("ui.shell_recovery.unknown").to_owned(),
-                };
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(if row.command.is_empty() {
-                            vega_i18n::t_args(
-                                "ui.shell_recovery.operation",
-                                &[("number", &(index + 1).to_string())],
-                            )
-                        } else {
-                            row.command.clone()
-                        })
-                        .child(result)
-                        .child(
-                            div()
-                                .text_color(colors.text_secondary)
-                                .child(recovery_reason(&row.reason)),
-                        )
-                        .when(row.output_incomplete && row.can_resume, |item| {
-                            item.child(vega_i18n::t("ui.shell_recovery.output_closed"))
-                        })
-                        .when(!row.can_resume, |item| {
-                            item.child(vega_i18n::t("ui.shell_recovery.unsettled"))
-                        }),
-                );
-            }
-        }
-        if let Some(confirmation) = &state.decision.confirmation {
-            let confirmation = confirmation.clone();
-            panel = panel
-                .child(vega_i18n::t("ui.shell_recovery.confirm_title"))
-                .child(vega_i18n::t("ui.shell_recovery.confirm_body"));
-            if rows.iter().any(|row| row.output_incomplete) {
-                panel = panel.child(vega_i18n::t("ui.shell_recovery.confirm_output"));
-            }
-            panel = panel
-                .child(button(
-                    "shell-accept",
-                    "ui.shell_recovery.accept",
-                    !busy,
-                    colors,
-                    cx.listener(move |this, _, _, cx| {
-                        this.request_shell_recovery(
-                            ShellRecoveryAction::Resume(confirmation.clone()),
-                            cx,
-                        )
-                    }),
-                ))
-                .child(focused_button(
-                    "shell-keep-paused",
-                    "ui.shell_recovery.keep_paused",
-                    Some(&state.safe_focus),
-                    !busy,
-                    colors,
-                    cx.listener(|this, _, window, cx| {
-                        this.dismiss_shell_recovery(window, cx);
-                    }),
-                ));
-        } else if let Some(projection) = &state.projection {
-            let check = projection.clone();
-            let retry = projection.clone();
-            let prepare = projection.clone();
-            panel = panel
-                .child(button(
-                    "shell-check",
-                    "ui.shell_recovery.check",
-                    !busy,
-                    colors,
-                    cx.listener(move |this, _, _, cx| {
-                        this.request_shell_recovery(ShellRecoveryAction::Check(check.clone()), cx)
-                    }),
-                ))
-                .child(button(
-                    "shell-retry",
-                    "ui.shell_recovery.retry",
-                    !busy && rows.iter().any(|row| row.can_retry),
-                    colors,
-                    cx.listener(move |this, _, _, cx| {
-                        this.request_shell_recovery(ShellRecoveryAction::Retry(retry.clone()), cx)
-                    }),
-                ))
-                .child(button(
-                    "shell-resume",
-                    "ui.shell_recovery.resume",
-                    !busy && !rows.is_empty() && rows.iter().all(|row| row.can_resume),
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.shell_recovery.safe_focus.focus(window, cx);
-                        this.request_shell_recovery(
-                            ShellRecoveryAction::Prepare(prepare.clone()),
-                            cx,
-                        )
-                    }),
-                ));
-        }
-        panel
-            .child(button(
-                "shell-not-now",
-                "ui.shell_recovery.not_now",
-                !busy,
-                colors,
-                cx.listener(|this, _, window, cx| {
-                    this.dismiss_shell_recovery(window, cx);
-                }),
-            ))
-            .into_any_element()
-    }
 }
 
 fn recovery_reason(reason: &str) -> String {
@@ -613,60 +339,4 @@ fn recovery_reason(reason: &str) -> String {
         .map(vega_i18n::t)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-pub(crate) fn button(
-    id: &'static str,
-    key: &'static str,
-    enabled: bool,
-    colors: vega_theme::ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    focused_button(id, key, None, enabled, colors, activate)
-}
-
-fn focused_button(
-    id: &'static str,
-    key: &'static str,
-    focus: Option<&FocusHandle>,
-    enabled: bool,
-    colors: vega_theme::ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    let activate = std::rc::Rc::new(activate);
-    let keyboard = activate.clone();
-    div()
-        .id(id)
-        .aria_label(vega_i18n::t(key))
-        .focusable()
-        .when_some(focus, |button, focus| button.track_focus(focus))
-        .tab_stop(enabled)
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .text_color(if enabled {
-            colors.text_secondary
-        } else {
-            colors.text_tertiary
-        })
-        .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, enabled)
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .focus_visible(move |style| style.border_1().border_color(colors.accent))
-        })
-        .on_click(move |_, window, cx| {
-            if enabled {
-                cx.stop_propagation();
-                activate(&(), window, cx);
-            }
-        })
-        .on_key_down(move |event, window, cx| {
-            if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard(&(), window, cx);
-            }
-        })
-        .child(vega_i18n::t(key))
-        .into_any_element()
 }

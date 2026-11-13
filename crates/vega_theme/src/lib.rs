@@ -39,7 +39,7 @@ const fn rgba_alpha(hex: u32, a: f32) -> Rgba {
 ///
 /// Field values must come from the token table in the UI spec; the two
 /// shipped palettes are [`LIGHT`] and [`DARK`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeColors {
     pub context_tooltip_bg: Rgba,
     pub context_tooltip_border: Rgba,
@@ -515,6 +515,7 @@ impl Layout {
     pub const TITLEBAR_CONTROL_SIZE: f32 = 28.0;
     /// Gap between adjacent shared titlebar control surfaces.
     pub const TITLEBAR_CONTROL_GAP: f32 = 4.0;
+    pub const SHELL_SLOT_GAP: f32 = 6.0;
     pub const TOOLBAR_TRAILING_INSET: f32 = 8.0;
     pub const SHELL_SLOT_CLUSTER_RESERVE: f32 = 104.0;
     pub const SHELL_SLOT_GUTTER: f32 = 32.0;

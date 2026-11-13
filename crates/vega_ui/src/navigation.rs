@@ -1,11 +1,8 @@
 //! Window-level navigation actions and shared sidebar/collapsed controls.
-use crate::interaction::InteractionExt;
-use gpui_kit::component::{
-    Sizable,
-    button::{Button, ButtonCustomVariant, ButtonVariants},
-};
-use gpui_kit::{prelude::*, *};
-use vega_theme::{Layout, theme};
+use gpui_kit::*;
+
+mod nsh_controls;
+
 actions!(
     navigation,
     [
@@ -41,11 +38,6 @@ impl Global for NavigationState {}
 /// Install focus-independent shortcuts with more-local text-editor overrides.
 pub fn init(cx: &mut App) {
     cx.set_global(NavigationState::default());
-    cx.set_global(NavigationControlFocus([
-        cx.focus_handle(),
-        cx.focus_handle(),
-        cx.focus_handle(),
-    ]));
     cx.bind_keys([
         KeyBinding::new("cmd-[", NavigateBack, None),
         KeyBinding::new("cmd-]", NavigateForward, None),
@@ -53,210 +45,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-]", EditorNavigateForward, Some("TextInput")),
     ]);
 }
-struct NavigationControlFocus([FocusHandle; 3]);
-impl Global for NavigationControlFocus {}
-
-/// Render the same actionable controls in either window layout.
-pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
-    let state = cx
-        .try_global::<NavigationState>()
-        .cloned()
-        .unwrap_or_default();
-    let colors = theme(cx).colors;
-    div()
-        .flex()
-        .items_center()
-        .gap(px(Layout::TITLEBAR_CONTROL_GAP))
-        .child(sidebar_control(cx, sidebar_visible))
-        .child(search_control(cx))
-        .children(
-            [
-                (
-                    false,
-                    state.back,
-                    crate::icons::Icon::ArrowLeft,
-                    "navigation-back",
-                ),
-                (
-                    true,
-                    state.forward,
-                    crate::icons::Icon::ArrowRight,
-                    "navigation-forward",
-                ),
-            ]
-            .into_iter()
-            .map(|(forward, enabled, icon, id)| {
-                let focus = cx
-                    .try_global::<NavigationControlFocus>()
-                    .map(|handles| handles.0[usize::from(forward)].clone())
-                    .unwrap_or_else(|| cx.focus_handle())
-                    .tab_stop(enabled);
-                let name = if forward {
-                    vega_i18n::t("ui.forward")
-                } else {
-                    vega_i18n::t("ui.back")
-                };
-                div()
-                    .id(id)
-                    .track_focus(&focus)
-                    .tab_stop(enabled)
-                    .tooltip(move |_, cx| crate::icons::tooltip(name, cx))
-                    .on_key_down(move |event, window, cx| {
-                        if event.keystroke.key == "tab" {
-                            cx.stop_propagation();
-                            if event.keystroke.modifiers.shift {
-                                window.focus_prev(cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                        }
-                        if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            if forward {
-                                window.dispatch_action(Box::new(NavigateForward), cx)
-                            } else {
-                                window.dispatch_action(Box::new(NavigateBack), cx)
-                            }
-                        }
-                    })
-                    .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .text_color(if enabled {
-                        colors.text_secondary
-                    } else {
-                        colors.text_tertiary
-                    })
-                    .interactive(colors, enabled, false)
-                    .border_2()
-                    .border_color(transparent_black())
-                    .when(enabled, |button| {
-                        button
-                            .cursor_pointer()
-                            .focus_visible(move |style| style.border_color(colors.accent))
-                    })
-                    .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                        cx.stop_propagation();
-                        if enabled {
-                            window.focus(&focus, cx);
-                        }
-                    })
-                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                        cx.stop_propagation();
-                        if enabled {
-                            if forward {
-                                window.dispatch_action(Box::new(NavigateForward), cx)
-                            } else {
-                                window.dispatch_action(Box::new(NavigateBack), cx)
-                            }
-                        }
-                    })
-                    .child(div().child(crate::icons::icon(
-                        icon,
-                        if enabled {
-                            colors.text_secondary
-                        } else {
-                            colors.text_tertiary
-                        },
-                    )))
-            }),
-        )
-        .into_any_element()
+pub fn controls(window: &mut Window, cx: &mut App, sidebar_visible: bool) -> AnyElement {
+    nsh_controls::controls(window, cx, sidebar_visible, false)
 }
 
-/// Shared Search control, adjacent to Sidebar in either window layout.
-fn search_control(cx: &App) -> AnyElement {
-    let colors = theme(cx).colors;
-    div()
-        .id("titlebar-search-surface")
-        .rounded_md()
-        .interactive(colors, true, false)
-        .capture_native_button_press()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            Button::new("titlebar-search-button")
-                .custom(ButtonCustomVariant::new(cx).foreground(colors.text_secondary.into()))
-                .small()
-                .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-                .p_0()
-                .accessibility_label(vega_i18n::t("ui.search_k"))
-                .tooltip(vega_i18n::t("ui.search_k"))
-                .on_click(|_, window, cx| {
-                    cx.stop_propagation();
-                    window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
-                })
-                .child(div().child(crate::icons::icon(
-                    crate::icons::Icon::Search,
-                    colors.text_secondary,
-                ))),
-        )
-        .into_any_element()
-}
-
-/// Render only the Sidebar visibility control for callers that need it alone.
-///
-/// Window titlebars should use [`controls`] so Search and history stay in the
-/// shared, stable order.
-pub fn sidebar_toggle(cx: &App, sidebar_visible: bool) -> AnyElement {
-    sidebar_control(cx, sidebar_visible)
-}
-
-/// Shared titlebar control, mounted whether the sidebar is shown or hidden.
-fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
-    let colors = theme(cx).colors;
-    let label = if sidebar_visible {
-        vega_i18n::t("ui.hide_sidebar_b")
-    } else {
-        vega_i18n::t("ui.show_sidebar_b")
-    };
-    let focus = cx
-        .try_global::<NavigationControlFocus>()
-        .map(|handles| handles.0[2].clone())
-        .unwrap_or_else(|| cx.focus_handle())
-        .tab_stop(true);
-    div()
-        .id("toggle-sidebar")
-        .track_focus(&focus)
-        .tab_stop(true)
-        .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-        .size(px(Layout::TITLEBAR_CONTROL_SIZE))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_md()
-        .cursor_pointer()
-        .interactive(colors, true, false)
-        .border_2()
-        .border_color(transparent_black())
-        .focus_visible(move |style| style.border_color(colors.accent))
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            window.focus(&focus, cx);
-        })
-        .on_mouse_up(MouseButton::Left, |_, window, cx| {
-            cx.stop_propagation();
-            window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
-        })
-        .on_key_down(|event, window, cx| {
-            if event.keystroke.key == "tab" {
-                cx.stop_propagation();
-                if event.keystroke.modifiers.shift {
-                    window.focus_prev(cx);
-                } else {
-                    window.focus_next(cx);
-                }
-            } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
-            }
-        })
-        .child(div().child(crate::icons::icon(
-            crate::icons::Icon::Sidebar,
-            colors.text_secondary,
-        )))
-        .into_any_element()
+pub fn sidebar_toggle(window: &mut Window, cx: &mut App, sidebar_visible: bool) -> AnyElement {
+    nsh_controls::controls(window, cx, sidebar_visible, true)
 }
 
 /// Weak editor identity and scalar cache budget; this never retains a stream or worker.

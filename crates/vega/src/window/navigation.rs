@@ -1,6 +1,6 @@
 //! Window-local route history and text-only draft ownership.
 use super::*;
-use std::{collections::HashMap, sync::mpsc, time::Duration};
+use std::collections::HashMap;
 use vega_ui::navigation::{
     EditorNavigateBack, EditorNavigateForward, NavigateBack, NavigateForward, NavigationState,
 };
@@ -103,10 +103,11 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
     cx.on_action(move |_: &CloseSettings, cx| {
         let root = close.clone();
         cx.defer(move |cx| {
-            let _ = window.update(cx, |_, _, cx| {
+            let _ = window.update(cx, |_, window, cx| {
                 let _ = root.update(cx, |root, cx| {
                     if cx.global::<PendingDeleteConfirm>().0.is_some() {
-                        cx.set_global(PendingDeleteConfirm(None));
+                        PendingDeleteConfirm::cancel(window, cx);
+                        return;
                     } else if cx.global::<SettingsOpen>().0 {
                         root.sync_navigation(cx);
                         if root.navigation.cursor > 0 {
@@ -419,7 +420,7 @@ impl VegaWindow {
         self.navigation.error = None;
         cx.set_global(NavigationState::default());
         self.publish_navigation(cx);
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
         let _ = std::thread::Builder::new()
             .name("vega-navigation".into())
             .spawn(move || {
@@ -449,19 +450,9 @@ impl VegaWindow {
                 let _ = sender.send((invalid, result));
             });
         cx.spawn(async move |owner, cx| {
-            let (invalid, result) = loop {
-                match receiver.try_recv() {
-                    Ok(result) => break result,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        break (Vec::new(), Err(NavigationError::Unavailable));
-                    }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(25))
-                            .await
-                    }
-                }
-            };
+            let (invalid, result) = receiver
+                .await
+                .unwrap_or_else(|_| (Vec::new(), Err(NavigationError::Unavailable)));
             let _ = owner.update(cx, |this, cx| {
                 this.navigation.pending = false;
                 if this.default_permission_save_pending(cx) {

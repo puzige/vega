@@ -1,53 +1,102 @@
-use super::*;
-use crate::interaction::InteractionExt;
+use gpui_kit::{Context, Window};
+use nsh_core::prelude::*;
+use tokio::sync::{mpsc, oneshot};
 use vega_conversation::types::{
     PermissionResetAction as Action, PermissionResetError, PermissionResetProjection as Projection,
     PermissionResetRequested,
 };
+use vega_theme::{Layout, ThemeColors, Typography};
+
+use super::SettingsView;
+use crate::nsh::{ProjectionId, Surface};
 
 pub(crate) struct ResetState {
     pub(crate) projection: Projection,
-    focuses: [FocusHandle; 5],
-    focus_pending: bool,
+    id: ProjectionId,
+    revision: u64,
+    pending: bool,
+    focus_completed: bool,
+    presentation: Option<Presentation>,
+}
+
+struct Presentation {
+    surface: Surface<Snapshot, Request>,
+    height: f32,
+}
+
+#[derive(Clone)]
+struct Snapshot {
+    id: ProjectionId,
+    revision: u64,
+    projection: Projection,
+    pending: bool,
+    colors: ThemeColors,
+}
+
+struct Decision {
+    id: ProjectionId,
+    revision: u64,
+    projection: Projection,
+    action: Action,
+    reply: oneshot::Sender<bool>,
+}
+
+enum Request {
+    Decide(Decision),
+    Layout(f32),
+}
+
+fn allowed(projection: &Projection, action: Action) -> bool {
+    match (projection, action) {
+        (Projection::Idle | Projection::Completed, Action::Prepare)
+        | (Projection::Confirming, Action::Confirm)
+        | (Projection::Preparing | Projection::Confirming, Action::Cancel)
+        | (Projection::Blocked { .. }, Action::Retry) => true,
+        (Projection::Blocked { can_cancel, .. }, Action::Cancel) => *can_cancel,
+        (Projection::Blocked { thread_id, .. }, Action::Inspect) => thread_id.is_some(),
+        _ => false,
+    }
 }
 
 impl ResetState {
-    pub(super) fn new(cx: &mut Context<SettingsView>) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             projection: Projection::Idle,
-            focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            focus_pending: false,
+            id: ProjectionId::new(),
+            revision: 0,
+            pending: false,
+            focus_completed: false,
+            presentation: None,
         }
     }
 }
 
 impl SettingsView {
+    fn reset_snapshot(&self, cx: &gpui_kit::App) -> Snapshot {
+        Snapshot {
+            id: self.permission_reset.id.clone(),
+            revision: self.permission_reset.revision,
+            projection: self.permission_reset.projection.clone(),
+            pending: self.permission_reset.pending,
+            colors: vega_theme::theme(cx).colors,
+        }
+    }
+
     pub fn apply_permission_reset_projection(
         &mut self,
         projection: Projection,
         cx: &mut Context<Self>,
     ) {
-        if self.permission_reset.projection != projection {
-            self.permission_reset.focus_pending = matches!(
-                projection,
-                Projection::Confirming | Projection::Blocked { .. } | Projection::Completed
-            );
+        if self.permission_reset.projection != projection || self.permission_reset.pending {
+            self.permission_reset.focus_completed = projection == Projection::Completed;
             self.permission_reset.projection = projection;
+            self.permission_reset.revision = self.permission_reset.revision.wrapping_add(1);
+            self.permission_reset.pending = false;
+            if let Some(page) = &self.permission_reset.presentation {
+                page.surface.publish(self.reset_snapshot(cx));
+            }
             cx.notify();
         }
-    }
-
-    fn permission_reset_action(&mut self, action: Action, cx: &mut Context<Self>) {
-        if matches!(action, Action::Prepare) {
-            if self.default_permission.io_pending()
-                || self.provider_management.saving
-                || self.codex_profile_saving
-            {
-                return;
-            }
-            self.close_default_permission_session();
-        }
-        cx.emit(PermissionResetRequested(action));
     }
 
     pub(crate) fn prepare_permission_reset_focus(
@@ -55,171 +104,386 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.section != 1 || !std::mem::take(&mut self.permission_reset.focus_pending) {
-            return;
-        }
-        let index = match self.permission_reset.projection {
-            Projection::Confirming => 1,
-            Projection::Blocked { .. } => 3,
-            _ => 0,
-        };
-        if matches!(self.permission_reset.projection, Projection::Completed) {
-            window.focus(&self.permission_picker_focus(), cx);
-        } else {
-            window.focus(&self.permission_reset.focuses[index], cx);
+        if self.section == 1 && std::mem::take(&mut self.permission_reset.focus_completed) {
+            self.focus_permission_picker(window, cx);
         }
     }
 
-    fn permission_reset_button(
-        &self,
-        action: Action,
-        enabled: bool,
+    pub(crate) fn render_permission_reset(
+        &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let (index, id, key) = match action {
-            Action::Prepare => (0, "permission-reset-prepare", "ui.permission_reset_action"),
-            Action::Cancel => (1, "permission-reset-cancel", "ui.permission_reset_cancel"),
-            Action::Confirm => (2, "permission-reset-confirm", "ui.permission_reset_confirm"),
-            Action::Retry => (3, "permission-reset-retry", "ui.permission_reset_retry"),
-            Action::Inspect => (4, "permission-reset-inspect", "ui.permission_reset_inspect"),
-        };
-        let label = vega_i18n::t(key);
-        settings_action_chrome(colors)
-            .id(id)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .track_focus(&self.permission_reset.focuses[index])
-            .tab_stop(enabled)
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, enabled)
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| this.permission_reset_action(action, cx)),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.permission_reset_action(action, cx);
-                                cx.stop_propagation();
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::{IntoElement, ParentElement, Styled};
+        if self.permission_reset.presentation.is_none() {
+            let (surface, mut requests) = Surface::new(self.reset_snapshot(cx), render, window, cx);
+            self.permission_reset.presentation = Some(Presentation {
+                surface,
+                height: Layout::SETTINGS_NOTES_MAX_HEIGHT,
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                while let Some(request) = requests.recv().await {
+                    if this
+                        .update_in(cx, |this, _, cx| {
+                            match request {
+                                Request::Decide(command) => {
+                                    let accepted = this.section == 1
+                                        && this.permission_reset.id.matches(&command.id)
+                                        && this.permission_reset.revision == command.revision
+                                        && this.permission_reset.projection == command.projection
+                                        && !this.permission_reset.pending
+                                        && allowed(
+                                            &this.permission_reset.projection,
+                                            command.action,
+                                        );
+                                    if accepted {
+                                        this.permission_reset.pending =
+                                            command.action != Action::Inspect;
+                                        cx.emit(PermissionResetRequested(command.action));
+                                    }
+                                    let _ = command.reply.send(accepted);
+                                }
+                                Request::Layout(height) if height.is_finite() && height > 0. => {
+                                    if let Some(page) = &mut this.permission_reset.presentation
+                                        && (page.height - height).abs() > 0.5
+                                    {
+                                        page.height = height;
+                                        cx.notify();
+                                    }
+                                }
+                                Request::Layout(_) => {}
                             }
-                        }),
-                    )
+                            if let Some(page) = &this.permission_reset.presentation {
+                                page.surface.publish(this.reset_snapshot(cx));
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             })
-            .when(!enabled, |button| button.text_color(colors.text_tertiary))
-            .child(label)
+            .detach();
+        }
+        let snapshot = self.reset_snapshot(cx);
+        let Some(page) = &mut self.permission_reset.presentation else {
+            return gpui_kit::div().into_any_element();
+        };
+        page.surface.sync_environment(cx);
+        page.surface.publish(snapshot);
+        gpui_kit::div()
+            .w_full()
+            .flex_shrink_0()
+            .h(gpui_kit::px(page.height))
+            .child(page.surface.entity())
             .into_any_element()
     }
+}
 
-    pub(crate) fn render_permission_reset(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let panel = settings_section().on_key_down(cx.listener(
-            |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                if matches!(this.permission_reset.projection, Projection::Confirming)
-                    && event.keystroke.key == "tab"
-                {
-                    let index = if this.permission_reset.focuses[1].is_focused(window) {
-                        2
-                    } else {
-                        1
-                    };
-                    window.focus(&this.permission_reset.focuses[index], cx);
-                    cx.stop_propagation();
-                } else if matches!(
-                    this.permission_reset.projection,
-                    Projection::Preparing | Projection::Confirming
-                ) && event.keystroke.key == "escape"
-                {
-                    this.permission_reset_action(Action::Cancel, cx);
-                    cx.stop_propagation();
-                }
-            },
-        ));
-        match &self.permission_reset.projection {
-            Projection::Idle | Projection::Completed => div().into_any_element(),
-            Projection::Preparing => panel
-                .child(settings_status(
-                    vega_i18n::t("ui.permission_reset_preparing"),
-                    colors.text_secondary,
-                    colors,
-                ))
-                .child(self.permission_reset_button(Action::Cancel, true, cx))
-                .into_any_element(),
-            Projection::Confirming => panel
-                .p_3()
-                .border_1()
-                .rounded(px(Layout::PANEL_RADIUS))
-                .border_color(colors.warning)
-                .child(section_title(
-                    vega_i18n::t("ui.permission_reset_title"),
-                    colors.text_primary,
-                ))
-                .child(vega_i18n::t("ui.permission_reset_scope"))
-                .child(
-                    div()
-                        .text_color(colors.warning)
-                        .child(vega_i18n::t("ui.permission_reset_effects")),
-                )
-                .child(
-                    settings_actions()
-                        .child(self.permission_reset_button(Action::Cancel, true, cx))
-                        .child(self.permission_reset_button(Action::Confirm, true, cx)),
-                )
-                .into_any_element(),
-            Projection::Pausing | Projection::Stopping => panel
-                .child(settings_status(
-                    vega_i18n::t("ui.permission_reset_stopping"),
-                    colors.text_secondary,
-                    colors,
-                ))
-                .into_any_element(),
-            Projection::Refreshing => panel
-                .child(settings_status(
-                    vega_i18n::t("ui.permission_reset_refreshing"),
-                    colors.text_secondary,
-                    colors,
-                ))
-                .into_any_element(),
-            Projection::Blocked {
-                error,
-                can_cancel,
-                thread_id,
-            } => {
-                let key = match error {
-                    PermissionResetError::Busy => "ui.permission_reset_busy",
-                    PermissionResetError::UnsettledWork => "ui.permission_reset_unsettled",
-                    PermissionResetError::ConfigurationConflict => "ui.permission_reset_conflict",
-                    PermissionResetError::ConfigurationUnavailable => {
-                        "ui.permission_reset_configuration"
-                    }
-                    PermissionResetError::OutcomeUnknown => "ui.permission_reset_unknown",
-                    PermissionResetError::Unavailable => "ui.permission_reset_unavailable",
-                };
-                panel
-                    .child(settings_status(vega_i18n::t(key), colors.danger, colors))
-                    .child(
-                        settings_actions()
-                            .child(self.permission_reset_button(Action::Retry, true, cx))
-                            .when(*can_cancel, |actions| {
-                                actions.child(self.permission_reset_button(
-                                    Action::Cancel,
-                                    true,
-                                    cx,
-                                ))
-                            })
-                            .when(thread_id.is_some(), |actions| {
-                                actions.child(self.permission_reset_button(
-                                    Action::Inspect,
-                                    true,
-                                    cx,
-                                ))
-                            }),
-                    )
-                    .into_any_element()
-            }
+#[derive(Clone, Copy)]
+struct Actions {
+    state: Signal<Snapshot>,
+    waiting: Signal<bool>,
+    failed: Signal<bool>,
+}
+
+impl Actions {
+    fn send(self, commands: mpsc::Sender<Request>, action: Action) {
+        let snapshot = self.state.get_untracked();
+        if self.waiting.get_untracked()
+            || snapshot.pending
+            || !allowed(&snapshot.projection, action)
+        {
+            return;
         }
+        self.waiting.set(true);
+        self.failed.set(false);
+        spawn(async move {
+            let (reply, response) = oneshot::channel();
+            if commands
+                .send(Request::Decide(Decision {
+                    id: snapshot.id,
+                    revision: snapshot.revision,
+                    projection: snapshot.projection,
+                    action,
+                    reply,
+                }))
+                .await
+                .is_err()
+                || !matches!(response.await, Ok(true))
+            {
+                self.failed.set(true);
+            }
+            self.waiting.set(false);
+        });
     }
+}
+
+fn button(
+    actions: Actions,
+    commands: mpsc::Sender<Request>,
+    action: Action,
+    target: ElementRef,
+    focused_revision: Signal<Option<u64>>,
+) -> AnyElement {
+    let key = match action {
+        Action::Prepare => "ui.permission_reset_action",
+        Action::Cancel => "ui.permission_reset_cancel",
+        Action::Confirm => "ui.permission_reset_confirm",
+        Action::Retry => "ui.permission_reset_retry",
+        Action::Inspect => "ui.permission_reset_inspect",
+    };
+    let focused = signal(false);
+    target.on_focus_in(move || focused.set(true));
+    target.on_focus_out(move || focused.set(false));
+    view()
+        .role(AccessibilityRole::Button)
+        .element_ref(&target)
+        .label(move || actions.state.with(|_| vega_i18n::t(key)))
+        .disabled(move || {
+            actions.waiting.get()
+                || actions
+                    .state
+                    .with(|s| s.pending || !allowed(&s.projection, action))
+        })
+        .px_3()
+        .py_2()
+        .border(px(1.))
+        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+        .border_color(move || {
+            crate::nsh::color(if focused.get() {
+                actions.state.get().colors.accent
+            } else {
+                actions.state.get().colors.border_subtle
+            })
+        })
+        .bg(move || crate::nsh::color(actions.state.get().colors.bg_elevated))
+        .on_layout(move |_: &Bounds<Points>| {
+            let snapshot = actions.state.get_untracked();
+            let default_action = match snapshot.projection {
+                Projection::Preparing | Projection::Confirming => Some(Action::Cancel),
+                Projection::Blocked { .. } => Some(Action::Retry),
+                _ => None,
+            };
+            if !snapshot.pending
+                && default_action == Some(action)
+                && focused_revision.get_untracked() != Some(snapshot.revision)
+            {
+                focused_revision.set(Some(snapshot.revision));
+                target.focus();
+            }
+        })
+        .on_press(move |_: &nsh_core::PressEvent| actions.send(commands.clone(), action))
+        .child(text(move || actions.state.with(|_| vega_i18n::t(key))))
+        .into_element()
+}
+
+fn message(projection: &Projection) -> &'static str {
+    match projection {
+        Projection::Preparing => "ui.permission_reset_preparing",
+        Projection::Confirming => "ui.permission_reset_title",
+        Projection::Pausing | Projection::Stopping => "ui.permission_reset_stopping",
+        Projection::Refreshing => "ui.permission_reset_refreshing",
+        Projection::Blocked { error, .. } => match error {
+            PermissionResetError::Busy => "ui.permission_reset_busy",
+            PermissionResetError::UnsettledWork => "ui.permission_reset_unsettled",
+            PermissionResetError::ConfigurationConflict => "ui.permission_reset_conflict",
+            PermissionResetError::ConfigurationUnavailable => "ui.permission_reset_configuration",
+            PermissionResetError::OutcomeUnknown => "ui.permission_reset_unknown",
+            PermissionResetError::Unavailable => "ui.permission_reset_unavailable",
+        },
+        Projection::Idle | Projection::Completed => "ui.permission_reset_action",
+    }
+}
+
+fn render(state: Signal<Snapshot>, commands: mpsc::Sender<Request>) -> AnyElement {
+    let actions = Actions {
+        state,
+        waiting: signal(false),
+        failed: signal(false),
+    };
+    let cancel = element_ref();
+    let confirm = element_ref();
+    let retry = element_ref();
+    let inspect = element_ref();
+    let root = element_ref();
+    let within = signal(false);
+    root.on_focus_in(move || within.set(true));
+    root.on_focus_out(move || within.set(false));
+    let cancel_focused = signal(false);
+    cancel.on_focus_in(move || cancel_focused.set(true));
+    cancel.on_focus_out(move || cancel_focused.set(false));
+    let measured = signal(0.0f32);
+    let focused_revision = signal(None::<u64>);
+    let layout = commands.clone();
+    let escape = commands.clone();
+    let cancel_commands = commands.clone();
+    let confirm_commands = commands.clone();
+    let retry_commands = commands.clone();
+    view()
+        .element_ref(&root)
+        .w_full()
+        .flex_shrink_0()
+        .gap_3()
+        .p(px(Layout::SETTINGS_GROUP_PADDING))
+        .border(px(1.))
+        .rounded(px(Layout::PANEL_RADIUS))
+        .border_color(move || {
+            crate::nsh::color(if state.get().projection == Projection::Confirming {
+                state.get().colors.warning
+            } else {
+                state.get().colors.border_subtle
+            })
+        })
+        .text_color(move || crate::nsh::color(state.get().colors.text_primary))
+        .text_size(px(Typography::BODY))
+        .on_layout(move |bounds: &Bounds<Points>| {
+            let height = bounds.size.height.0;
+            if height.is_finite() && height > 0. && (measured.get_untracked() - height).abs() > 0.5
+            {
+                measured.set(height);
+                let commands = layout.clone();
+                spawn(async move {
+                    if commands.send(Request::Layout(height)).await.is_err() {
+                        actions.failed.set(true);
+                    }
+                });
+            }
+        })
+        .child(when(
+            move || {
+                within.get()
+                    && !state.get().pending
+                    && matches!(
+                        state.get().projection,
+                        Projection::Preparing | Projection::Confirming
+                    )
+            },
+            move || {
+                let commands = escape.clone();
+                on_key_with(
+                    "escape",
+                    KeyOptions {
+                        when: nsh_core::keymap::When::NotEditing,
+                        ..Default::default()
+                    },
+                    move |_| actions.send(commands.clone(), Action::Cancel),
+                );
+                view()
+            },
+        ))
+        .child(when(
+            move || {
+                within.get()
+                    && !state.get().pending
+                    && state.get().projection == Projection::Confirming
+            },
+            move || {
+                for key in ["tab", "shift+tab"] {
+                    on_key_with(
+                        key,
+                        KeyOptions {
+                            when: nsh_core::keymap::When::Always,
+                            ..Default::default()
+                        },
+                        move |_| {
+                            if cancel_focused.get_untracked() {
+                                confirm.focus();
+                            } else {
+                                cancel.focus();
+                            }
+                        },
+                    );
+                }
+                view()
+            },
+        ))
+        .child(
+            text(move || state.with(|snapshot| vega_i18n::t(message(&snapshot.projection))))
+                .text_color(move || {
+                    crate::nsh::color(
+                        if matches!(state.get().projection, Projection::Blocked { .. }) {
+                            state.get().colors.danger
+                        } else {
+                            state.get().colors.text_primary
+                        },
+                    )
+                }),
+        )
+        .child(when(
+            move || state.get().projection == Projection::Confirming,
+            move || {
+                view()
+                    .gap_2()
+                    .child(text(move || {
+                        state.with(|_| vega_i18n::t("ui.permission_reset_scope"))
+                    }))
+                    .child(
+                        text(move || state.with(|_| vega_i18n::t("ui.permission_reset_effects")))
+                            .text_color(move || crate::nsh::color(state.get().colors.warning)),
+                    )
+            },
+        ))
+        .child(
+            view()
+                .flex_row()
+                .flex_wrap()
+                .gap_2()
+                .child(when(
+                    move || allowed(&state.get().projection, Action::Cancel),
+                    move || {
+                        button(
+                            actions,
+                            cancel_commands.clone(),
+                            Action::Cancel,
+                            cancel,
+                            focused_revision,
+                        )
+                    },
+                ))
+                .child(when(
+                    move || allowed(&state.get().projection, Action::Confirm),
+                    move || {
+                        button(
+                            actions,
+                            confirm_commands.clone(),
+                            Action::Confirm,
+                            confirm,
+                            focused_revision,
+                        )
+                    },
+                ))
+                .child(when(
+                    move || allowed(&state.get().projection, Action::Retry),
+                    move || {
+                        button(
+                            actions,
+                            retry_commands.clone(),
+                            Action::Retry,
+                            retry,
+                            focused_revision,
+                        )
+                    },
+                ))
+                .child(when(
+                    move || allowed(&state.get().projection, Action::Inspect),
+                    move || {
+                        button(
+                            actions,
+                            commands.clone(),
+                            Action::Inspect,
+                            inspect,
+                            focused_revision,
+                        )
+                    },
+                )),
+        )
+        .child(when(
+            move || actions.failed.get(),
+            move || {
+                text(move || state.with(|_| vega_i18n::t("ui.command_failed")))
+                    .text_color(move || crate::nsh::color(state.get().colors.danger))
+            },
+        ))
+        .into_element()
 }

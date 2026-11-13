@@ -132,8 +132,13 @@ fn open_workspace(
     cx.bind_keys([
         KeyBinding::new("cmd-shift-l", ToggleTheme, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("escape", CloseSettings, Some("VegaWindow")),
+        KeyBinding::new(
+            "escape",
+            CloseSettings,
+            Some("VegaWindow && !Terminal && !NshCommandPalette"),
+        ),
         KeyBinding::new("escape", CloseSettings, Some("WorkspaceMenu")),
+        KeyBinding::new("escape", CloseSettings, Some("NshDeleteConfirm")),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
     ]);
     vega_ui::init(cx);

@@ -5,9 +5,9 @@ use super::placement::{Rect, follow_target, perch};
 use super::{CallbackIdentity, PermissionPane};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Bounds, Context, DisplayId, Entity, FocusHandle, Image, ImageFormat, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
-    point, px, size,
+    App, Bounds, Context, DisplayId, Entity, FocusHandle, TitlebarOptions, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px,
+    size,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use vega_theme::Layout;
 
+mod nsh_view;
 mod view;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -117,7 +118,9 @@ pub struct GuidanceCard {
     has_task: bool,
     preparation: Entity<PreparationModel>,
     preparation_owner: Option<CallbackIdentity>,
-    app_icon: Arc<Image>,
+    app_icon: nsh_core::element::ImageSrc,
+    presentation: Option<nsh_view::Presentation>,
+    preparation_revision: u64,
     path_error: Option<crate::localized_copy::LocalizedCopy>,
     permission_pane: PermissionPane,
     stage: Stage,
@@ -217,17 +220,22 @@ impl GuidanceCard {
     ) -> Self {
         let preparation = model::shared(cx);
         let preparation_owner = Some(preparation.update(cx, |model, cx| model.acquire(true, cx)));
-        cx.observe(&preparation, |_, _, cx| cx.notify()).detach();
+        cx.observe(&preparation, |card, _, cx| {
+            card.preparation_revision = card.preparation_revision.wrapping_add(1);
+            cx.notify();
+        })
+        .detach();
         Self {
             controller: CardController::new(task, executable),
             return_handler,
             has_task: !task.is_empty(),
             preparation,
             preparation_owner,
-            app_icon: Arc::new(Image::from_bytes(
-                ImageFormat::Svg,
-                include_bytes!("../../../../assets/logo/vega-icon-smile-light.svg").to_vec(),
+            app_icon: nsh_core::element::ImageSrc::svg_markup(include_str!(
+                "../../../../assets/logo/vega-icon-smile-light.svg"
             )),
+            presentation: None,
+            preparation_revision: 0,
             path_error: None,
             permission_pane: PermissionPane::Accessibility,
             stage: Stage::Overview,
@@ -314,6 +322,10 @@ impl GuidanceCard {
         let needs_resize = self.placement_pending || window.viewport_size() != target_size;
         self.stage = stage;
         self.stage_identity = CallbackIdentity::default();
+        if let Some(page) = &mut self.presentation {
+            page.drag_bounds = None;
+            page.reset_keyboard();
+        }
         self.placement_pending = true;
         self.tracking = Tracking::Disabled;
         self.panel_fault = None;

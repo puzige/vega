@@ -142,7 +142,6 @@ pub(crate) fn register_link_interactions(
     if links.is_empty() {
         return;
     }
-    crate::link_preview::paint_link_decorations(&layout, &links, window, cx);
     let mut regions = link_regions(&layout, &links, window.text_style().text_align);
     for (index, link) in links.iter().enumerate() {
         if let Some(bounds) = crate::link_preview::icon_bounds(&layout, link) {

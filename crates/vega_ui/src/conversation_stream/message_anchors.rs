@@ -1,5 +1,7 @@
 use super::*;
 
+mod pixels;
+
 pub(crate) const MESSAGE_ANCHOR_PREVIEW_LIMIT: usize = 96;
 const MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT: usize = 256;
 pub(crate) const MESSAGE_ANCHOR_MEASURED_CACHE_LIMIT: usize = 512;
@@ -472,6 +474,11 @@ impl ConversationStream {
         });
         let default_id = current_id.clone();
         let key_anchors = anchors.clone();
+        let visible = &geometry.anchors[start..start + count];
+        let marks = visible.iter().map(|anchor| {
+            selected_id.as_deref() == Some(anchor.message_id.as_str())
+                || current_id.as_deref() == Some(anchor.message_id.as_str())
+        });
         let rail = div()
             .id("message-anchor-rail")
             .aria_label(vega_i18n::t(
@@ -494,8 +501,8 @@ impl ConversationStream {
                 }
                 cx.notify();
             }))
-            .on_scroll_wheel(
-                cx.listener(move |this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+            .on_scroll(
+                cx.listener(move |this, event: &gpui_kit::ScrollEvent, _, cx| {
                     let delta = f32::from(
                         event
                             .delta
@@ -564,67 +571,49 @@ impl ConversationStream {
                     cx.notify();
                 }),
             )
-            .children(
-                geometry
-                    .anchors
-                    .iter()
-                    .skip(start)
-                    .take(count)
-                    .map(|anchor| {
-                        let id = anchor.message_id.clone();
-                        let hover_id = id.clone();
-                        let click_id = id.clone();
-                        let selected = selected_id.as_deref() == Some(id.as_str())
-                            || current_id.as_deref() == Some(id.as_str());
-                        div()
-                            .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
-                            .aria_label(anchor_preview_label(anchor))
-                            .w_full()
-                            .h(px(Layout::CONVERSATION_MARKER_PITCH))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                                if this.message_anchor_hovered.as_deref() != Some(hover_id.as_str())
-                                {
-                                    this.message_anchor_hovered = Some(hover_id.clone());
-                                    cx.notify();
-                                }
-                            }))
-                            .on_mouse_down(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.message_anchor_focus.focus(window, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .on_mouse_up(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.message_anchor_keyboard_id = Some(click_id.clone());
-                                    this.message_anchor_hovered = Some(click_id.clone());
-                                    this.request_message_location(&click_id, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .w(px(if selected {
-                                        Layout::MESSAGE_ANCHOR_ACTIVE_SIZE
-                                    } else {
-                                        Layout::CONVERSATION_MARKER_WIDTH
-                                    }))
-                                    .h(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH))
-                                    .bg(if selected {
-                                        colors.text_secondary
-                                    } else {
-                                        colors.conversation_marker
-                                    }),
-                            )
-                    }),
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(pixels::marks(marks, colors)),
             )
+            .children(visible.iter().map(|anchor| {
+                let id = anchor.message_id.clone();
+                let hover_id = id.clone();
+                let click_id = id.clone();
+                div()
+                    .id(gpui_kit::SharedString::from(format!("message-anchor-{id}")))
+                    .aria_label(anchor_preview_label(anchor))
+                    .w_full()
+                    .h(px(Layout::CONVERSATION_MARKER_PITCH))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.message_anchor_hovered.as_deref() != Some(hover_id.as_str()) {
+                            this.message_anchor_hovered = Some(hover_id.clone());
+                            cx.notify();
+                        }
+                    }))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.message_anchor_focus.focus(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.message_anchor_keyboard_id = Some(click_id.clone());
+                            this.message_anchor_hovered = Some(click_id.clone());
+                            this.request_message_location(&click_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+            }))
             .child(observer)
             .into_any_element();
         (rail, preview, false)
@@ -646,19 +635,7 @@ fn render_message_anchor_preview(
         .id("message-anchor-preview")
         .aria_label(label.clone())
         .w(px(width))
-        .max_h(px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT))
-        .py_2()
-        .flex()
-        .items_center()
-        .px_2()
-        .rounded_md()
-        .border_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_elevated)
-        .shadow_sm()
-        .text_size(px(Typography::METADATA))
-        .text_color(colors.text_primary)
-        .child(div().min_w_0().line_clamp(3).child(label))
+        .child(pixels::preview(label, colors))
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
                 if this.message_anchor_preview_hovered.as_deref() != Some(message_id.as_str()) {
@@ -673,16 +650,14 @@ fn render_message_anchor_preview(
                 cx.notify();
             }
         }))
-        .on_scroll_wheel(
-            cx.listener(|this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
-                let delta = event.delta.pixel_delta(px(
-                    Typography::CONVERSATION_LINE_HEIGHT * Typography::CONVERSATION
-                ));
-                this.list.scroll_by(-delta.y);
-                cx.stop_propagation();
-                cx.notify();
-            }),
-        )
+        .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
+            let delta = event.delta.pixel_delta(px(
+                Typography::CONVERSATION_LINE_HEIGHT * Typography::CONVERSATION
+            ));
+            this.list.scroll_by(-delta.y);
+            cx.stop_propagation();
+            cx.notify();
+        }))
         .into_any_element()
 }
 
