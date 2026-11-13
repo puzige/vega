@@ -416,6 +416,9 @@ impl Host {
     }
 
     fn stop(&mut self, cx: &App) {
+        if self.snapshot.kind == Kind::PermissionMenu {
+            self.height = None;
+        }
         if let Some(surface) = self.surface.take() {
             surface.entity().read(cx).stop();
         }
@@ -983,26 +986,31 @@ impl Render for Host {
                 element.track_focus(&self.focus)
             })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .when(popup, |host| {
-                let shadow = if self.snapshot.kind == Kind::Thinking {
-                    super::foreground_chrome::Decoration::ThinkingCardShadow
-                } else {
-                    super::foreground_chrome::Decoration::SelectorMenuShadow
-                };
-                let edge = px(-super::thinking_slider::SHADOW_MARGIN);
-                host.child(
-                    div()
-                        .id("composer-selector-shadow")
-                        .role(gpui_kit::Role::Group)
-                        .a11y_synthetic_children(|tree| tree.parent_node().set_hidden())
-                        .absolute()
-                        .top(edge)
-                        .bottom(edge)
-                        .left(edge)
-                        .right(edge)
-                        .child(super::foreground_chrome::decoration(shadow)),
-                )
-            })
+            // The shadow is a separate NSH surface. Mounting it before the
+            // menu reports its layout can briefly paint an empty dark rectangle.
+            .when(
+                popup && (self.snapshot.kind != Kind::PermissionMenu || self.height.is_some()),
+                |host| {
+                    let shadow = if self.snapshot.kind == Kind::Thinking {
+                        super::foreground_chrome::Decoration::ThinkingCardShadow
+                    } else {
+                        super::foreground_chrome::Decoration::SelectorMenuShadow
+                    };
+                    let edge = px(-super::thinking_slider::SHADOW_MARGIN);
+                    host.child(
+                        div()
+                            .id("composer-selector-shadow")
+                            .role(gpui_kit::Role::Group)
+                            .a11y_synthetic_children(|tree| tree.parent_node().set_hidden())
+                            .absolute()
+                            .top(edge)
+                            .bottom(edge)
+                            .left(edge)
+                            .right(edge)
+                            .child(super::foreground_chrome::decoration(shadow)),
+                    )
+                },
+            )
             .child(surface.entity());
         if popup {
             element = element
