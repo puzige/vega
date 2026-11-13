@@ -801,3 +801,16 @@ In seven recorded Esc returns, title, paragraph, code, New task, Settings and th
 A new isolated application home contained a single synthetic 500-message thread copied from the prior legacy fixture. The active window with a draft stayed in its existing home. With English and an expanded sidebar, select Dark, Light, Dark, Light in General and click Back to app each time. At 024e2e9e (binary def4485e2d20351db331b09cd595c40eba2991fe50282a4f730e81f0b6b18f8c), the paragraph and code matched their settled glyphs at 444 / 443 / 438 / 473 ms. An empty bubble appeared in the transition. Existing retained readers were ineligible on return because their colors still described the previous theme.
 
 At 0d7fb52147989fe565b0ea3c413f211aac09907f, parked readers receive the new colors while settings are open. Reuse requires a layout confirmation for the new reader session and still checks content, selection, viewport and ownership. The optimized binary b94789b8281ce4868df6cd515f7238af731ad7b0440bacc0d902bd638f122658 restored paragraph and code at 106 / 120 / 116 / 110 ms. No empty bubble was seen in the four candidate returns. Copy code after the last return pasted the expected first and last numbered lines into a new test draft. Independent static review, clean-source fmt and strict local Clippy for vega and vega_ui passed. Visual evidence: theme-base-series.mp4, theme-fix-series.mp4, their filmstrips and measure-theme-cross.py in the local recording directory above. The sidebar and composer continued to populate separately on theme changes; this pass covers the reader only.
+
+### Title and sidebar across theme changes — macOS 15.8.3 arm64
+
+On e5694582a8efd20560b010d7bd0ba2a9a7d59772 the passive title and eligible parked sidebar rows receive the new theme while Settings is visible. Old interactions stay revoked; reattachment uses the current route, geometry and native layout checks. Independent review found no new blocker. The isolated release binary SHA-256 was 78cce4452a9d462a6378bab7ae6130e6cd847759153bbe8f296497f7d80c3a00. The same synthetic 500-message task, English, expanded sidebar and Dark / Light / Dark / Light pointer returns were used for both films.
+
+| Region | 0d7fb521, milliseconds from Back to app | e5694582, milliseconds from Back to app |
+|---|---|---|
+| Paragraph | 106 / 120 / 116 / 110 | 124 / 110 / 99 / 109 |
+| Title and New task | 383 / 390 / 386 / 386 | 124 / 110 / 99 / 109 |
+| First pinned task | 383 / 390 / 386 / 386 | 124 / 179 / 99 / 177 |
+| Composer permission trigger | 383 / 390 / 386 / 386 | 229 / 245 / 235 / 247 |
+
+The recorded title appeared with the paragraph in all four returns. The pinned row lagged by 68–69 ms on the two light returns. The permission trigger lagged by 105–138 ms. These observations keep settings navigation PARTIAL. Window-only recordings theme-fix-series.mp4 and chrome-tint.mp4, chrome-tint-sequence.jpg and theme-landmarks.py are in the recording directory above. The candidate instance was closed after recording.
