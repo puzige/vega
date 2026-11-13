@@ -97,11 +97,15 @@ impl RetiredViews {
 
 pub(super) struct ChromeLease {
     view: SidebarView,
+    skip_stop: std::cell::Cell<bool>,
     retirement: Weak<RetiredViews>,
     app: gpui_kit::AsyncApp,
 }
 
 impl ChromeLease {
+    pub(super) fn transferred(&self) {
+        self.skip_stop.set(true);
+    }
     pub(super) fn new<S, C>(surface: &Surface<S, C>, cx: &mut App) -> Self
     where
         S: Clone + Send + Sync + 'static,
@@ -111,6 +115,7 @@ impl ChromeLease {
         retirement.on_mount(cx);
         Self {
             view: surface.entity(),
+            skip_stop: Default::default(),
             retirement: Rc::downgrade(&retirement),
             app: cx.to_async(),
         }
@@ -120,7 +125,11 @@ impl ChromeLease {
 impl Drop for ChromeLease {
     fn drop(&mut self) {
         if let Some(retirement) = self.retirement.upgrade() {
-            retirement.retire(self.view.clone(), &self.app);
+            if self.skip_stop.get() {
+                retirement.mounted.set(retirement.mounted.get() - 1);
+            } else {
+                retirement.retire(self.view.clone(), &self.app);
+            }
         }
     }
 }

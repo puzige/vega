@@ -7,6 +7,7 @@ pub(in crate::sidebar) fn delete_confirmation(
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     Host {
+        rows: None,
         key: key.into(),
         text: Some(message),
         items: vec![

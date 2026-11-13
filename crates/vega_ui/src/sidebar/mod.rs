@@ -365,6 +365,8 @@ fn with_store<R>(
     }
 }
 
+pub use nsh_leaf::SettingsRows;
+
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
@@ -374,6 +376,10 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
+    pub fn park_rows(&self, window: &Window, cx: &mut App) -> SettingsRows {
+        let rows = self.sessions_block.read(cx).rows.clone();
+        rows.park(window, cx)
+    }
     /// Builds the two block entities and subscribes to their events.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let projects_block = cx.new(ProjectsBlock::new);
@@ -616,23 +622,26 @@ impl Sidebar {
             .flex_col()
             .flex_shrink_0()
             .gap_1()
-            .child(nsh_leaf::host(
-                "sidebar-new-task",
-                None,
-                vec![
-                    nsh_leaf::Item::action(
-                        vega_i18n::t("ui.new_task"),
-                        Some(crate::icons::Icon::Plus),
-                    )
-                    .with_hint("⌘N"),
-                ],
-                false,
-                Typography::SIDEBAR_LINE_HEIGHT,
-                |_| true,
-                move |_, _, _, cx| {
-                    let _ = weak.update(cx, |this, cx| this.create_thread(cx));
-                },
-            ))
+            .child(
+                nsh_leaf::host_parts(
+                    "sidebar-new-task",
+                    None,
+                    vec![
+                        nsh_leaf::Item::action(
+                            vega_i18n::t("ui.new_task"),
+                            Some(crate::icons::Icon::Plus),
+                        )
+                        .with_hint("⌘N"),
+                    ],
+                    false,
+                    Typography::SIDEBAR_LINE_HEIGHT,
+                    |_| true,
+                    move |_, _, _, cx| {
+                        let _ = weak.update(cx, |this, cx| this.create_thread(cx));
+                    },
+                )
+                .retain_across_settings(self.sessions_block.read(cx).rows.clone()),
+            )
             .children(
                 self.new_task_error
                     .clone()
@@ -643,31 +652,34 @@ impl Sidebar {
 
     /// Stable low-frequency settings entry. It stays in the rail even when
     /// project/session blocks grow or collapse, so the route is discoverable.
-    fn render_settings_entry(_colors: &ThemeColors, _cx: &App) -> AnyElement {
+    fn render_settings_entry(&self, _colors: &ThemeColors, cx: &App) -> AnyElement {
         div()
             .w_full()
             .flex_shrink_0()
             .px(px(Layout::SIDEBAR_PADDING))
             .pt(px(Layout::SIDEBAR_FOOTER_TOP))
             .pb(px(Layout::SIDEBAR_PADDING))
-            .child(nsh_leaf::host(
-                "sidebar-settings-surface",
-                None,
-                vec![
-                    nsh_leaf::Item::action(
-                        vega_i18n::t("ui.settings_284"),
-                        Some(crate::icons::Icon::Settings),
-                    )
-                    .with_hint("⌘,"),
-                ],
-                false,
-                Typography::SIDEBAR_LINE_HEIGHT,
-                |_| true,
-                |_, _, _, cx| {
-                    cx.set_global(SettingsOpen(true));
-                    cx.refresh_windows();
-                },
-            ))
+            .child(
+                nsh_leaf::host_parts(
+                    "sidebar-settings-surface",
+                    None,
+                    vec![
+                        nsh_leaf::Item::action(
+                            vega_i18n::t("ui.settings_284"),
+                            Some(crate::icons::Icon::Settings),
+                        )
+                        .with_hint("⌘,"),
+                    ],
+                    false,
+                    Typography::SIDEBAR_LINE_HEIGHT,
+                    |_| true,
+                    |_, _, _, cx| {
+                        cx.set_global(SettingsOpen(true));
+                        cx.refresh_windows();
+                    },
+                )
+                .retain_across_settings(self.sessions_block.read(cx).rows.clone()),
+            )
             .into_any_element()
     }
 }
@@ -757,7 +769,7 @@ impl Render for Sidebar {
                             ),
                     ),
             )
-            .child(Self::render_settings_entry(&colors, cx))
+            .child(self.render_settings_entry(&colors, cx))
             .into_any_element()
     }
 }

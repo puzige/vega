@@ -209,7 +209,7 @@ enum Request {
         double: bool,
     },
     Layout {
-        id: ProjectionId,
+        frame: Box<Snapshot>,
         width: f32,
         height: f32,
     },
@@ -219,6 +219,10 @@ type Handler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 type Guard = Rc<dyn Fn(&App) -> bool>;
 
 struct Leaf {
+    on_screen: bool,
+    waiting_for_row_layout: bool,
+    painted_at: Option<(gpui_kit::Size<gpui_kit::Pixels>, f32, f32)>,
+    parked: Weak<chrome::ChromeLease>,
     snapshot: Snapshot,
     surface: Option<Surface<Snapshot, Request>>,
     focus: FocusHandle,
@@ -234,7 +238,7 @@ struct Leaf {
     geometry: gpui_kit::ScrollHandle,
     authority: Authority,
     measured_height: Option<f32>,
-    acknowledged: Option<(ProjectionId, f32)>,
+    acknowledged: Option<(Box<Snapshot>, f32)>,
     mount: ProjectionId,
     motion_visible: bool,
     menu_scroll: Option<gpui_kit::ScrollHandle>,
@@ -296,7 +300,7 @@ impl Leaf {
                 .as_ref()
                 .is_some_and(|(projection, width)| {
                     let native_width = f32::from(self.geometry.bounds().size.width);
-                    projection.matches(&self.snapshot.id)
+                    projection.id.matches(&self.snapshot.id)
                         && native_width.is_finite()
                         && native_width > 0.
                         && width.is_finite()
@@ -350,20 +354,46 @@ impl Leaf {
                             Request::Activate { id, index, double } => {
                                 this.activate(&id, index, double, window, cx)
                             }
-                            Request::Layout { id, width, height }
-                                if this.snapshot.id.matches(&id)
-                                    && this.lease.upgrade().is_some()
-                                    && this.authority == Authority::current(cx)
-                                    && (this.guard)(cx)
-                                    && this.surface.as_ref().is_some_and(|surface| {
-                                        surface.errors().borrow().is_none()
-                                    })
-                                    && width.is_finite()
-                                    && width > 0.
-                                    && height.is_finite()
-                                    && height > 0. =>
+                            Request::Layout {
+                                frame,
+                                width,
+                                height,
+                            } if this.snapshot.id.matches(&frame.id)
+                                && this.lease.upgrade().is_some()
+                                && this.authority == Authority::current(cx)
+                                && (this.guard)(cx)
+                                && this
+                                    .surface
+                                    .as_ref()
+                                    .is_some_and(|surface| surface.errors().borrow().is_none())
+                                && width.is_finite()
+                                && width > 0.
+                                && height.is_finite()
+                                && height > 0. =>
                             {
-                                this.acknowledged = Some((id.clone(), width));
+                                let id = frame.id.clone();
+                                if this.waiting_for_row_layout {
+                                    if *frame != this.snapshot {
+                                        return;
+                                    }
+                                    if (f32::from(this.geometry.bounds().size.width) - width).abs()
+                                        > 1.
+                                    {
+                                        this.waiting_for_row_layout = false;
+                                        if let Some(surface) = this.surface.take() {
+                                            surface.entity().read(cx).stop();
+                                        }
+                                        this.lease = Weak::new();
+                                        this.mount = ProjectionId::new();
+                                        this.acknowledged = None;
+                                        window.refresh();
+                                        return;
+                                    }
+                                }
+                                this.acknowledged = Some((frame, width));
+                                if std::mem::take(&mut this.waiting_for_row_layout) {
+                                    window.refresh();
+                                }
                                 if let Some(key) = this.pending_menu_key.take() {
                                     let actions = this.snapshot.actions();
                                     if let Some(index) = key.action(&id, &actions)
@@ -596,6 +626,7 @@ impl Leaf {
 
 #[derive(gpui_kit::IntoElement)]
 pub(super) struct Host {
+    rows: Option<RowMap>,
     pub key: gpui_kit::SharedString,
     pub text: Option<String>,
     pub items: Vec<Item>,
@@ -606,6 +637,13 @@ pub(super) struct Host {
     pub menu_scroll: Option<gpui_kit::ScrollHandle>,
     pub focus: Option<FocusHandle>,
     action_guard: Option<Guard>,
+}
+
+impl Host {
+    pub(super) fn retain_across_settings(mut self, rows: RowMap) -> Self {
+        self.rows = Some(rows);
+        self
+    }
 }
 
 impl gpui_kit::RenderOnce for Host {
@@ -636,6 +674,7 @@ pub(super) fn host_parts(
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> Host {
     Host {
+        rows: None,
         key: key.into(),
         text,
         items,
@@ -662,6 +701,7 @@ pub(super) fn focused_actions(
     handler: impl Fn(usize, Bounds<Pixels>, &mut Window, &mut App) + 'static,
 ) -> Host {
     Host {
+        rows: None,
         key: key.into(),
         text: None,
         items,
@@ -675,7 +715,7 @@ pub(super) fn focused_actions(
     }
 }
 
-pub(super) fn thread_row(mut title: Host, mut actions: Host) -> Host {
+pub(super) fn thread_row(mut title: Host, mut actions: Host, rows: RowMap) -> Host {
     let rename = actions.items.len() + 1;
     title.items[0].double_action = Some(rename);
     title.items.append(&mut actions.items);
@@ -684,6 +724,7 @@ pub(super) fn thread_row(mut title: Host, mut actions: Host) -> Host {
     title.action_guard = Some(actions.guard);
     title.focus = actions.focus;
     title.presentation = Presentation::ThreadRow;
+    title.rows = Some(rows);
     title.handler = Rc::new(move |index, bounds, window, cx| {
         if index == 0 || index == rename {
             title_handler(usize::from(index == rename), bounds, window, cx);
@@ -711,6 +752,7 @@ pub(super) fn menu(
         height
     };
     Host {
+        rows: None,
         key: key.into(),
         text,
         items,
@@ -729,8 +771,59 @@ pub(super) fn menu(
     .into_any_element()
 }
 
+#[derive(Clone, Default)]
+pub(super) struct RowMap(
+    Rc<std::cell::RefCell<HashMap<gpui_kit::SharedString, gpui_kit::WeakEntity<Leaf>>>>,
+);
+
+pub struct SettingsRows {
+    _rows: Vec<(Entity<Leaf>, Rc<chrome::ChromeLease>)>,
+}
+
+impl RowMap {
+    pub(super) fn park(&self, window: &Window, cx: &mut App) -> SettingsRows {
+        let mut held = Vec::new();
+        self.0.borrow_mut().retain(|_, v| v.upgrade().is_some());
+        for state in self.0.borrow().values().filter_map(|weak| weak.upgrade()) {
+            let lease = state.update(cx, |this, _| {
+                let lease = this.lease.upgrade()?;
+                let confirmed = this.acknowledged.as_ref().is_some_and(|(frame, width)| {
+                    **frame == this.snapshot
+                        && (f32::from(this.geometry.bounds().size.width) - width).abs() <= 1.
+                });
+                if this.snapshot.items.iter().any(|v| v.running)
+                    || !this.on_screen
+                    || (this.snapshot.presentation == Presentation::ThreadRow
+                        && !this.snapshot.row_was_visible)
+                    || this.snapshot.recovery
+                    || this.pending_menu_key.is_some()
+                    || this
+                        .geometry
+                        .bounds()
+                        .intersect(&Bounds::new(Default::default(), window.viewport_size()))
+                        .is_empty()
+                {
+                    return None;
+                }
+                this.waiting_for_row_layout = !confirmed || this.snapshot.selected.is_some();
+                this.parked = Rc::downgrade(&lease);
+                this.lease = Weak::new();
+                this.pending_menu_key = None;
+                this.snapshot.id = ProjectionId::new();
+                this.acknowledged = None;
+                Some(lease)
+            });
+            if let Some(lease) = lease {
+                held.push((state, lease));
+            }
+        }
+        SettingsRows { _rows: held }
+    }
+}
+
 fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
     let Host {
+        rows,
         key,
         text,
         items,
@@ -743,110 +836,195 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
         focus,
     } = host;
     let focusable = items.iter().any(|item| item.enabled);
-    let state = window.use_keyed_state(key.clone(), cx, |window, cx| {
-        let (focus, actions_focus) = if presentation == Presentation::ThreadRow {
-            (None, focus)
-        } else {
-            (focus, None)
-        };
-        let focus = focus
-            .unwrap_or_else(|| cx.focus_handle())
-            .tab_stop(focusable);
-        let mut subscriptions = vec![
-            cx.on_focus_in(&focus, window, |this: &mut Leaf, window, cx| {
-                if this.focus.contains_focused(window, cx)
-                    && !this
-                        .actions_focus
-                        .as_ref()
-                        .is_some_and(|f| f.is_focused(window))
-                {
-                    if let Step::Selected(selected) = Selection::advance(
-                        None,
-                        &this.snapshot.id,
-                        &this.scope_actions(window),
-                        this.snapshot.presentation != Presentation::DeleteConfirmation
-                            && window.modifiers().shift,
-                    ) {
-                        this.selected = Some(selected);
-                    }
-                    window.focus(&this.focus, cx);
+    let holder = window.use_keyed_state(key.clone(), cx, |window, cx| {
+        if let Some(previous) = rows
+            .as_ref()
+            .and_then(|rows| rows.0.borrow().get(&key).and_then(|w| w.upgrade()))
+        {
+            let old = previous.read(cx);
+            if let Some(parked) = old.parked.upgrade()
+                && old.lease.upgrade().is_none()
+                && old.surface.is_some()
+                && old.snapshot.language == vega_i18n::language()
+                && old.snapshot.colors == theme(cx).colors
+                && {
+                    let now = Authority::current(cx);
+                    old.authority.route.0.as_ref().map(|t| &t.id)
+                        == now.route.0.as_ref().map(|t| &t.id)
+                        && old.authority.route.1 == now.route.1
+                        && old.authority.route.2 == now.route.2
+                        && old.authority.route.3 == now.route.3
+                        && old.authority.database == now.database
                 }
-                cx.notify();
-            }),
-            cx.on_focus_out(&focus, window, |this, _, _, cx| {
-                this.pending_menu_key = None;
-                cx.notify()
-            }),
-            cx.observe_window_activation(window, |this, _, cx| {
-                this.pending_menu_key = None;
-                cx.notify()
-            }),
-            cx.observe_window_visibility(window, |this, _, _, cx| {
-                this.pending_menu_key = None;
-                cx.notify()
-            }),
-        ];
-        if let Some(handle) = &actions_focus {
-            subscriptions.push(
-                cx.on_focus_in(handle, window, |this: &mut Leaf, window, cx| {
-                    if let Step::Selected(selected) = Selection::advance(
-                        None,
-                        &this.snapshot.id,
-                        &this.scope_actions(window),
-                        window.modifiers().shift,
-                    ) {
-                        this.selected = Some(selected);
+                && old.painted_at
+                    == Some((
+                        window.viewport_size(),
+                        window.scale_factor(),
+                        super::width(cx),
+                    ))
+                && old.actions_focus == focus
+                && guard(cx)
+                && old
+                    .surface
+                    .as_ref()
+                    .is_some_and(|s| s.errors().borrow().is_none())
+            {
+                // A warmed engine may have a different enabled state, text or selection.
+                // Keep its native pixels and AX tree detached until the new layout arrives.
+                let wait = old.waiting_for_row_layout
+                    || old.snapshot.text != text
+                    || old.snapshot.presentation != presentation
+                    || old.snapshot.items.len() != items.len()
+                    || old.snapshot.items.iter().zip(&items).any(|(a, b)| {
+                        let mut next = b.clone();
+                        next.motion = a.motion;
+                        *a != next
+                    });
+                parked.transferred();
+                previous.update(cx, |this, _| this.waiting_for_row_layout = wait);
+                let subscription = cx.observe(&previous, |_, _, cx| cx.notify());
+                return (previous, true, subscription);
+            }
+        }
+        let state = cx.new(|cx| {
+            let (focus, actions_focus) = if presentation == Presentation::ThreadRow {
+                (None, focus)
+            } else {
+                (focus, None)
+            };
+            let focus = focus
+                .unwrap_or_else(|| cx.focus_handle())
+                .tab_stop(focusable);
+            let mut subscriptions = vec![
+                cx.on_focus_in(&focus, window, |this: &mut Leaf, window, cx| {
+                    if this.focus.contains_focused(window, cx)
+                        && !this
+                            .actions_focus
+                            .as_ref()
+                            .is_some_and(|f| f.is_focused(window))
+                    {
+                        if let Step::Selected(selected) = Selection::advance(
+                            None,
+                            &this.snapshot.id,
+                            &this.scope_actions(window),
+                            this.snapshot.presentation != Presentation::DeleteConfirmation
+                                && window.modifiers().shift,
+                        ) {
+                            this.selected = Some(selected);
+                        }
+                        window.focus(&this.focus, cx);
                     }
                     cx.notify();
                 }),
-            );
-        }
-        Leaf {
-            snapshot: Snapshot {
-                id: ProjectionId::new(),
-                language: vega_i18n::language(),
-                text: None,
-                items: Vec::new(),
-                colors: theme(cx).colors,
+                cx.on_focus_out(&focus, window, |this, _, _, cx| {
+                    this.pending_menu_key = None;
+                    cx.notify()
+                }),
+                cx.observe_window_activation(window, |this, _, cx| {
+                    this.pending_menu_key = None;
+                    cx.notify()
+                }),
+                cx.observe_window_visibility(window, |this, _, _, cx| {
+                    this.pending_menu_key = None;
+                    cx.notify()
+                }),
+            ];
+            if let Some(rows) = &rows {
+                let registry = Rc::downgrade(&rows.0);
+                let registered_key = key.clone();
+                let id = cx.entity_id();
+                subscriptions.push(cx.on_release(move |_: &mut Leaf, _| {
+                    if let Some(registry) = registry.upgrade() {
+                        let mut entries = registry.borrow_mut();
+                        if entries
+                            .get(&registered_key)
+                            .is_some_and(|entry| entry.entity_id() == id)
+                        {
+                            entries.remove(&registered_key);
+                        }
+                    }
+                }));
+            }
+            if let Some(handle) = &actions_focus {
+                subscriptions.push(cx.on_focus_in(
+                    handle,
+                    window,
+                    |this: &mut Leaf, window, cx| {
+                        if let Step::Selected(selected) = Selection::advance(
+                            None,
+                            &this.snapshot.id,
+                            &this.scope_actions(window),
+                            window.modifiers().shift,
+                        ) {
+                            this.selected = Some(selected);
+                        }
+                        cx.notify();
+                    },
+                ));
+            }
+            Leaf {
+                on_screen: false,
+                waiting_for_row_layout: false,
+                painted_at: None,
+                parked: Weak::new(),
+                snapshot: Snapshot {
+                    id: ProjectionId::new(),
+                    language: vega_i18n::language(),
+                    text: None,
+                    items: Vec::new(),
+                    colors: theme(cx).colors,
+                    selected: None,
+                    keyboard_focus_visible: false,
+                    recovery: false,
+                    row_was_visible: false,
+                    presentation,
+                },
+                surface: None,
+                actions_focus,
+                focus,
                 selected: None,
-                keyboard_focus_visible: false,
-                recovery: false,
-                row_was_visible: false,
-                presentation,
-            },
-            surface: None,
-            actions_focus,
-            focus,
-            selected: None,
-            pending_menu_key: None,
-            lease: Weak::new(),
-            handler: Rc::new(|_, _, _, _| {}),
-            guard: Rc::new(|_| false),
-            guard_valid: false,
-            action_guard: None,
-            action_guard_valid: false,
-            geometry: gpui_kit::ScrollHandle::new(),
-            authority: Authority::current(cx),
-            measured_height: None,
-            acknowledged: None,
-            mount: ProjectionId::new(),
-            motion_visible: false,
-            menu_scroll: menu_scroll.clone(),
-            _subscriptions: subscriptions,
+                pending_menu_key: None,
+                lease: Weak::new(),
+                handler: Rc::new(|_, _, _, _| {}),
+                guard: Rc::new(|_| false),
+                guard_valid: false,
+                action_guard: None,
+                action_guard_valid: false,
+                geometry: gpui_kit::ScrollHandle::new(),
+                authority: Authority::current(cx),
+                measured_height: None,
+                acknowledged: None,
+                mount: ProjectionId::new(),
+                motion_visible: false,
+                menu_scroll: menu_scroll.clone(),
+                _subscriptions: subscriptions,
+            }
+        });
+        if let Some(rows) = &rows {
+            let mut rows = rows.0.borrow_mut();
+            rows.insert(key.clone(), state.downgrade());
         }
+        let subscription = cx.observe(&state, |_, _, cx| cx.notify());
+        (state, false, subscription)
+    });
+    let (state, resumed) = holder.update(cx, |(state, resumed, _), _| {
+        (state.clone(), std::mem::take(resumed))
     });
     state.update(cx, |this, cx| {
         let entering = this.lease.upgrade().is_none();
         if entering {
-            if let Some(surface) = this.surface.take() {
-                surface.entity().read(cx).stop();
+            if !resumed {
+                this.waiting_for_row_layout = false;
+                if let Some(surface) = this.surface.take() {
+                    surface.entity().read(cx).stop();
+                }
             }
             this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
             this.acknowledged = None;
             this.selected = None;
             this.motion_visible = false;
-            this.snapshot.row_was_visible = false;
+            this.snapshot.row_was_visible = resumed;
         }
         if this
             .surface
@@ -856,6 +1034,7 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             if let Some(surface) = this.surface.take() {
                 surface.entity().read(cx).stop();
             }
+            this.waiting_for_row_layout = false;
             this.lease = Weak::new();
             this.pending_menu_key = None;
             this.snapshot.id = ProjectionId::new();
@@ -971,7 +1150,9 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
             .track_focus(&this.focus)
             .role(Role::Group)
             .capture_key_down(cx.listener(Leaf::key))
-            .child(surface.entity());
+            .when(!this.waiting_for_row_layout, |host| {
+                host.child(surface.entity())
+            });
         let mut action_area = this
             .actions_focus
             .as_ref()
@@ -1110,6 +1291,14 @@ fn leaf(host: Host, window: &mut Window, cx: &mut App) -> AnyElement {
                         && window.is_window_active()
                         && !cx.reduce_motion();
                     let _ = weak.update(cx, |this, _cx| {
+                        if this.mount.matches(&mount) && this.lease.upgrade().is_some() {
+                            this.on_screen = on_screen;
+                            this.painted_at = Some((
+                                window.viewport_size(),
+                                window.scale_factor(),
+                                super::width(_cx),
+                            ));
+                        }
                         let first_paint = this.snapshot.presentation == Presentation::ThreadRow
                             && on_screen
                             && !this.snapshot.row_was_visible;
@@ -1205,7 +1394,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
             let snapshot = state.get();
             let colors = snapshot.colors;
             let layout = commands.clone();
-            let id = snapshot.id.clone();
+            let frame = Box::new(snapshot.clone());
             let measured = ns::signal((0.0f32, 0.0f32));
             let mut content = ns::view().w_full().flex_col().on_layout(
                 move |bounds: &nsh_core::Bounds<nsh_core::Points>| {
@@ -1220,7 +1409,7 @@ fn render(state: ns::Signal<Snapshot>, sender: mpsc::Sender<Request>) -> ns::Any
                     {
                         measured.set((width, height));
                         layout.send(Request::Layout {
-                            id: id.clone(),
+                            frame: frame.clone(),
                             width,
                             height,
                         });

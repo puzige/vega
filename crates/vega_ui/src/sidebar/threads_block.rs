@@ -23,6 +23,7 @@ pub enum ThreadsBlockEvent {
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 
 pub struct ThreadsBlock {
+    pub(super) rows: nsh_leaf::RowMap,
     /// Cached active rows (all projects when organization is enabled).
     pub(crate) threads: Vec<Thread>,
     /// Cached archived rows (shown in the 「已归档」 collapsed section).
@@ -96,6 +97,7 @@ impl ThreadsBlock {
         cx.observe_global::<SettingsOpen>(|this, cx| this.observe_visit_route(cx))
             .detach();
         let mut view = Self {
+            rows: Default::default(),
             threads: Vec::new(),
             archived: Vec::new(),
             loaded_project: None,
@@ -1550,7 +1552,10 @@ impl ThreadsBlock {
                     selector_prefix,
                     cx,
                 );
-                (nsh_leaf::thread_row(title_host, buttons), popup)
+                (
+                    nsh_leaf::thread_row(title_host, buttons, self.rows.clone()),
+                    popup,
+                )
             } else {
                 (title_host, None)
             };

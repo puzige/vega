@@ -438,15 +438,17 @@ impl ThreadsBlock {
         body.into_any_element()
     }
     pub(super) fn section_label(&self, text: &str, _: &App) -> AnyElement {
-        let section = [
-            vega_i18n::t("sidebar.pinned"),
-            vega_i18n::t("sidebar.projects"),
-            vega_i18n::t("sidebar.recents"),
-        ]
-        .contains(&text);
+        self.sidebar_label(text, None)
+    }
+
+    pub(super) fn sidebar_label(&self, text: &str, heading: Option<&'static str>) -> AnyElement {
+        let section = heading.is_some();
         let item = nsh_leaf::Item::label(text, section);
-        nsh_leaf::host(
-            format!("sidebar-label-{text}"),
+        let host = nsh_leaf::host_parts(
+            heading.map_or_else(
+                || format!("sidebar-label-{text}"),
+                |key| format!("sidebar-heading-{key}"),
+            ),
             None,
             vec![item],
             false,
@@ -457,7 +459,13 @@ impl ThreadsBlock {
             },
             |_| true,
             |_, _, _, _| {},
-        )
+        );
+        if section {
+            host.retain_across_settings(self.rows.clone())
+                .into_any_element()
+        } else {
+            host.into_any_element()
+        }
     }
     fn group_drop_empty(&self, group_id: String, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;

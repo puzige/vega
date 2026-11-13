@@ -175,7 +175,8 @@ impl ThreadsBlock {
         let target = weak.clone();
         let mut item = item;
         item.compact = compact;
-        nsh_leaf::host(
+        let retain = matches!(&action, Control::ToggleProject(_));
+        let host = nsh_leaf::host_parts(
             format!("{id}-{revision}-{generation}-{archive}"),
             None,
             vec![item],
@@ -205,7 +206,13 @@ impl ThreadsBlock {
                     this.control_action_from_button(action.clone(), Some(bounds), window, cx)
                 });
             },
-        )
+        );
+        if retain {
+            host.retain_across_settings(self.rows.clone())
+                .into_any_element()
+        } else {
+            host.into_any_element()
+        }
     }
 
     pub(in crate::sidebar::threads_block) fn render_organization(
@@ -407,7 +414,7 @@ impl ThreadsBlock {
                         .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                         .text_color(colors.text_tertiary)
                         .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                        .child(self.section_label(label, cx)),
+                        .child(self.sidebar_label(label, Some("pinned"))),
                 )
                 .child(
                     div()
@@ -461,7 +468,7 @@ impl ThreadsBlock {
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                    .child(self.section_label(label, cx)),
+                    .child(self.sidebar_label(label, Some("recents"))),
             )
             .child(
                 div()
@@ -565,7 +572,7 @@ impl ThreadsBlock {
                     .font_weight(Typography::SIDEBAR_SECTION_WEIGHT)
                     .text_color(colors.text_tertiary)
                     .pl(px(Layout::SIDEBAR_LABEL_INSET))
-                    .child(self.section_label(label, cx)),
+                    .child(self.sidebar_label(label, Some("projects"))),
             )
             .child(div().child(self.vector_control(
                 "organization-add-project",

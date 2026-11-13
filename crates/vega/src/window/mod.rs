@@ -137,6 +137,7 @@ pub(crate) struct VegaWindow {
     /// settings closes so the next open reloads the config from disk.
     pub(crate) settings_view: Option<Entity<SettingsView>>,
     settings_readers: Option<SettingsReaders>,
+    settings_rows: Option<vega_ui::sidebar::SettingsRows>,
     /// Clone of the one app-owned MCP revocation domain. Settings and run
     /// workers must never instantiate independent registries for this DB.
     pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
@@ -353,6 +354,7 @@ impl VegaWindow {
             sidebar,
             settings_view: None,
             settings_readers: None,
+            settings_rows: None,
             mcp_settings: cx
                 .try_global::<crate::app_agent::AppMcpSettings>()
                 .and_then(|settings| settings.0.clone()),
