@@ -190,7 +190,7 @@ impl RenderOnce for Control {
                 .filter(|_| self.button)
                 .and_then(|binding| binding.focus.clone())
                 .unwrap_or_else(|| cx.focus_handle().tab_stop(false));
-            let mut subscriptions = vec![
+            let subscriptions = vec![
                 cx.on_focus_in(&focus, window, |host: &mut Host, window, cx| {
                     if let Some(geometry) = host.geometry {
                         window.request_autoscroll(geometry.bounds);
@@ -212,11 +212,6 @@ impl RenderOnce for Control {
                 }),
                 cx.on_release(|host: &mut Host, cx| host.stop(cx)),
             ];
-            if let Some(binding) = &binding
-                && let Some(owner) = binding.owner.upgrade()
-            {
-                subscriptions.push(cx.observe(&owner, |_: &mut Host, _, cx| cx.notify()));
-            }
             Host {
                 snapshot: PixelsState {
                     id: ProjectionId::new(),
@@ -258,6 +253,7 @@ impl RenderOnce for Control {
             {
                 host.invalidate();
                 host.recovery = false;
+                cx.notify();
             }
             host.binding = binding;
             host.environment = environment;
