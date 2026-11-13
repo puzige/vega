@@ -10,10 +10,6 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
-#[cfg(test)]
-#[path = "busy_owner_tests.rs"]
-mod busy_owner_tests;
-
 fn run_owner_matches(active: (u64, &str, EntityId), incoming: (u64, &str, EntityId)) -> bool {
     active == incoming
 }

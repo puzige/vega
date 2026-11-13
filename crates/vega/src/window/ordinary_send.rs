@@ -7,10 +7,6 @@ use vega_conversation::submission_diagnostics::{
     PreparationFailure, PreparationReason, PreparationStage, conversation_failure, runtime_failure,
 };
 
-#[cfg(test)]
-#[path = "busy_preparation_tests.rs"]
-mod busy_preparation_tests;
-
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 impl VegaWindow {

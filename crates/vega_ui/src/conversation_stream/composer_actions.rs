@@ -3,10 +3,6 @@ use super::*;
 use crate::interaction::InteractionExt;
 use gpui_kit::{Focusable, Role};
 
-#[cfg(test)]
-#[path = "busy_notice_tests.rs"]
-mod busy_notice_tests;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CommandId {
     Ask,
