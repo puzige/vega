@@ -1,5 +1,6 @@
 #[derive(Clone, Debug)]
 pub enum LocalizedCopy {
+    AgentBusy,
     Text(String),
     Key(&'static str),
     Args(&'static str, Vec<(&'static str, LocalizedCopy)>),
@@ -28,6 +29,9 @@ impl LocalizedCopy {
 
     pub fn render(&self) -> String {
         match self {
+            Self::AgentBusy => {
+                vega_i18n::t("ui.this_conversation_is_running_wait_for_it_to").to_owned()
+            }
             Self::Text(text) => text.clone(),
             Self::Key(key) => vega_i18n::t(key).to_owned(),
             Self::Run(failure) => failure.message(),
