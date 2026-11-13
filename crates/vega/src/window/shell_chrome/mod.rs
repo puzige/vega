@@ -111,8 +111,17 @@ struct Geometry {
     clip: Option<Bounds<Pixels>>,
     viewport: Option<Size<Pixels>>,
     scale: f32,
+    sidebar: Option<(bool, bool, f32)>,
 }
 impl Geometry {
+    fn sidebar(cx: &App) -> (bool, bool, f32) {
+        (
+            cx.global::<SidebarCollapsed>().0,
+            cx.try_global::<vega_ui::sidebar::SidebarExplicitlyShown>()
+                .is_some_and(|v| v.0),
+            vega_ui::sidebar::width(cx),
+        )
+    }
     fn visible(&self, root: [f32; 4], control: [f32; 4], window: &Window) -> bool {
         if !root
             .iter()
@@ -151,6 +160,7 @@ struct Host {
     published: Option<Snapshot>,
     displayed: Option<Displayed>,
     positions: Option<Positions>,
+    parked_title: bool,
     height: f32,
     focuses: Vec<(Action, FocusHandle)>,
     pressed: Option<(Action, Bounds<Pixels>)>,
@@ -270,9 +280,21 @@ impl VegaWindow {
         for (kind, host) in &self.shell_chrome.hosts {
             if *kind != Kind::Error {
                 host.update(cx, |host, cx| {
+                    if *kind == Kind::Header && !host.parked_title {
+                        host.parked_title = host.displayed.as_ref().is_some_and(|(frame, _, _)| {
+                            frame.observation.controls.is_empty()
+                                && host.published.as_ref().is_some_and(|p| p.same_frame(frame))
+                                && host
+                                    .surface
+                                    .as_ref()
+                                    .is_some_and(|s| s.errors().borrow().is_none())
+                        });
+                    }
                     host.invalidate();
                     host.lease = Weak::new();
-                    if let Some(surface) = host.surface.take() {
+                    if !host.parked_title
+                        && let Some(surface) = host.surface.take()
+                    {
                         surface.entity().read(cx).stop();
                     }
                 });
@@ -338,6 +360,7 @@ impl VegaWindow {
                         published: None,
                         displayed: None,
                         positions: None,
+                        parked_title: false,
                         height: Typography::METADATA * Typography::BODY_LINE_HEIGHT + 8.,
                         focuses,
                         pressed: None,
@@ -544,6 +567,27 @@ impl Render for Host {
         let Some(mut snapshot) = self.current(window, cx) else {
             return div().into_any_element();
         };
+        if std::mem::take(&mut self.parked_title) {
+            let geometry = self.geometry.borrow();
+            let same = self.published.as_ref().is_some_and(|old| {
+                snapshot.observation.controls.is_empty()
+                    && old.observation.thread == snapshot.observation.thread
+                    && old.observation.project == snapshot.observation.project
+                    && old.observation.title == snapshot.observation.title
+                    && old.language == snapshot.language
+                    && old.appearance == snapshot.appearance
+                    && old.colors == snapshot.colors
+            }) && geometry.viewport == Some(window.viewport_size())
+                && geometry.scale == window.scale_factor()
+                && geometry.sidebar == Some(Geometry::sidebar(cx))
+                && self
+                    .surface
+                    .as_ref()
+                    .is_some_and(|s| s.errors().borrow().is_none());
+            if !same && let Some(surface) = self.surface.take() {
+                surface.entity().read(cx).stop();
+            }
+        }
         for control in &snapshot.observation.controls {
             if !self
                 .focuses
@@ -624,6 +668,7 @@ impl Render for Host {
                         current.clip = Some(clip);
                         current.viewport = Some(viewport);
                         current.scale = scale;
+                        current.sidebar = Some(Geometry::sidebar(cx));
                         drop(current);
                         if changed {
                             let _ = weak.update(cx, |this, cx| {
