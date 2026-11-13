@@ -1070,10 +1070,32 @@ impl ReaderViewport {
 /// leases still expire when the conversation leaves the window.
 pub struct SettingsReaders {
     _viewport: Rc<ReaderViewport>,
-    _readers: Vec<Entity<BodyState>>,
+    readers: Vec<Entity<BodyState>>,
 }
 
 impl SettingsReaders {
+    pub fn sync_colors(&self, colors: vega_theme::ThemeColors, cx: &mut App) {
+        for reader in &self.readers {
+            if reader.read(cx).projection.colors == colors {
+                continue;
+            }
+            reader.update(cx, |body, cx| {
+                if body.lease.upgrade().is_some() {
+                    return;
+                }
+                let Some(surface) = &mut body.surface else {
+                    return;
+                };
+                body.projection.colors = colors;
+                body.projection.session = ProjectionId::new();
+                body.acknowledged = None;
+                body.code_targets.clear();
+                surface.sync_environment(cx);
+                surface.publish(body.projection.clone());
+            });
+        }
+    }
+
     pub fn capture(
         stream: &Entity<super::ConversationStream>,
         window: &Window,
@@ -1109,7 +1131,7 @@ impl SettingsReaders {
             .collect();
         Self {
             _viewport: viewport,
-            _readers: readers,
+            readers,
         }
     }
 }
