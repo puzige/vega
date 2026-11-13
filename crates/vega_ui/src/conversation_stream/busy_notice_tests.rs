@@ -76,6 +76,24 @@ fn real_failure_replacing_busy_is_preserved_at_completion() {
 }
 
 #[test]
+fn preparation_completion_preserves_new_run_and_real_error() {
+    let mut error = Some(LocalizedCopy::AgentBusy);
+    let running = ComposerActions {
+        running: true,
+        ..Default::default()
+    };
+    running.finish_preparation(&mut error);
+    assert!(matches!(error, Some(LocalizedCopy::AgentBusy)));
+    assert!(running.running);
+    let idle = ComposerActions::default();
+    idle.finish_preparation(&mut error);
+    assert!(error.is_none());
+    error = Some(LocalizedCopy::Text("save failure".into()));
+    idle.finish_preparation(&mut error);
+    assert!(matches!(error, Some(LocalizedCopy::Text(ref text)) if text == "save failure"));
+}
+
+#[test]
 fn completion_without_notice_does_not_create_an_error() {
     let mut actions = ComposerActions {
         running: true,

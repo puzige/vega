@@ -7,6 +7,10 @@ use vega_conversation::submission_diagnostics::{
     PreparationFailure, PreparationReason, PreparationStage, conversation_failure, runtime_failure,
 };
 
+#[cfg(test)]
+#[path = "busy_preparation_tests.rs"]
+mod busy_preparation_tests;
+
 const ORDINARY_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 impl VegaWindow {
@@ -597,7 +601,10 @@ impl VegaWindow {
                         && this.agent_controller.preparation_stream.as_ref() == Some(&stream)
                     {
                         this.agent_controller.preparation_stream = None;
-                        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                        stream.update(cx, |stream, cx| {
+                            stream.set_trusted_action_busy(false, cx);
+                            stream.finish_composer_preparation(cx);
+                        });
                     }
                     let Ok(outcome) = outcome else {
                         return;

@@ -1317,6 +1317,11 @@ impl ConversationStream {
     }
 
     /// Keeps the exact in-flight submission intact when a duplicate send arrives.
+    pub fn finish_composer_preparation(&mut self, cx: &mut Context<Self>) {
+        self.actions.finish_preparation(&mut self.controller_error);
+        cx.notify();
+    }
+
     pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
         ComposerActions::apply_busy(&mut self.controller_error);
         cx.notify();

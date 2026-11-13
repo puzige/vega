@@ -219,17 +219,30 @@ impl ComposerActions {
         controller_error.get_or_insert(crate::localized_copy::LocalizedCopy::AgentBusy);
     }
 
-    fn finish_run(
-        &mut self,
-        cancelled: bool,
+    pub(super) fn finish_preparation(
+        &self,
         controller_error: &mut Option<crate::localized_copy::LocalizedCopy>,
-    ) -> bool {
+    ) {
+        if !self.running {
+            Self::clear_busy(controller_error);
+        }
+    }
+
+    fn clear_busy(controller_error: &mut Option<crate::localized_copy::LocalizedCopy>) {
         if matches!(
             controller_error,
             Some(crate::localized_copy::LocalizedCopy::AgentBusy)
         ) {
             *controller_error = None;
         }
+    }
+
+    fn finish_run(
+        &mut self,
+        cancelled: bool,
+        controller_error: &mut Option<crate::localized_copy::LocalizedCopy>,
+    ) -> bool {
+        Self::clear_busy(controller_error);
         self.running = false;
         self.restore_focus = self.stopping;
         self.stopping = false;
