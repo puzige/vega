@@ -161,6 +161,7 @@ struct Host {
     displayed: Option<Displayed>,
     positions: Option<Positions>,
     parked_title: bool,
+    awaiting_parked_title: bool,
     height: f32,
     focuses: Vec<(Action, FocusHandle)>,
     pressed: Option<(Action, Bounds<Pixels>)>,
@@ -290,8 +291,23 @@ impl VegaWindow {
                                     .is_some_and(|s| s.errors().borrow().is_none())
                         });
                     }
-                    host.invalidate();
+                    if host.lease.upgrade().is_some() || host.displayed.is_some() {
+                        host.invalidate();
+                    }
                     host.lease = Weak::new();
+                    if host.parked_title
+                        && let (Some(frame), Some(surface)) =
+                            (&mut host.published, &mut host.surface)
+                        && (frame.colors != theme(cx).colors
+                            || frame.appearance != theme(cx).appearance)
+                    {
+                        frame.colors = theme(cx).colors;
+                        frame.appearance = theme(cx).appearance;
+                        frame.revision = ProjectionId::new();
+                        host.awaiting_parked_title = true;
+                        surface.sync_environment(cx);
+                        surface.publish(frame.clone());
+                    }
                     if !host.parked_title
                         && let Some(surface) = host.surface.take()
                     {
@@ -361,6 +377,7 @@ impl VegaWindow {
                         displayed: None,
                         positions: None,
                         parked_title: false,
+                        awaiting_parked_title: false,
                         height: Typography::METADATA * Typography::BODY_LINE_HEIGHT + 8.,
                         focuses,
                         pressed: None,
@@ -483,6 +500,21 @@ impl Host {
     fn request(&mut self, request: Request, window: &mut Window, cx: &mut Context<Self>) {
         match request {
             Request::Layout(snapshot, root, controls) => {
+                if self.parked_title
+                    && self.awaiting_parked_title
+                    && self.lease.upgrade().is_none()
+                    && controls.is_empty()
+                    && snapshot.observation.controls.is_empty()
+                    && root.iter().all(|v| v.is_finite())
+                    && root[2] > 0.
+                    && root[3] > 0.
+                    && self
+                        .published
+                        .as_ref()
+                        .is_some_and(|p| p.same_frame(&snapshot))
+                {
+                    self.awaiting_parked_title = false;
+                }
                 if self.live(window, cx)
                     && self
                         .current(window, cx)
@@ -569,15 +601,17 @@ impl Render for Host {
         };
         if std::mem::take(&mut self.parked_title) {
             let geometry = self.geometry.borrow();
-            let same = self.published.as_ref().is_some_and(|old| {
-                snapshot.observation.controls.is_empty()
-                    && old.observation.thread == snapshot.observation.thread
-                    && old.observation.project == snapshot.observation.project
-                    && old.observation.title == snapshot.observation.title
-                    && old.language == snapshot.language
-                    && old.appearance == snapshot.appearance
-                    && old.colors == snapshot.colors
-            }) && geometry.viewport == Some(window.viewport_size())
+            let same = !std::mem::take(&mut self.awaiting_parked_title)
+                && self.published.as_ref().is_some_and(|old| {
+                    snapshot.observation.controls.is_empty()
+                        && old.observation.thread == snapshot.observation.thread
+                        && old.observation.project == snapshot.observation.project
+                        && old.observation.title == snapshot.observation.title
+                        && old.language == snapshot.language
+                        && old.appearance == snapshot.appearance
+                        && old.colors == snapshot.colors
+                })
+                && geometry.viewport == Some(window.viewport_size())
                 && geometry.scale == window.scale_factor()
                 && geometry.sidebar == Some(Geometry::sidebar(cx))
                 && self

@@ -265,6 +265,9 @@ impl Render for VegaWindow {
             window.on_next_frame(move |_, _| drop(readers));
         }
         if settings_open {
+            if let Some(rows) = &self.settings_rows {
+                rows.sync_colors(colors, cx);
+            }
             if let Some(readers) = &self.settings_readers {
                 readers.sync_colors(colors, cx);
             }

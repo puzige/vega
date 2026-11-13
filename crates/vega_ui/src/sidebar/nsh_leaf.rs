@@ -417,6 +417,22 @@ impl Leaf {
                                     cx.notify();
                                 }
                             }
+                            Request::Layout {
+                                frame,
+                                width,
+                                height,
+                            } if this.lease.upgrade().is_none()
+                                && this.parked.upgrade().is_some()
+                                && *frame == this.snapshot
+                                && width.is_finite()
+                                && width > 0.
+                                && height.is_finite()
+                                && height > 0.
+                                && (f32::from(this.geometry.bounds().size.width) - width).abs()
+                                    <= 1. =>
+                            {
+                                this.waiting_for_row_layout = false;
+                            }
                             Request::Layout { .. } => {}
                         }
                     })
@@ -777,7 +793,31 @@ pub(super) struct RowMap(
 );
 
 pub struct SettingsRows {
-    _rows: Vec<(Entity<Leaf>, Rc<chrome::ChromeLease>)>,
+    rows: Vec<(Entity<Leaf>, Rc<chrome::ChromeLease>)>,
+}
+
+impl SettingsRows {
+    pub fn sync_colors(&self, colors: ThemeColors, cx: &mut App) {
+        for (row, _) in &self.rows {
+            if row.read(cx).snapshot.colors == colors {
+                continue;
+            }
+            row.update(cx, |this, cx| {
+                if this.lease.upgrade().is_some() {
+                    return;
+                }
+                this.waiting_for_row_layout = true;
+                this.snapshot.id = ProjectionId::new();
+                this.snapshot.colors = colors;
+                this.snapshot.selected = None;
+                this.snapshot.keyboard_focus_visible = false;
+                if let Some(surface) = &mut this.surface {
+                    surface.sync_environment(cx);
+                    surface.publish_if_changed(this.snapshot.clone());
+                }
+            });
+        }
+    }
 }
 
 impl RowMap {
@@ -817,7 +857,7 @@ impl RowMap {
                 held.push((state, lease));
             }
         }
-        SettingsRows { _rows: held }
+        SettingsRows { rows: held }
     }
 }
 
