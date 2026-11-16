@@ -847,16 +847,14 @@ impl ToolCard {
             state
                 .shell_command
                 .as_ref()
-                .filter(|command| command.concurrent && (command.can_cancel || command.can_retry))
+                .filter(|command| command.concurrent && command.can_retry)
                 .map(|command| {
                     let operation = command.operation_id.clone();
                     let enabled = !state.shell_control_pending;
                     let label = if state.shell_control_pending {
                         "ui.shell_session.stopping"
-                    } else if command.can_retry {
-                        "ui.shell_recovery.retry"
                     } else {
-                        "ui.shell_session.cancel"
+                        "ui.shell_recovery.retry"
                     };
                     let target = card.clone();
                     super::conversation_stream::shell_recovery::button(
