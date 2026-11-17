@@ -211,7 +211,13 @@ impl TrustedGitService {
                         ),
                     };
                     prepared.id = prepared_id;
-                    let staged_file_count = match u32::try_from(prepared.authority.stages.len()) {
+                    let staged_changes = prepared
+                        .authority
+                        .records
+                        .iter()
+                        .filter(|row| row.has_staged_change())
+                        .count();
+                    let staged_file_count = match u32::try_from(staged_changes) {
                         Ok(count) => count,
                         Err(_) => {
                             state.mutation_active = false;
@@ -461,7 +467,7 @@ impl TrustedGitService {
                 .ok_or(CommitErrorCode::ChangedDuringRead)?;
             let staged_closure = component_closure(record, true);
             let optional_closure = component_closure(record, false);
-            if record.shape != StatusShape::Untracked && record.x != b'.' {
+            if record.has_staged_change() {
                 staged.push(ChecklistRow {
                     public: project_selection(public, record, true)?,
                     closure: staged_closure,

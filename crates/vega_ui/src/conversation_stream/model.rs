@@ -686,6 +686,7 @@ impl StreamCounters {
 /// while materializing each committed block exactly once per version.
 #[derive(Default)]
 pub(crate) struct StreamModel {
+    pub(super) reading_nodes: Vec<(u64, u64, Arc<Vec<RenderNode>>)>,
     content_revision: u64,
     pub(crate) committed_ids: Vec<u64>,
     /// Parallel to `committed_ids`: the materialized version of each block
@@ -798,6 +799,25 @@ impl StreamModel {
             changed = true;
         }
         if changed {
+            let mut previous: std::collections::HashMap<_, _> =
+                std::mem::take(&mut self.reading_nodes)
+                    .into_iter()
+                    .map(|(id, version, nodes)| ((id, version), nodes))
+                    .collect();
+            for block in &snapshot.blocks {
+                let nodes = previous
+                    .remove(&(block.block_id, block.version))
+                    .unwrap_or_else(|| Arc::new(block.nodes.to_vec()));
+                self.reading_nodes
+                    .push((block.block_id, block.version, nodes));
+            }
+            if let Some(block) = snapshot.pending {
+                let nodes = previous
+                    .remove(&(block.block_id, block.version))
+                    .unwrap_or_else(|| Arc::new(block.nodes.to_vec()));
+                self.reading_nodes
+                    .push((block.block_id, block.version, nodes));
+            }
             self.content_revision = self.content_revision.wrapping_add(1);
         }
         changed
@@ -851,10 +871,14 @@ pub(crate) struct MessageCopy {
     pub(super) user_disclosure:
         std::rc::Rc<std::cell::RefCell<super::user_disclosure::UserDisclosure>>,
     pub(super) fork_menu:
-        std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
+        std::rc::Rc<std::cell::RefCell<Option<super::selection_menu::ForkCommand>>>,
     pub(super) compaction_menu:
-        std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<super::selection_menu::MenuBuilder>>>>,
+        std::rc::Rc<std::cell::RefCell<Vec<super::selection_menu::CompactCommand>>>,
+    pub(super) reading_owner:
+        std::rc::Rc<std::cell::RefCell<Option<super::selection_menu::ReadingOwner>>>,
     pub(super) id: u64,
+    pub(super) nsh_reading:
+        std::rc::Rc<std::cell::RefCell<Option<super::selection_menu::body::ReadingBinding>>>,
     text: std::rc::Rc<std::cell::RefCell<String>>,
     live_projection_unavailable: bool,
     generated_notices:
@@ -862,7 +886,6 @@ pub(crate) struct MessageCopy {
     display_model_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     stream_finished: std::rc::Rc<std::cell::Cell<bool>>,
     pub(super) stream_fade: Option<std::rc::Rc<std::cell::RefCell<super::stream_fade::StreamFade>>>,
-    selection_scope: gpui_kit::base::TextSelectionScopeId,
     selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
     selected_text: std::rc::Rc<std::cell::RefCell<Option<(u64, String)>>>,
@@ -939,13 +962,14 @@ impl MessageCopy {
             user_disclosure: Default::default(),
             compaction_menu: Default::default(),
             fork_menu: Default::default(),
+            reading_owner: Default::default(),
+            nsh_reading: Default::default(),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
             live_projection_unavailable: false,
             generated_notices: Default::default(),
             display_model_text: Default::default(),
             stream_finished: Default::default(),
             stream_fade: None,
-            selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
             selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
             selected_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -1000,13 +1024,6 @@ impl MessageCopy {
 
     pub(super) fn content_generation(&self) -> u64 {
         self.content_generation.get()
-    }
-
-    pub(super) fn set_projected_identity(&self, identity: u64) -> bool {
-        let next = (identity, self.content_generation());
-        self.projected_identity
-            .replace(Some(next))
-            .is_some_and(|previous| previous != next)
     }
 
     pub(crate) fn original_text(&self) -> String {
@@ -1120,85 +1137,8 @@ impl MessageCopy {
         *self.projected_selection.borrow_mut() = range;
     }
 
-    pub(super) fn publish_retained(
-        &self,
-        identity: u64,
-        text: Arc<str>,
-        map: impl FnOnce(std::ops::Range<usize>) -> Option<std::ops::Range<usize>>,
-    ) {
-        let selection = self.projected_selection.borrow().clone().and_then(map);
-        self.content_generation
-            .set(self.content_generation.get().wrapping_add(1));
-        if let Some(range) = selection.filter(|range| text.get(range.clone()).is_some()) {
-            self.set_local_selection_range(range.clone());
-            self.set_selected_text(self.selection_generation(), text[range.clone()].to_owned());
-            self.set_projected_selection(Some(range));
-            self.projected_identity
-                .set(Some((identity, self.content_generation())));
-        } else {
-            self.invalidate_selection();
-        }
-        self.set_visible_text(text);
-    }
-
-    pub(crate) fn selection_scope(&self) -> gpui_kit::base::TextSelectionScopeId {
-        self.selection_scope
-    }
-
     pub(crate) fn selection_generation(&self) -> u64 {
         self.selection_generation.get()
-    }
-
-    pub(crate) fn ensure_selection_handle(
-        &self,
-        focus: &gpui_kit::FocusHandle,
-        window: &Window,
-        cx: &mut App,
-    ) -> gpui_kit::base::TextSelectionHandle {
-        if let Some(handle) = self.selection_handle.borrow().as_ref() {
-            return handle.clone();
-        }
-        let handle = gpui_kit::base::TextSelectionHandle::new("", cx);
-        let selected = self.selected_text.clone();
-        let generation = self.selection_generation.clone();
-        handle.copy_with(
-            move |_| {
-                selected
-                    .borrow()
-                    .as_ref()
-                    .filter(|(current, _)| *current == generation.get())
-                    .map(|(_, text)| text.clone())
-                    .unwrap_or_default()
-            },
-            cx,
-        );
-        let focus = focus.clone();
-        handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
-        let selected = self.selected_text.clone();
-        let generation = self.selection_generation.clone();
-        let local_range = self.local_selection_range.clone();
-        let projected_range = self.projected_selection.clone();
-        let subscription = handle.subscribe(
-            move |event, _| {
-                if matches!(
-                    event,
-                    gpui_kit::base::TextSelectionEvent::SelectionChanged(_)
-                        | gpui_kit::base::TextSelectionEvent::Cleared
-                ) {
-                    *selected.borrow_mut() = None;
-                    *local_range.borrow_mut() = None;
-                    *projected_range.borrow_mut() = None;
-                    generation.set(generation.get().wrapping_add(1));
-                }
-            },
-            cx,
-        );
-        self.selection_subscriptions.borrow_mut().push(subscription);
-        self.selection_subscriptions
-            .borrow_mut()
-            .push(handle.refresh_window_on_change(window, cx));
-        *self.selection_handle.borrow_mut() = Some(handle.clone());
-        handle
     }
 
     pub(crate) fn visible_text(&self) -> Option<String> {
@@ -1264,7 +1204,25 @@ impl MessageCopy {
             })
     }
 
+    pub(super) fn selected_text_snapshot(&self) -> Option<String> {
+        self.selected_text
+            .borrow()
+            .as_ref()
+            .filter(|(generation, text)| {
+                *generation == self.selection_generation.get() && !text.is_empty()
+            })
+            .map(|(_, text)| text.clone())
+    }
+
     pub(crate) fn copy_selected_text(&self, cx: &mut App) {
+        if self
+            .nsh_reading
+            .borrow()
+            .as_ref()
+            .is_some_and(|binding| !binding.selection_current(cx))
+        {
+            return;
+        }
         if let Some((generation, text)) = self.selected_text.borrow().as_ref()
             && *generation == self.selection_generation.get()
             && !text.is_empty()
@@ -1275,6 +1233,13 @@ impl MessageCopy {
 
     pub(super) fn has_text(&self) -> bool {
         !self.text.borrow().is_empty()
+    }
+
+    pub(super) fn copy_original(&self, cx: &mut App) {
+        let text = self.display_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        }
     }
 
     pub(super) fn copy(&self, cx: &mut App) {

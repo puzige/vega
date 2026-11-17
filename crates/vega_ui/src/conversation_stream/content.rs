@@ -1071,6 +1071,14 @@ impl ConversationStream {
         };
         let card =
             cx.new(|cx| PermissionCard::new(&request, lease, allow_persistent, codex_identity, cx));
+        cx.observe(&card, |this, card, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::Permission { card: owned } if owned == &card),
+            );
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
@@ -1133,6 +1141,14 @@ impl ConversationStream {
         self.remove_active_permission(cx);
         let (request, lease) = pending.into_parts();
         let card = cx.new(|cx| PermissionCard::new_scope(&request, lease, cx));
+        cx.observe(&card, |this, card, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::Permission { card: owned } if owned == &card),
+            );
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
             if this
                 .active_permission
@@ -2191,8 +2207,24 @@ impl ConversationStream {
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
         cx.subscribe(
             card,
-            |this, _, event: &crate::tool_card::ShellControlRequested, cx| {
-                this.request_shell_control(event.operation_id.clone(), cx);
+            |this, card, event: &crate::tool_card::ShellControlRequested, cx| {
+                let owned = this.tool_cards.iter().any(|(call_id, owned)| {
+                    owned == &card
+                        && card.read(cx).matches_shell_control_source(
+                            &event.operation_id,
+                            call_id,
+                            &this.thread.id,
+                        )
+                });
+                if owned {
+                    this.request_shell_control(event.operation_id.clone(), cx);
+                } else {
+                    card.update(cx, |card, cx| {
+                        if card.finish_shell_control(&event.operation_id, true) {
+                            cx.notify();
+                        }
+                    });
+                }
             },
         )
         .detach();

@@ -1,5 +1,5 @@
 use super::*;
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
+use crate::sidebar::nsh_leaf::chrome::ScrollFadeExt;
 impl ThreadsBlock {
     pub(super) fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
         let Some(org) = &self.organization else {
@@ -138,7 +138,6 @@ impl ThreadsBlock {
         cx.notify();
     }
     pub(super) fn render_organization_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
         let Some(org) = &self.organization else {
             return div().into_any_element();
         };
@@ -162,12 +161,8 @@ impl ThreadsBlock {
             .flex()
             .flex_col()
             .gap_1()
-            .p_1()
+            .p(px(5.))
             .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
@@ -183,10 +178,10 @@ impl ThreadsBlock {
                     cx.notify();
                 }),
             )
-            .tracked_scroll_edge_fade(
+            .sidebar_scroll_fade(
+                format!("organization-menu-fade-{}", org.presentation_generation),
                 org.menu_scroll.clone(),
-                colors.bg_elevated,
-                ScrollFade::compact(),
+                true,
             )
             // VegaWindow binds Escape to CloseSettings before raw key_down.
             // Handle the action in this focused menu so it cannot reach the route.
@@ -234,53 +229,46 @@ impl ThreadsBlock {
                     cx.notify();
                 }),
             )
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_tertiary)
-                    .child(title),
-            )
-            .children(
-                items
+            .child({
+                let observed = org.snapshot.clone();
+                let generation = org.presentation_generation;
+                let observed_menu = org.menu.clone();
+                let weak = cx.weak_entity();
+                let target = weak.clone();
+                let items = items
                     .into_iter()
-                    .enumerate()
-                    .map(|(index, (label, command))| {
-                        div()
-                            .id(ElementId::Name(format!("organization-menu-{index}").into()))
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .rounded_md()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(
-                                if matches!(
-                                    command,
-                                    MenuCommand::Apply(
-                                        SidebarOrganizationAction::DissolveGroup { .. }
-                                    )
-                                ) {
-                                    colors.danger
-                                } else {
-                                    colors.text_primary
-                                },
-                            )
-                            .when(org.menu_index == index, |s| s.bg(colors.bg_active))
-                            .cursor_pointer()
-                            .hover(move |s| s.bg(colors.bg_hover))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.activate_organization_menu(index, window, cx);
-                                }),
-                            )
-                            .child(label)
-                    }),
-            );
+                    .map(|(label, command)| {
+                        let mut item = nsh_leaf::Item::action(label, None);
+                        item.danger = matches!(
+                            command,
+                            MenuCommand::Apply(SidebarOrganizationAction::DissolveGroup { .. })
+                        );
+                        item
+                    })
+                    .collect::<Vec<_>>();
+                nsh_leaf::menu(
+                    format!("organization-menu-nsh-{generation}"),
+                    Some(title.to_owned()),
+                    items,
+                    org.menu_scroll.clone(),
+                    move |cx| {
+                        weak.upgrade().is_some_and(|entity| {
+                            entity.read(cx).organization.as_ref().is_some_and(|org| {
+                                org.snapshot == observed
+                                    && org.presentation_generation == generation
+                                    && org.menu == observed_menu
+                                    && org.pending != Some(PendingRequest::Write)
+                                    && org.editor.is_none()
+                            })
+                        })
+                    },
+                    move |index, _, window, cx| {
+                        let _ = target.update(cx, |this, cx| {
+                            this.activate_organization_menu(index, window, cx)
+                        });
+                    },
+                )
+            });
         div()
             .absolute()
             .top_0()
@@ -293,7 +281,13 @@ impl ThreadsBlock {
                     .position_mode(AnchoredPositionMode::Window)
                     .position(position)
                     .snap_to_window_with_margin(px(8.))
-                    .child(deferred(menu).with_priority(3)),
+                    .child(
+                        deferred(nsh_leaf::chrome::popup(
+                            format!("organization-menu-chrome-{}", org.presentation_generation),
+                            menu.into_any_element(),
+                        ))
+                        .with_priority(3),
+                    ),
             )
             .into_any_element()
     }

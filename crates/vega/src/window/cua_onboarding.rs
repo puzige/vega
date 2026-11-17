@@ -1,7 +1,9 @@
 use super::*;
 use vega_ui::cua_onboarding::lifecycle::TaskContext;
 use vega_ui::cua_onboarding::{self as guidance, GuidanceCard, PreparationRequested};
-use vega_ui::interaction::InteractionExt;
+mod preparation_error;
+
+use preparation_error::Failure;
 
 #[derive(Clone)]
 enum Origin {
@@ -63,11 +65,13 @@ struct ActiveCard {
 #[derive(Default)]
 pub(super) struct OnboardingHost {
     active: Option<ActiveCard>,
-    failed: Option<(Origin, String)>,
+    failed: Option<Failure>,
+    error_presentation: std::cell::RefCell<Option<Entity<preparation_error::NativeHost>>>,
 }
 
 impl OnboardingHost {
     pub(super) fn close(&mut self, cx: &mut App) {
+        self.hide_error(cx);
         if let Some(active) = self.active.take() {
             let _ = active
                 .window
@@ -196,7 +200,7 @@ impl VegaWindow {
                 });
                 self.sync_preparation(cx);
             }
-            Err(error) => self.onboarding.failed = Some((origin, error.to_string())),
+            Err(error) => self.onboarding.failed = Some(Failure::new(origin, error.to_string())),
         }
         cx.notify();
     }
@@ -227,9 +231,17 @@ impl VegaWindow {
             .onboarding
             .failed
             .as_ref()
-            .is_some_and(|(origin, _)| !origin.is_current(self, cx))
+            .is_some_and(|failure| !failure.origin.is_current(self, cx))
         {
             self.onboarding.failed = None;
+        }
+        if self
+            .onboarding
+            .failed
+            .as_ref()
+            .is_none_or(|failure| !preparation_error::route_allows(self, failure, cx))
+        {
+            self.hide_preparation_error(cx);
         }
     }
 
@@ -254,8 +266,10 @@ impl VegaWindow {
             .try_global::<vega_ui::navigation::TaskMutationState>()
             .is_some_and(|state| state.pending > 0)
         {
-            self.onboarding.failed =
-                Some((origin.clone(), vega_i18n::t("app.setup.pending").into()));
+            self.onboarding.failed = Some(Failure::new(
+                origin.clone(),
+                vega_i18n::t("app.setup.pending").into(),
+            ));
             cx.notify();
             return;
         }
@@ -275,7 +289,7 @@ impl VegaWindow {
                 self.accept_palette_thread(thread, cx);
             }
             _ => {
-                self.onboarding.failed = Some((
+                self.onboarding.failed = Some(Failure::new(
                     origin.clone(),
                     vega_i18n::t("app.setup.task_unavailable").into(),
                 ));
@@ -285,69 +299,37 @@ impl VegaWindow {
     }
 
     pub(super) fn render_preparation_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (origin, error) = self.onboarding.failed.clone()?;
-        let error = crate::app_localization::translated(&error)
-            .map(str::to_owned)
-            .unwrap_or(error);
-        let colors = theme(cx).colors;
-        let retry = div()
-            .id("preparation-open-retry")
-            .role(Role::Button)
-            .aria_label(vega_i18n::t("app.setup.retry_label"))
-            .focusable()
-            .tab_stop(true)
-            .px_2()
-            .py_1()
-            .rounded(px(Layout::PANEL_RADIUS))
-            .cursor_pointer()
-            .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
-            .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-            .on_click(cx.listener(move |owner, _, _, cx| owner.retry_preparation(cx)))
-            .child(vega_i18n::t("app.setup.retry"));
-        let dismiss = div()
-            .id("preparation-open-dismiss")
-            .role(Role::Button)
-            .aria_label(vega_i18n::t("app.setup.dismiss_label"))
-            .focusable()
-            .tab_stop(true)
-            .px_2()
-            .py_1()
-            .rounded(px(Layout::PANEL_RADIUS))
-            .cursor_pointer()
-            .interaction_surface(colors.bg_elevated, colors.bg_hover, colors.bg_active, true)
-            .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-            .on_click(cx.listener(|owner, _, _, cx| {
-                owner.onboarding.failed = None;
-                cx.notify();
-            }))
-            .child(vega_i18n::t("app.setup.dismiss"));
-        if !origin.is_current(self, cx) {
+        let Some(failure) = self
+            .onboarding
+            .failed
+            .as_ref()
+            .filter(|failure| preparation_error::route_allows(self, failure, cx))
+        else {
+            self.onboarding.hide_error(cx);
             return None;
-        }
+        };
+        let owner = cx.weak_entity();
+        let mut presentation = self.onboarding.error_presentation.borrow_mut();
+        let host = presentation
+            .get_or_insert_with(|| cx.new(|cx| preparation_error::NativeHost::new(owner, cx)));
         Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(Layout::IMAGE_PREVIEW_GAP))
-                .px_3()
-                .py_2()
-                .text_size(px(Typography::METADATA))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_color(colors.danger)
-                        .child(error),
-                )
-                .child(retry)
-                .child(dismiss)
-                .into_any_element(),
+            preparation_error::NativeRenderOnce {
+                host: host.clone(),
+                failure: failure.clone(),
+            }
+            .into_any_element(),
         )
     }
 
-    fn retry_preparation(&mut self, cx: &mut Context<Self>) {
-        if let Some((origin, _)) = self.onboarding.failed.take() {
-            self.open_preparation(origin, cx);
+    pub(super) fn hide_preparation_error(&self, cx: &mut Context<Self>) {
+        self.onboarding.hide_error(cx);
+    }
+
+    fn retry_preparation(&mut self, observed: &Failure, cx: &mut Context<Self>) {
+        if self.onboarding.failed.as_ref().is_some_and(|current| {
+            current.matches(observed) && preparation_error::route_allows(self, current, cx)
+        }) {
+            self.open_preparation(observed.origin.clone(), cx);
         }
     }
 }

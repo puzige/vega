@@ -89,6 +89,7 @@ enum Command {
 }
 
 struct Preview {
+    composer: Entity<vega_ui::text_input::TextInput>,
     view: Entity<AppView>,
     state: watch::Sender<Snapshot>,
     worker: Task<()>,
@@ -144,8 +145,16 @@ pub(crate) fn init(cx: &mut App) {
 impl Preview {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (view, state, worker) = Self::load(window, cx);
+        let composer = cx.new(|cx| {
+            vega_ui::text_input::TextInput::new_multiline(cx, "", 2)
+                .with_placeholder_key("app.nsh.input")
+                .with_image_paste()
+                .with_edit_menu()
+        });
+        cx.observe(&composer, |_, _, cx| cx.notify()).detach();
         cx.observe_global::<Theme>(|_, cx| cx.notify()).detach();
         Self {
+            composer,
             view,
             state,
             worker,
@@ -265,6 +274,13 @@ impl Render for Preview {
                 )
             })
             .child(div().flex_1().min_h_0().child(self.view.clone()))
+            .child(div().p(px(Layout::SETTINGS_GROUP_PADDING)).child(
+                vega_ui::text_input::TextInput::render_nsh_preview(
+                    self.composer.clone(),
+                    window,
+                    cx,
+                ),
+            ))
     }
 }
 

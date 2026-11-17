@@ -1,0 +1,38 @@
+[
+  {
+    "path": "docs/907/nsh-ordinary-mounted-author-gap.md",
+    "before": "3f163fb48d219b3dd22e61a83d81fd60591f75e09da4649cfd59e41d4d924876",
+    "after": "58b70044028fb720dc2419a10936c32eb9c8b620dc66ce3a73745636a2cfca5c",
+    "change": "remove only extra EOF blank line"
+  },
+  {
+    "path": "docs/907/nsh-production-icon-residue.md",
+    "before": "49ea5bd5a368cb5b10af6867b9111b59267b51474621620d24444cf4869d780d",
+    "after": "958c252c1d3218b0303139aa4365bcc5df58b2b15749b1f7aee4a4875f645b66",
+    "change": "remove only extra EOF blank line"
+  },
+  {
+    "path": "docs/907/nsh-reasoning-feedback.md",
+    "before": "3feb884f821a2581cb536c36b8322f15e4f910f3b660e723f71ebeeab156b20c",
+    "after": "6562eccda1541a343181de9af63fe218113a0aaf52919b2c0c9c42f976741959",
+    "change": "remove only extra EOF blank line"
+  },
+  {
+    "path": "docs/907/nsh-resume-tail.md",
+    "before": "e4252f22c77b07b7cee8ba4b5a20a5e3eb4aceed40571c301307cb1187d618af",
+    "after": "79678dc00e0636fba406973dca619b378d31a3f120853ff838a7b40096d0e91b",
+    "change": "remove only extra EOF blank line"
+  },
+  {
+    "path": "docs/907/nsh-scroll-new-capabilities-acceptance.md",
+    "before": "a0c29886f46fecdda23b44135dd67bc6daf015e3e88ccd8ddbb43bb0bee9e8ad",
+    "after": "5574886f3a407a5b415c50c6831955c6cb358f877b0a4d6fd8416dbe75997a3d",
+    "change": "remove only extra EOF blank line"
+  },
+  {
+    "path": "docs/907/nsh-timestamps-ordinary-controls.md",
+    "before": "ae51db570d14dc3b25d6efe69156bd0028b77e877e406014f31e76fba1666b4d",
+    "after": "07448bedbf4af7543266f2ab0619b96965c0e690dd880cf4c5c351be16365e6b",
+    "change": "remove only extra EOF blank line"
+  }
+]

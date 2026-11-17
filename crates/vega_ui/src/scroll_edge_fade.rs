@@ -1,9 +1,12 @@
+mod nsh;
+
+pub use nsh::PreparedScrollFade;
+
 use gpui_kit::{
     App, Bounds, ContentMask, Div, Element, ElementId, GlobalElementId, InspectorElementId,
     InteractiveElement, Interactivity, IntoElement, LayoutId, ParentElement, Pixels, Point,
     Refineable, Rgba, ScrollHandle, Stateful, StatefulInteractiveElement, Style, StyleRefinement,
-    Styled, Window, base::ScrollbarHandle, div, fill, linear_color_stop, linear_gradient, point,
-    px, size,
+    Styled, Window, base::ScrollbarHandle, div, point, px, size,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -255,54 +258,14 @@ impl ScrollFadeMetrics {
         regions
     }
 
-    pub(crate) fn paint(self, color: Rgba, style: ScrollFade, window: &mut Window) {
-        let mut outer = self.bounds;
-        outer.origin += point(style.inset, style.inset);
-        outer.size.width =
-            (outer.size.width - style.inset * 2. - style.vertical_gutter).max(px(0.));
-        outer.size.height =
-            (outer.size.height - style.inset * 2. - style.horizontal_gutter).max(px(0.));
-        outer.size.height += style.bottom_extension;
-        for region in self.regions(style) {
-            let extension = if region.angle == 0. {
-                style.bottom_extension
-            } else {
-                px(0.)
-            };
-            let (length, viewport_length) = if region.angle == 0. || region.angle == 180. {
-                (region.bounds.size.height, outer.size.height)
-            } else {
-                (region.bounds.size.width, outer.size.width)
-            };
-            let start = f32::from(extension) / f32::from(viewport_length);
-            let stop = f32::from(extension + length) / f32::from(viewport_length);
-            let mut quad = fill(
-                outer,
-                linear_gradient(
-                    region.angle,
-                    linear_color_stop(color.opacity(region.strength), start),
-                    linear_color_stop(color.opacity(0.), stop),
-                ),
-            );
-            quad.corner_radii =
-                gpui_kit::Corners::all(style.radius).clamp_radii_for_quad_size(outer.size);
-            if style.vertical_gutter > px(0.) {
-                quad.corner_radii.top_right = px(0.);
-                quad.corner_radii.bottom_right = px(0.);
-            }
-            if style.horizontal_gutter > px(0.) {
-                quad.corner_radii.bottom_left = px(0.);
-                quad.corner_radii.bottom_right = px(0.);
-            }
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: region.bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad);
-                },
-            );
-        }
+    pub(crate) fn paint(
+        self,
+        prepared: &mut PreparedScrollFade,
+        style: ScrollFade,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        prepared.paint(self, style, window, cx);
     }
 
     pub(crate) fn protect(mut self, protected: Bounds<Pixels>, style: ScrollFade) -> Self {
@@ -427,7 +390,12 @@ impl<E: Element> IntoElement for ScrollEdgeFade<E> {
 
 impl<E: Element> Element for ScrollEdgeFade<E> {
     type RequestLayoutState = E::RequestLayoutState;
-    type PrepaintState = (E::PrepaintState, Bounds<Pixels>, ScrollFade);
+    type PrepaintState = (
+        E::PrepaintState,
+        Bounds<Pixels>,
+        ScrollFade,
+        Option<PreparedScrollFade>,
+    );
 
     fn id(&self) -> Option<ElementId> {
         self.base.id()
@@ -490,7 +458,13 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
         let state = self
             .base
             .prepaint(id, inspector, bounds, layout, window, cx);
-        (state, mask, style)
+        let fade = self.handle.as_deref().map(|handle| {
+            let metrics = ScrollFadeMetrics::from_handle(handle);
+            window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
+                metrics.prepaint(self.color, style, window, cx)
+            })
+        });
+        (state, mask, style, fade)
     }
 
     fn paint(
@@ -511,7 +485,9 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
         {
             guards.record(pinned.clone());
         }
-        if let Some(handle) = self.handle.as_deref() {
+        if let Some(handle) = self.handle.as_deref()
+            && let Some(fade) = state.3.as_mut()
+        {
             let metrics = ScrollFadeMetrics::from_handle(handle);
             let mut style = state.2;
             if self
@@ -522,7 +498,7 @@ impl<E: Element> Element for ScrollEdgeFade<E> {
                 style.top = false;
             }
             window.with_content_mask(Some(ContentMask { bounds: state.1 }), |window| {
-                metrics.paint(self.color, style, window);
+                metrics.paint(fade, style, window, cx);
             });
         }
     }

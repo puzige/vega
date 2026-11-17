@@ -61,6 +61,12 @@ pub(crate) struct StatusRecord {
     previous: Option<Vec<u8>>,
 }
 
+impl StatusRecord {
+    fn has_staged_change(&self) -> bool {
+        self.shape != StatusShape::Untracked && self.x != b'.'
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct IndexAuthority {
     head: HeadAuthority,

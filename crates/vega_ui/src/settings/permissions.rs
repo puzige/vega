@@ -1,5 +1,5 @@
 use super::*;
-use crate::interaction::InteractionExt;
+mod nsh_permission;
 use vega_conversation::permission_contracts::DefaultPermissionService;
 use vega_conversation::types::{
     DefaultPermissionChange, DefaultPermissionError, DefaultPermissionValues, PermissionMode,
@@ -8,14 +8,16 @@ use vega_conversation::types::{
 pub(crate) struct DefaultPermissionState {
     service: Option<DefaultPermissionService>,
     operation: u64,
+    display_epoch: u64,
     phase: PermissionPhase,
     error: Option<DefaultPermissionError>,
-    picker_focus: FocusHandle,
-    cancel_focus: FocusHandle,
-    reload_focus: FocusHandle,
     focus_pending: Option<PermissionFocus>,
+    focus_sequence: u64,
+    nsh_focus: Option<(u64, PermissionFocus)>,
+    presentation: Option<nsh_permission::Presentation>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PermissionPhase {
     Idle,
     Preparing(u64),
@@ -23,30 +25,25 @@ enum PermissionPhase {
     Reloading(u64),
 }
 
-#[derive(Clone, Copy)]
-enum PermissionFocus {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PermissionFocus {
     Picker,
     Cancel,
     Reload,
 }
 
-#[derive(Clone, Copy)]
-enum PermissionAction {
-    Cancel,
-    Reload,
-}
-
 impl DefaultPermissionState {
-    pub(crate) fn new(cx: &mut Context<SettingsView>) -> Self {
+    pub(crate) fn new(_cx: &mut Context<SettingsView>) -> Self {
         Self {
             service: None,
             operation: 0,
+            display_epoch: 0,
             phase: PermissionPhase::Idle,
             error: None,
-            picker_focus: cx.focus_handle().tab_stop(true),
-            cancel_focus: cx.focus_handle().tab_stop(true),
-            reload_focus: cx.focus_handle().tab_stop(true),
             focus_pending: None,
+            focus_sequence: 0,
+            nsh_focus: None,
+            presentation: None,
         }
     }
 
@@ -94,6 +91,26 @@ impl SettingsView {
         cx.notify();
     }
 
+    pub fn set_settings_palette_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.palette_open == open {
+            return;
+        }
+        self.palette_open = open;
+        self.revoke_navigation_input(cx);
+        self.invalidate_help_state();
+        self.invalidate_model_controls();
+        self.sync_default_model(cx);
+        if let Some(page) = &mut self.input_preferences_presentation {
+            page.revoke();
+        }
+        self.default_permission.display_epoch += 1;
+        if let Some(page) = &mut self.appearance_presentation {
+            page.revoke();
+        }
+        self.sync_permission_presentation(cx);
+        cx.notify();
+    }
+
     pub(crate) fn permission_picker_enabled(&self) -> bool {
         self.default_permission.service.is_some()
             && !self.permission_reset.projection.authority_blocked()
@@ -101,10 +118,6 @@ impl SettingsView {
             && self.default_permission.error.is_none()
             && !self.provider_management.saving
             && !self.codex_profile_saving
-    }
-
-    pub(crate) fn permission_picker_focus(&self) -> FocusHandle {
-        self.default_permission.picker_focus.clone()
     }
 
     pub(crate) fn select_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
@@ -267,9 +280,16 @@ impl SettingsView {
     }
 
     pub(crate) fn discard_default_permission_intent(&mut self) {
+        self.invalidate_help_state();
+        if let Some(page) = &mut self.input_preferences_presentation {
+            page.revoke();
+        }
+        self.invalidate_model_controls();
+        self.default_permission.display_epoch += 1;
         if !self.default_permission.saving() {
             self.default_permission.phase = PermissionPhase::Idle;
             self.default_permission.focus_pending = None;
+            self.default_permission.nsh_focus = None;
             self.mode_open = false;
         }
     }
@@ -284,7 +304,7 @@ impl SettingsView {
         }
         if !matches!(self.default_permission.phase, PermissionPhase::Idle) || self.mode_open {
             self.discard_default_permission_intent();
-            window.focus(&self.default_permission.picker_focus, cx);
+            self.focus_permission_picker(window, cx);
             cx.notify();
             return true;
         }
@@ -299,135 +319,9 @@ impl SettingsView {
         let Some(focus) = self.default_permission.focus_pending.take() else {
             return;
         };
-        if self.section != 1 {
+        if self.section != 1 || !cx.try_global::<SettingsOpen>().is_some_and(|open| open.0) {
             return;
         }
-        let handle = match focus {
-            PermissionFocus::Picker => &self.default_permission.picker_focus,
-            PermissionFocus::Cancel => &self.default_permission.cancel_focus,
-            PermissionFocus::Reload => &self.default_permission.reload_focus,
-        };
-        window.focus(handle, cx);
-    }
-
-    fn activate_default_permission(
-        &mut self,
-        action: PermissionAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match action {
-            PermissionAction::Cancel => {
-                self.guard_default_permission_close(window, cx);
-            }
-            PermissionAction::Reload => self.reload_default_permission(cx),
-        }
-    }
-
-    fn permission_button(
-        &self,
-        action: PermissionAction,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let (id, label, focus) = match action {
-            PermissionAction::Cancel => (
-                "default-permission-cancel",
-                t("settings.action.cancel"),
-                &self.default_permission.cancel_focus,
-            ),
-            PermissionAction::Reload => (
-                "default-permission-reload",
-                t("settings.permission.reload"),
-                &self.default_permission.reload_focus,
-            ),
-        };
-        settings_action_chrome(colors)
-            .id(id)
-            .role(gpui_kit::Role::Button)
-            .aria_label(label)
-            .interaction_surface(
-                colors.bg_elevated,
-                colors.bg_hover,
-                colors.bg_active,
-                enabled,
-            )
-            .track_focus(focus)
-            .tab_stop(enabled)
-            .focus_visible(move |style| style.border_color(colors.accent))
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.activate_default_permission(action, window, cx);
-                                cx.stop_propagation();
-                            }
-                        },
-                    ))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.activate_default_permission(action, window, cx);
-                        }),
-                    )
-            })
-            .when(!enabled, |button| button.text_color(colors.text_tertiary))
-            .child(label)
-            .into_any_element()
-    }
-
-    pub(crate) fn render_default_permission_feedback(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = theme(cx).colors;
-        let preferences_saving = self.provider_management.saving || self.codex_profile_saving;
-        match &self.default_permission.phase {
-            PermissionPhase::Saving(_) => settings_status(
-                t("settings.permission.saving"),
-                colors.text_secondary,
-                colors,
-            )
-            .into_any_element(),
-            PermissionPhase::Preparing(_) | PermissionPhase::Reloading(_) => settings_section()
-                .child(settings_status(
-                    t("settings.permission.reading"),
-                    colors.text_secondary,
-                    colors,
-                ))
-                .child(self.permission_button(PermissionAction::Cancel, true, cx))
-                .into_any_element(),
-            PermissionPhase::Idle => {
-                let error = self.default_permission.error.or_else(|| {
-                    self.default_permission
-                        .service
-                        .is_none()
-                        .then_some(DefaultPermissionError::Unavailable)
-                });
-                let Some(error) = error else {
-                    return div().into_any_element();
-                };
-                let key = match error {
-                    DefaultPermissionError::Unavailable => "settings.permission.error.unavailable",
-                    DefaultPermissionError::Conflict => "settings.permission.error.conflict",
-                    DefaultPermissionError::ResetPending => "settings.permission.error.reset",
-                    DefaultPermissionError::ConfirmationRequired => {
-                        "settings.permission.error.confirmation"
-                    }
-                    DefaultPermissionError::OutcomeUnknown => "settings.permission.error.unknown",
-                };
-                settings_section()
-                    .child(settings_status(t(key), colors.danger, colors))
-                    .child(self.permission_button(
-                        PermissionAction::Reload,
-                        self.default_permission.service.is_some() && !preferences_saving,
-                        cx,
-                    ))
-                    .into_any_element()
-            }
-        }
+        self.focus_permission_presentation(focus, window, cx);
     }
 }

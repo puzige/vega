@@ -1,15 +1,15 @@
 //! IO-free local branch selector backed only by safe, bounded projections.
 
-use crate::scroll_edge_fade::{ScrollEdgeFadeExt, ScrollFade};
 use std::ops::Range;
 mod current_head;
+mod host;
+mod nsh_view;
 use current_head::CurrentHead;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnchoredPositionMode, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    MouseButton, MouseDownEvent, Render, ScrollStrategy, UniformListScrollHandle, Window, actions,
-    anchored, div, point, px, uniform_list,
+    Render, Window, actions,
 };
 use vega_conversation::types::{BranchId, BranchItem, BranchSnapshot, GitWorkspaceErrorCode};
 use vega_theme::{Layout, Typography, theme};
@@ -450,7 +450,7 @@ pub struct BranchSelector {
     menu_below: bool,
     chip_chrome: bool,
     focus: FocusHandle,
-    scroll: UniformListScrollHandle,
+    presentation: host::State,
     search: Entity<crate::text_input::TextInput>,
 }
 
@@ -469,7 +469,10 @@ impl BranchSelector {
         cx.spawn(async move |this, cx| {
             loop {
                 if this
-                    .update(cx, |this, cx| this.poll_current_head(cx))
+                    .update(cx, |this, cx| {
+                        this.poll_current_head(cx);
+                        this.poll_presentation(cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -488,9 +491,9 @@ impl BranchSelector {
         });
         cx.observe(&search, |this, input, cx| {
             if this.model.set_filter(input.read(cx).text()) {
-                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                cx.notify();
+                this.presentation.invalidate_rows();
             }
+            cx.notify();
         })
         .detach();
         Self {
@@ -504,7 +507,7 @@ impl BranchSelector {
             // (Environment card, tests) already renders.
             chip_chrome: false,
             focus: cx.focus_handle().tab_stop(true),
-            scroll: UniformListScrollHandle::new(),
+            presentation: host::State::default(),
             search,
         }
     }
@@ -530,6 +533,7 @@ impl BranchSelector {
             return;
         }
         self.project_id = project_id.to_owned();
+        self.presentation.reset();
         self.model = BranchSelectorModel::default();
         self.current_head.reset_route();
         self.disabled = false;
@@ -592,6 +596,10 @@ impl BranchSelector {
         if self.disabled || self.model.is_pending() || !self.model.open() {
             return false;
         }
+        self.presentation.reconcile_open(&self.model);
+        self.search
+            .update(cx, |input, cx| input.set_text(self.model.filter(), cx));
+        self.presentation.invalidate_rows();
         cx.emit(BranchListRequested {
             thread_id: self.thread_id.clone(),
             project_id: self.project_id.clone(),
@@ -602,12 +610,14 @@ impl BranchSelector {
 
     pub fn apply_snapshot(&mut self, snapshot: BranchSnapshot, cx: &mut Context<Self>) -> bool {
         let accepted = self.model.apply_snapshot(snapshot);
+        self.presentation.invalidate_rows();
         cx.notify();
         accepted
     }
 
     pub fn apply_error(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
         self.model.apply_error(code);
+        self.presentation.invalidate_rows();
         cx.notify();
     }
 
@@ -638,6 +648,7 @@ impl BranchSelector {
             .model
             .finish_switch(operation, generation, id, snapshot, error);
         if accepted {
+            self.presentation.invalidate_rows();
             cx.notify();
         }
         accepted
@@ -678,6 +689,8 @@ impl BranchSelector {
         if !self.model.close() {
             return false;
         }
+        self.presentation.close_popup();
+        self.presentation.invalidate_rows();
         cx.emit(BranchSelectorClosed {
             thread_id: self.thread_id.clone(),
             project_id: self.project_id.clone(),
@@ -689,21 +702,13 @@ impl BranchSelector {
     pub fn close_route(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
         if self.model.is_pending() {
             self.model.apply_error(code);
+            self.presentation.invalidate_rows();
         }
         let _ = self.model.close();
+        self.presentation.close_popup();
+        self.presentation.invalidate_rows();
         self.disabled = false;
         cx.notify();
-    }
-
-    fn toggle(&mut self, _: &gpui_kit::MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled || self.model.is_pending() {
-            return;
-        }
-        if self.model.is_open() {
-            let _ = self.request_close(cx);
-        } else if self.request_open(cx) {
-            window.focus(&self.focus, cx);
-        }
     }
 
     fn activate(&mut self, id: BranchId, cx: &mut Context<Self>) {
@@ -726,29 +731,9 @@ impl BranchSelector {
         }
     }
 
-    fn activate_focused(
-        &mut self,
-        _: &ActivateBranch,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.model.is_open() {
-            if self.request_open(cx) {
-                window.focus(&self.focus, cx);
-            }
-            return;
-        }
-        if let Some(id) = self.model.focused() {
-            self.activate(id, cx);
-        }
-    }
-
     fn previous(&mut self, _: &PreviousBranch, _: &mut Window, cx: &mut Context<Self>) {
         if self.model.is_open() && !self.model.is_pending() {
             self.model.move_focus(-1);
-            if let Some(index) = self.focused_index() {
-                self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
-            }
             cx.notify();
         }
     }
@@ -756,291 +741,15 @@ impl BranchSelector {
     fn next(&mut self, _: &NextBranch, _: &mut Window, cx: &mut Context<Self>) {
         if self.model.is_open() && !self.model.is_pending() {
             self.model.move_focus(1);
-            if let Some(index) = self.focused_index() {
-                self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
-            }
             cx.notify();
         }
-    }
-
-    fn focused_index(&self) -> Option<usize> {
-        self.model.focused_position()
-    }
-
-    fn close_action(&mut self, _: &CloseBranchSelector, _: &mut Window, cx: &mut Context<Self>) {
-        let _ = self.request_close(cx);
     }
 }
 
 impl Render for BranchSelector {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
-        let open = self.model.is_open();
-        let pending = self.model.is_pending();
-        let disabled = self.disabled || pending;
-        let label = self.current_head_label().to_string();
-        let non_git = matches!(
-            self.current_head.state,
-            Some(vega_conversation::types::ProjectBranchState::NonGit)
-        );
-        let row_count = self
-            .model
-            .snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.branches.len());
-        let filtered_count = self.model.visible_count();
-        let view = cx.entity().clone();
-        let banner_rows =
-            usize::from(row_count > 0 && matches!(self.model.status, SelectorStatus::Failed(_)));
-        let popup_width = px(320.0).min((window.viewport_size().width - px(16.0)).max(px(1.0)));
-
-        let popup_height = px(
-            (filtered_count.max(1) + banner_rows) as f32 * BRANCH_ROW_HEIGHT + BRANCH_CHROME_HEIGHT,
-        )
-        .min(px(240.0))
-        .min((window.viewport_size().height - px(16.0)).max(px(1.0)));
-
-        div()
-            .when(non_git, |root| root.hidden())
-            .relative()
-            .min_w_0()
-            .track_focus(&self.focus)
-            .key_context("BranchSelector")
-            .on_action(cx.listener(Self::activate_focused))
-            .on_action(cx.listener(Self::previous))
-            .on_action(cx.listener(Self::next))
-            .on_action(cx.listener(Self::close_action))
-            .child(
-                div()
-                    .id("branch-selector-trigger")
-                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                    .h(px(BRANCH_ROW_HEIGHT))
-                    .max_w(px(180.0))
-                    .min_w_0()
-                    .overflow_hidden()
-                    .flex()
-                    .items_center()
-                    .when(!self.chip_chrome, |trigger| {
-                        trigger
-                            .rounded_md()
-                            .px_2()
-                            .border_1()
-                            .border_color(colors.border_subtle)
-                    })
-                    .when(self.chip_chrome, |trigger| {
-                        trigger
-                            .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
-                            .rounded_full()
-                            .gap_2()
-                            .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
-                            .text_color(if disabled {
-                                colors.text_tertiary
-                            } else {
-                                colors.text_primary
-                            })
-                    })
-                    .text_size(px(Typography::SIDEBAR))
-                    .when(!self.chip_chrome, |trigger| {
-                        trigger.text_color(if disabled {
-                            colors.text_tertiary
-                        } else {
-                            colors.text_secondary
-                        })
-                    })
-                    .when(self.chip_chrome && open, |trigger| {
-                        trigger.bg(colors.bg_utility_chip_overlay).rounded_full()
-                    })
-                    .when(self.chip_chrome && !disabled, |trigger| {
-                        trigger.cursor_pointer().hover(move |style| {
-                            style.bg(colors.bg_utility_chip_overlay).rounded_full()
-                        })
-                    })
-                    .when(!self.chip_chrome && !disabled, |trigger| {
-                        trigger.cursor_pointer()
-                    })
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle))
-                    .when(self.chip_chrome, |trigger| {
-                        trigger.child(div().flex_shrink_0().child(crate::icons::icon(
-                            crate::icons::Icon::GitBranch,
-                            if disabled {
-                                colors.text_tertiary
-                            } else {
-                                colors.text_secondary
-                            },
-                        )))
-                    })
-                    .child(label),
-            )
-            .when(open, |root| {
-                let popup = div()
-                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                        let _ = this.request_close(cx);
-                    }))
-                    .w(popup_width)
-                    .flex_shrink_0()
-                    .h(popup_height)
-                    .occlude()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .rounded(px(Layout::MENU_RADIUS))
-                    .bg(colors.bg_elevated)
-                    .text_color(colors.text_primary)
-                    .shadow_sm()
-                    .child(crate::menu_list::search_field(&self.search, colors))
-                    .when_some(
-                        match self.model.status {
-                            SelectorStatus::Failed(code) if row_count > 0 => Some(code),
-                            _ => None,
-                        },
-                        |body, code| {
-                            body.child(
-                                div()
-                                    .h(px(BRANCH_ROW_HEIGHT))
-                                    .flex_shrink_0()
-                                    .px_2()
-                                    .flex()
-                                    .items_center()
-                                    .text_size(px(Typography::SIDEBAR))
-                                    .text_color(colors.danger)
-                                    .child(branch_error_label(code)),
-                            )
-                        },
-                    )
-                    .when(filtered_count > 0, |body| {
-                        body.child(
-                            uniform_list(
-                                "branch-selector-rows",
-                                filtered_count,
-                                cx.processor(move |this: &mut BranchSelector, range, _, _| {
-                                    this.model
-                                        .visible_rows(range)
-                                        .into_iter()
-                                        .map(|(index, branch)| {
-                                            render_branch_row(
-                                                index,
-                                                branch,
-                                                this.model.visual_focused,
-                                                disabled,
-                                                colors,
-                                                view.clone(),
-                                            )
-                                        })
-                                        .collect()
-                                }),
-                            )
-                            .track_scroll(&self.scroll)
-                            .flex_1()
-                            .min_h_0()
-                            .px_1()
-                            .w_full()
-                            .tracked_scroll_edge_fade(
-                                self.scroll.clone(),
-                                colors.bg_elevated,
-                                ScrollFade::compact(),
-                            ),
-                        )
-                    })
-                    .when(filtered_count == 0, |body| {
-                        let text = if row_count > 0 {
-                            vega_i18n::t("ui.no_matching_branches")
-                        } else {
-                            match self.model.status {
-                                SelectorStatus::Loading => vega_i18n::t("ui.loading_branches"),
-                                SelectorStatus::Empty => vega_i18n::t("ui.no_local_branches"),
-                                SelectorStatus::Failed(code) => branch_error_label(code),
-                                SelectorStatus::Closed | SelectorStatus::Ready => {
-                                    vega_i18n::t("ui.no_local_branches")
-                                }
-                            }
-                        };
-                        body.flex().items_center().justify_center().child(
-                            div()
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.text_tertiary)
-                                .child(text),
-                        )
-                    })
-                    .child(crate::menu_list::separator(colors))
-                    .child(crate::menu_list::action_row(
-                        "branch-selector-new",
-                        crate::icons::Icon::Plus,
-                        vega_i18n::t("ui.create_and_switch_branch").into(),
-                        false,
-                        vega_i18n::t("ui.not_available_the_branch_service_only_lists_and"),
-                        colors,
-                        |_, _, _| {},
-                    ));
-                root.child(
-                    div().absolute().top_0().left_0().size_full().child(
-                        div().relative().size_full().child(
-                            anchored()
-                                .anchor(if self.menu_below {
-                                    Anchor::TopLeft
-                                } else {
-                                    Anchor::BottomLeft
-                                })
-                                .position_mode(AnchoredPositionMode::Local)
-                                .position(point(
-                                    px(0.0),
-                                    px(if self.menu_below {
-                                        BRANCH_ROW_HEIGHT + 4.0
-                                    } else {
-                                        -4.0
-                                    }),
-                                ))
-                                .snap_to_window_with_margin(px(8.0))
-                                .child(gpui_kit::deferred(popup).with_priority(2)),
-                        ),
-                    ),
-                )
-            })
+        self.render_nsh(window, cx)
     }
-}
-
-fn render_branch_row(
-    index: usize,
-    branch: BranchItem,
-    focused: Option<BranchId>,
-    disabled: bool,
-    colors: vega_theme::ThemeColors,
-    view: gpui_kit::Entity<BranchSelector>,
-) -> impl IntoElement {
-    let id = branch.id;
-    let current = branch.current;
-    crate::menu_list::row_container(
-        ("branch-row", index),
-        current,
-        !current && !disabled,
-        colors,
-    )
-    .w_full()
-    .mx_0()
-    .text_color(if current || disabled {
-        colors.text_tertiary
-    } else {
-        colors.text_primary
-    })
-    // The keyboard-focus surface stays `bg_hover`; it is applied after the
-    // selection surface so a focused non-current row reads as focus.
-    .when(focused == Some(id), |row| row.bg(colors.bg_hover))
-    .when(!current && !disabled, |row| {
-        row.on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            view.update(cx, |selector, cx| selector.activate(id, cx));
-        })
-    })
-    .child(crate::icons::icon(
-        crate::icons::Icon::GitBranch,
-        colors.text_secondary,
-    ))
-    .child(
-        div()
-            .min_w_0()
-            .flex_1()
-            .overflow_hidden()
-            .child(branch.label),
-    )
-    .child(crate::menu_list::selection_marker(current, colors))
 }
 
 fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {

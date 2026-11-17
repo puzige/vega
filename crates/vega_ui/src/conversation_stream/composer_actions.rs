@@ -1,7 +1,8 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
-use crate::interaction::InteractionExt;
 use gpui_kit::{Focusable, Role};
+
+mod native;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CommandId {
@@ -200,6 +201,8 @@ pub(crate) struct ComposerActions {
     pub(super) skill_projection_requested: bool,
     dismissed: Option<String>,
     highlight: usize,
+    native_navigation: u64,
+    native_display: Option<native::DisplayFence>,
     scroll: ScrollHandle,
     pub(super) trigger_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<Pixels>>>>,
     pub(crate) pending_mode: Option<(ThreadMode, String, String)>,
@@ -227,6 +230,10 @@ impl ComposerActions {
 
     pub(super) fn invalidate_computer_takeover(&mut self) {
         self.control_generation = self.control_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping
     }
 
     pub(crate) fn visible(&self) -> bool {
@@ -265,7 +272,9 @@ impl ConversationStream {
     }
 
     fn composer_resume_available(&self, cx: &App) -> bool {
-        self.thread.backend == TaskBackend::Native
+        self.input.read(cx).composer_editor_ready()
+            && !self.input.read(cx).is_composing()
+            && self.thread.backend == TaskBackend::Native
             && !self.permission_change_pending()
             && self.interrupted_tail.is_some()
             && !self.reading_preview
@@ -546,6 +555,31 @@ impl ConversationStream {
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
     }
 
+    pub(super) fn nsh_highlight(&self) -> usize {
+        self.actions.highlight
+    }
+
+    pub(super) fn nsh_previous_composer_control(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.input.read(cx).is_composing()
+            && let Some(focus) = self
+                .reasoning_default_failures
+                .iter()
+                .rev()
+                .find_map(|failure| {
+                    self.reasoning_default_retry_focuses
+                        .get(&failure.request.defaults.model)
+                })
+        {
+            window.focus(focus, cx);
+            return;
+        }
+        self.previous_composer_control(&PreviousComposerControl, window, cx);
+    }
+
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
             return;
@@ -591,7 +625,7 @@ impl ConversationStream {
         controls.extend(self.automation_focuses());
         let next = controls
             .iter()
-            .position(|focus| focus.is_focused(window))
+            .position(|focus| focus.contains_focused(window, cx))
             .and_then(|index| {
                 if backwards {
                     index.checked_sub(1)
@@ -644,6 +678,8 @@ impl ConversationStream {
         }
         self.actions.highlight = self.actions.highlight.saturating_sub(1);
         self.actions.scroll.scroll_to_item(self.actions.highlight);
+        self.actions.native_navigation = self.actions.native_navigation.wrapping_add(1);
+        self.actions.native_display = None;
         cx.stop_propagation();
         cx.notify();
     }
@@ -665,6 +701,8 @@ impl ConversationStream {
         self.actions.highlight =
             (self.actions.highlight + 1).min(self.composer_action_rows(cx).len().saturating_sub(1));
         self.actions.scroll.scroll_to_item(self.actions.highlight);
+        self.actions.native_navigation = self.actions.native_navigation.wrapping_add(1);
+        self.actions.native_display = None;
         cx.stop_propagation();
         cx.notify();
     }
@@ -683,7 +721,10 @@ impl ConversationStream {
             cx.propagate();
             return;
         }
-        self.select_composer_action(self.actions.highlight, window, cx);
+        if native::input_displayed(self, window, cx) {
+            self.actions.native_display = None;
+            self.select_composer_action(self.actions.highlight, window, cx);
+        }
         cx.stop_propagation();
     }
 
@@ -953,272 +994,55 @@ impl ConversationStream {
         matches.into_iter().map(|(_, index)| index).collect()
     }
 
+    pub(crate) fn render_composer_shell(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+        native::shell::element(window, cx)
+    }
+
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let rows = self.composer_action_rows(cx);
-        if !self.actions.visible() || rows.is_empty() {
-            return div().into_any_element();
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Menu,
         }
-        let generation = self.actions.menu_generation;
-        let menu = self.actions.menu;
-        let revision = self.input.read(cx).content_revision();
-        let projection_generation = self.skill_projection_generation;
-        let has_skills = rows
-            .iter()
-            .any(|row| matches!(row, ComposerActionRow::Skill(_)));
-        let mut children = Vec::with_capacity(rows.len() + 1);
-        for (index, row) in rows.iter().enumerate() {
-            let highlighted = self.actions.highlight.min(rows.len().saturating_sub(1)) == index;
-            let reason = match row {
-                ComposerActionRow::Command(id) => match self.command_availability(id.command(), cx)
-                {
-                    CommandAvailability::Disabled(reason) => Some(reason),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let enabled = reason.is_none();
-            let selected = row.is_selected(&self.thread);
-            let candidate = match row {
-                ComposerActionRow::Skill(index) => self
-                    .skill_projection
-                    .as_ref()
-                    .and_then(|projection| projection.candidates.get(*index)),
-                _ => None,
-            };
-            let label = candidate.map_or_else(|| row.label().to_owned(), |item| item.name.clone());
-            let source = candidate.map(|item| {
-                let label = vega_i18n::t(match item.scope {
-                    vega_conversation::types::SkillUiScope::Project => "ui.skill_source_project",
-                    vega_conversation::types::SkillUiScope::VegaGlobal => "ui.skill_source_local",
-                    vega_conversation::types::SkillUiScope::Imported => "ui.skill_source_imported",
-                });
-                let peers: Vec<_> = self
-                    .skill_projection
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|projection| &projection.candidates)
-                    .filter(|peer| peer.name == item.name && peer.scope == item.scope)
-                    .collect();
-                if peers.len() > 1 {
-                    let ordinal = peers
-                        .iter()
-                        .position(|peer| peer.source_id == item.source_id)
-                        .map_or(1, |index| index + 1);
-                    format!("{label} {ordinal}")
-                } else {
-                    label.to_owned()
-                }
-            });
-            let accessible_label = candidate.map_or_else(
-                || label.clone(),
-                |item| {
-                    format!(
-                        "{}: {} ({})",
-                        item.name,
-                        item.description,
-                        source.as_deref().unwrap_or_default()
-                    )
-                },
-            );
-            let row = *row;
-            children.push(
-                div()
-                    .id(format!("composer-action-{generation}-{index}"))
-                    .aria_label(reason.map_or_else(
-                        || accessible_label.clone(),
-                        |reason| format!("{accessible_label}: {}", vega_i18n::t(reason)),
-                    ))
-                    .when(candidate.is_some(), |row| {
-                        row.tooltip(move |_, cx| {
-                            crate::icons::tooltip(accessible_label.clone(), cx)
-                        })
-                    })
-                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded(px(Layout::MENU_RADIUS))
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if !enabled {
-                        colors.text_tertiary
-                    } else if selected && candidate.is_none() {
-                        colors.brand_primary
-                    } else {
-                        colors.text_primary
-                    })
-                    .when(highlighted, |row| row.bg(colors.bg_active))
-                    .when(enabled, |row| {
-                        row.cursor_pointer()
-                            .hover(move |row| row.bg(colors.bg_hover))
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.actions.menu_generation == generation
-                            && this.actions.menu == menu
-                            && this.input.read(cx).content_revision() == revision
-                            && this.skill_projection_generation == projection_generation
-                            && this.composer_action_rows(cx).contains(&row)
-                        {
-                            this.select_composer_row(row, window, cx);
-                        }
-                    }))
-                    .child(
-                        div()
-                            .when(candidate.is_some(), |marker| {
-                                marker.child(crate::icons::icon(
-                                    crate::icons::Icon::Blocks,
-                                    colors.text_secondary,
-                                ))
-                            })
-                            .when(candidate.is_none() && selected, |marker| marker.child("✓"))
-                            .w(px(Typography::SIDEBAR))
-                            .flex_shrink_0(),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .when(candidate.is_some(), |item| {
-                                item.flex().flex_1().items_center().gap_2()
-                            })
-                            .when(candidate.is_none(), |item| item.flex().flex_col())
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .max_w_full()
-                                    .flex_shrink(1.)
-                                    .truncate()
-                                    .child(label),
-                            )
-                            .when_some(candidate, |item, candidate| {
-                                item.child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .truncate()
-                                        .text_color(colors.text_secondary)
-                                        .child(candidate.description.clone()),
-                                )
-                            })
-                            .when_some(reason, |item, reason| {
-                                item.child(
-                                    div()
-                                        .text_color(colors.text_secondary)
-                                        .child(vega_i18n::t(reason)),
-                                )
-                            }),
-                    )
-                    .when_some(source, |item, source| {
-                        item.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .truncate()
-                                .child(source),
-                        )
-                    })
-                    .when_some(
-                        match row {
-                            ComposerActionRow::Command(id) => Some(id.command().token),
-                            _ => None,
-                        },
-                        |item, token| {
-                            item.child(
-                                div()
-                                    .ml_auto()
-                                    .text_color(colors.text_secondary)
-                                    .child(token),
-                            )
-                        },
-                    )
-                    .into_any_element(),
-            );
-        }
-        gpui_kit::deferred(
-            div()
-                .id("composer-actions-menu")
-                .absolute()
-                .bottom(gpui_kit::relative(1.0))
-                .mb_2()
-                .left_0()
-                .when(has_skills, |menu| menu.w_full())
-                .when(!has_skills, |menu| menu.w(px(Layout::MENU_MAX_WIDTH)))
-                .max_w_full()
-                .occlude()
-                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    let on_trigger = this.context_menu_available()
-                        && this
-                            .actions
-                            .trigger_bounds
-                            .get()
-                            .is_some_and(|bounds| bounds.contains(&event.position));
-                    if !on_trigger && this.actions.visible() && !this.input.read(cx).is_composing()
-                    {
-                        this.actions.dismissed = Some(this.input.read(cx).text().to_owned());
-                        this.actions.close_menu();
-                        this.actions.slash = None;
-                        cx.notify();
-                    }
-                }))
-                .p_2()
-                .rounded(px(Layout::MENU_RADIUS))
-                .bg(colors.bg_elevated)
-                .border_1()
-                .border_color(colors.border_subtle)
-                .shadow_sm()
-                .child(
-                    div()
-                        .id("composer-actions-scroll")
-                        .max_h(px(Layout::COMPOSER_PICKER_MAX_HEIGHT))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.actions.scroll)
-                        .flex()
-                        .flex_col()
-                        .children(children),
-                ),
-        )
-        .with_priority(2)
         .into_any_element()
     }
 
     pub(crate) fn render_composer_stop(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .id("composer-stop")
-            .role(Role::Button)
-            .tab_stop(true)
-            .aria_label(if self.actions.stopping {
-                vega_i18n::t("ui.stopping")
-            } else {
-                vega_i18n::t("ui.stop")
-            })
-            .key_context("ComposerStop")
-            .on_action(cx.listener(Self::stop_composer_action))
-            .size(px(Layout::COMPOSER_SEND_SIZE))
-            .flex_shrink_0()
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(colors.accent)
-            .text_color(colors.brand_on_accent)
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(move |style| style.border_color(colors.brand_on_accent))
-            .when(!self.actions.stopping, |button| button.cursor_pointer())
-            .interaction_surface(
-                colors.accent,
-                colors.brand_primary_strong,
-                colors.accent,
-                !self.actions.stopping,
-            )
-            .track_focus(&self.action_focus[1])
-            .on_click(cx.listener(|this, _, _, cx| this.request_composer_stop(cx)))
-            .child(crate::icons::icon(
-                crate::icons::Icon::Close,
-                colors.brand_on_accent,
-            ))
-            .into_any_element()
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Stop,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_trigger(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Trigger,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_primary(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::Primary,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_running_send(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::RunningSend,
+        }
+        .into_any_element()
+    }
+
+    pub(crate) fn render_composer_resume_pending(&self, cx: &mut Context<Self>) -> AnyElement {
+        native::NativeChrome {
+            owner: cx.weak_entity(),
+            kind: native::Kind::ResumePending,
+        }
+        .into_any_element()
     }
 }

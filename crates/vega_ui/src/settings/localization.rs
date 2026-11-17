@@ -7,6 +7,7 @@ pub(super) enum SettingsText {
         key: &'static str,
         args: Vec<(&'static str, String)>,
     },
+    ProviderRead(vega_conversation::types::ProviderSettingsError),
     Provider(vega_conversation::types::ProviderSettingsError),
     UnsavedProvider(vega_conversation::types::ProviderSettingsError),
     Models(ProviderModelsError),
@@ -49,7 +50,7 @@ impl SettingsText {
                     .map(|(name, value)| (*name, value.as_str()))
                     .collect::<Vec<_>>(),
             ),
-            Self::Provider(error) => error.to_string(),
+            Self::ProviderRead(error) | Self::Provider(error) => error.to_string(),
             Self::UnsavedProvider(error) => t_args(
                 "settings.provider.unsaved_error",
                 &[("error", &error.to_string())],

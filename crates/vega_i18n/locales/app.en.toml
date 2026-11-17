@@ -9,6 +9,8 @@
 "app.startup.loading" = "Opening Vega…"
 "app.startup.failed" = "Vega could not open"
 "app.startup.quit" = "Quit"
+"app.startup.reload_view" = "Reload startup view"
+"app.startup.view_failed" = "The startup view could not be displayed. Reload the view to try again."
 "app.startup.paths" = "The data location is unavailable. Check your home directory and retry."
 "app.startup.storage" = "The database could not be opened safely. Check file access and use a compatible Vega version, then retry."
 "app.startup.configuration" = "The configuration could not be read or created. Check its format and file access, then retry."

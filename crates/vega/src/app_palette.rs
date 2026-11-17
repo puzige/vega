@@ -122,6 +122,12 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if cx
+            .try_global::<PendingDeleteConfirm>()
+            .is_some_and(|pending| pending.0.is_some())
+        {
+            return;
+        }
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {
@@ -168,6 +174,10 @@ impl VegaWindow {
         .detach();
         window.focus(&view.read(cx).focus_handle(cx), cx);
         self.palette.view = Some(view);
+        if let Some(settings) = &self.settings_view {
+            settings.update(cx, |s, cx| s.set_settings_palette_open(true, cx));
+        }
+        self.block_conversation_controls(true, cx);
         self.search_palette(String::new(), cx);
         cx.notify();
     }
@@ -175,6 +185,9 @@ impl VegaWindow {
         self.palette.cancel.cancel();
         self.palette.generation = self.palette.generation.wrapping_add(1);
         self.palette.view = None;
+        if let Some(settings) = &self.settings_view {
+            settings.update(cx, |s, cx| s.set_settings_palette_open(false, cx));
+        }
         self.palette.pending_query = None;
         self.palette.target = None;
         self.palette.activation = None;
@@ -229,6 +242,15 @@ impl VegaWindow {
     }
     /// Render-loop hook applies window-bearing actions and completed read-only panes.
     pub(crate) fn sync_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cx
+            .try_global::<PendingDeleteConfirm>()
+            .is_some_and(|pending| pending.0.is_some())
+        {
+            if self.palette.view.is_some() {
+                self.close_palette(window, cx);
+            }
+            return;
+        }
         if self.palette.view.is_some()
             && (self.palette.close_requested || self.palette.route.as_ref() != Some(&route(cx)))
         {

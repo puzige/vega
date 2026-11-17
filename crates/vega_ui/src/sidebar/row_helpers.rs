@@ -3,13 +3,10 @@ use super::*;
 pub fn render_delete_confirm_overlay(
     thread: &Thread,
     sidebar: Entity<Sidebar>,
-    colors: ThemeColors,
+    _colors: ThemeColors,
 ) -> AnyElement {
+    let observed = thread.clone();
     let thread_id = thread.id.clone();
-    let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
-        cx.set_global(PendingDeleteConfirm(None));
-        cx.refresh_windows();
-    };
     div()
         .absolute()
         .inset_0()
@@ -17,88 +14,36 @@ pub fn render_delete_confirm_overlay(
         .flex()
         .items_center()
         .justify_center()
-        .bg(colors.text_primary.opacity(0.4))
+        .child(nsh_leaf::chrome::dimmer())
         .child(
             div()
                 .w(px(320.))
-                .flex()
-                .flex_col()
-                .gap_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .px_4()
-                .py_4()
-                .on_mouse_down_out(cancel)
-                .child(
-                    div()
-                        .text_size(px(Typography::HEADING_CARD))
-                        .font_weight(Typography::HEADING_CARD_WEIGHT)
-                        .text_color(colors.text_primary)
-                        .child(vega_i18n::t("ui.delete_conversation")),
-                )
-                .child(
-                    div()
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_secondary)
-                        .child(vega_i18n::t_args(
-                            "ui.delete_title_all_messages_and_tool_call_records",
-                            &[("title", &(thread_title(thread)).to_string())],
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            // [取消]
-                            div()
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(colors.border_subtle)
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.text_secondary)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(colors.bg_hover))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        cx.set_global(PendingDeleteConfirm(None));
-                                        cx.refresh_windows();
-                                    },
-                                )
-                                .child(vega_i18n::t("ui.cancel")),
-                        )
-                        .child(
-                            div()
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(colors.danger)
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.bg_base)
-                                .cursor_pointer()
-                                .hover(move |s| s.bg(colors.danger.opacity(0.85)))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    move |_: &MouseUpEvent, _window, cx: &mut App| {
-                                        if cx
-                                            .global::<PendingDeleteConfirm>()
-                                            .0
-                                            .as_ref()
-                                            .is_some_and(|thread| thread.id == thread_id)
-                                        {
-                                            sidebar.update(cx, Sidebar::confirm_pending_delete);
-                                        }
-                                    },
-                                )
-                                .child(vega_i18n::t("ui.delete")),
-                        ),
-                ),
+                .max_w_full()
+                .on_mouse_down_out(|_, window, cx| PendingDeleteConfirm::cancel(window, cx))
+                .child(nsh_leaf::delete_confirmation(
+                    format!("sidebar-delete-confirm-{thread_id}"),
+                    vega_i18n::t_args(
+                        "ui.delete_title_all_messages_and_tool_call_records",
+                        &[("title", &thread_title(thread))],
+                    ),
+                    move |cx| {
+                        cx.try_global::<PendingDeleteConfirm>()
+                            .and_then(|value| value.0.as_ref())
+                            == Some(&observed)
+                    },
+                    move |index, _, window, cx| {
+                        if index == 0 {
+                            PendingDeleteConfirm::cancel(window, cx);
+                        } else if cx
+                            .global::<PendingDeleteConfirm>()
+                            .0
+                            .as_ref()
+                            .is_some_and(|thread| thread.id == thread_id)
+                        {
+                            sidebar.update(cx, Sidebar::confirm_pending_delete);
+                        }
+                    },
+                )),
         )
         .into_any_element()
 }
@@ -133,17 +78,21 @@ pub(crate) fn error_bar(
     message: crate::localized_copy::LocalizedCopy,
     colors: &ThemeColors,
 ) -> AnyElement {
-    div()
-        .px_2()
-        .py_1()
-        .rounded_md()
-        .bg(colors.bg_elevated)
-        .border_1()
-        .border_color(colors.danger)
-        .text_color(colors.danger)
-        .text_size(px(Typography::SIDEBAR))
-        .child(message.render())
-        .into_any_element()
+    let _ = colors;
+    let text = message.render();
+    let mut item = nsh_leaf::Item::action(text.clone(), None);
+    item.danger = true;
+    item.enabled = false;
+    item.wrap = true;
+    nsh_leaf::host(
+        format!("sidebar-error-{text}"),
+        None,
+        vec![item],
+        false,
+        Typography::SIDEBAR_LINE_HEIGHT * 3.,
+        |_| true,
+        |_, _, _, _| {},
+    )
 }
 
 pub(crate) fn thread_title(thread: &Thread) -> String {
@@ -216,27 +165,38 @@ pub(crate) fn session_row_trailing(
 }
 
 /// Relative time for a session row (ui-spec §4.1, "2h" style).
-pub(crate) fn relative_time(updated_at_ms: i64) -> String {
-    relative_time_from(updated_at_ms, now_ms())
+pub(crate) fn relative_time(
+    updated_at_ms: i64,
+    next_change: Option<&std::cell::Cell<i64>>,
+) -> String {
+    let now = now_ms();
+    if let Some(deadline) = next_change
+        && let Some((unit, _)) = relative_time_unit(updated_at_ms, now)
+    {
+        let elapsed = now.saturating_sub(updated_at_ms).max(0);
+        let next = updated_at_ms.saturating_add((elapsed / unit + 1).saturating_mul(unit));
+        deadline.set(deadline.get().min(next));
+    }
+    relative_time_from(updated_at_ms, now)
 }
 
-/// Pure core of [`relative_time`]: `<1m` → "now", `<1h` → `{n}m`, `<24h` →
-/// `{n}h`, `<7d` → `{n}d`, otherwise the UTC date `YYYY-MM-DD` (plain
-/// civil-from-days conversion, no external date crate). Future timestamps
-/// (clock skew) read "now".
+fn relative_time_unit(updated: i64, now: i64) -> Option<(i64, &'static str)> {
+    match now.saturating_sub(updated) {
+        ..3_600_000 => Some((60_000, "m")),
+        3_600_000..86_400_000 => Some((3_600_000, "h")),
+        86_400_000..604_800_000 => Some((86_400_000, "d")),
+        _ => None,
+    }
+}
+
 pub(crate) fn relative_time_from(updated_at_ms: i64, now_ms: i64) -> String {
-    let elapsed_seconds = (now_ms - updated_at_ms).div_euclid(1000);
-    if elapsed_seconds < 60 {
-        return "now".to_string();
-    }
-    if elapsed_seconds < 3600 {
-        return format!("{}m", elapsed_seconds / 60);
-    }
-    if elapsed_seconds < 86_400 {
-        return format!("{}h", elapsed_seconds / 3600);
-    }
-    if elapsed_seconds < 7 * 86_400 {
-        return format!("{}d", elapsed_seconds / 86_400);
+    if let Some((unit, suffix)) = relative_time_unit(updated_at_ms, now_ms) {
+        let count = now_ms.saturating_sub(updated_at_ms) / unit;
+        return if count < 1 {
+            "now".to_owned()
+        } else {
+            format!("{count}{suffix}")
+        };
     }
     let (year, month, day) = civil_from_days(updated_at_ms.div_euclid(86_400_000));
     format!("{year:04}-{month:02}-{day:02}")

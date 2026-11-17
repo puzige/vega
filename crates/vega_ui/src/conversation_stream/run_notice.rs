@@ -1,6 +1,6 @@
-use super::privacy::PrivacyButton;
 use super::*;
-use crate::icons::Icon;
+
+mod presentation;
 use vega_conversation::types::TaskSummaryOutcome;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,97 +99,14 @@ impl RunNotice {
         reading_preview: bool,
         cx: &mut Context<ConversationStream>,
     ) -> AnyElement {
-        if matches!(self.kind, RunNoticeKind::Retrying { .. }) {
-            return gpui_kit::div()
-                .id(format!("assistant-network-retry-{}", self.message_id))
-                .w_full()
-                .min_w_0()
-                .py_1()
-                .aria_label(self.text())
-                .child(render_rows::inline_status_notice(
-                    self.text(),
-                    colors.text_secondary,
-                    Icon::Wifi,
-                ))
-                .into_any_element();
+        presentation::NoticeRow {
+            owner: cx.weak_entity(),
+            notice: self.clone(),
+            thread_id,
+            reading_preview,
+            colors: *colors,
         }
-        let recovery_id = self.message_id.clone();
-        let credential_failure = self.can_resume_credentials() && !reading_preview;
-        let credential_settings = matches!(
-            self.kind,
-            RunNoticeKind::Failure(
-                RunFailureKind::CredentialStorageUnavailable
-                    | RunFailureKind::CredentialExposureBlocked
-                    | RunFailureKind::CredentialProjectionInvalid(_)
-            ) | RunNoticeKind::FailureWithCompaction(
-                RunFailureKind::CredentialStorageUnavailable
-                    | RunFailureKind::CredentialExposureBlocked
-                    | RunFailureKind::CredentialProjectionInvalid(_),
-                _
-            )
-        );
-        let color = match self.kind {
-            RunNoticeKind::Retrying { .. } => colors.text_secondary,
-            RunNoticeKind::McpUnavailable(_)
-            | RunNoticeKind::Failure(_)
-            | RunNoticeKind::FailureWithCompaction(_, _)
-            | RunNoticeKind::ContextFailure
-            | RunNoticeKind::CompactionFailure(_) => colors.danger,
-        };
-        gpui_kit::div()
-            .w_full()
-            .min_w_0()
-            .py_1()
-            .child(
-                gpui_kit::div()
-                    .when(
-                        matches!(
-                            self.kind,
-                            RunNoticeKind::Failure(_)
-                                | RunNoticeKind::FailureWithCompaction(_, _)
-                                | RunNoticeKind::ContextFailure
-                                | RunNoticeKind::CompactionFailure(_)
-                        ),
-                        |row| row,
-                    )
-                    .child(render_rows::plain_error_notice(self.text(), color)),
-            )
-            .when(credential_failure, |row| {
-                row.child(
-                    gpui_kit::div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            PrivacyButton::new(
-                                format!("credential-continue-{}", self.message_id),
-                                *colors,
-                            )
-                            .label(vega_i18n::t("ui.continue"))
-                            .on_click(cx.listener(
-                                move |_, _, _, cx| {
-                                    cx.emit(CredentialContinuationRequested {
-                                        thread_id: thread_id.clone(),
-                                        message_id: recovery_id.clone(),
-                                    });
-                                },
-                            )),
-                        )
-                        .when(credential_settings, |row| {
-                            row.child(
-                                PrivacyButton::new(
-                                    format!("credential-settings-{}", self.message_id),
-                                    *colors,
-                                )
-                                .label(vega_i18n::t("ui.check_credential_settings"))
-                                .on_click(|_, _, cx| {
-                                    cx.set_global(crate::settings::SettingsOpen(true));
-                                    cx.refresh_windows();
-                                }),
-                            )
-                        }),
-                )
-            })
-            .into_any_element()
+        .into_any_element()
     }
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {

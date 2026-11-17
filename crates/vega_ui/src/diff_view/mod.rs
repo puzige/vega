@@ -1,22 +1,12 @@
-//! Safe, IO-free workspace diff state and row preparation.
+use std::{sync::Arc, time::Duration};
 
-use std::{ops::Range, time::Duration};
-
-use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton,
-    MouseUpEvent, Render, ScrollStrategy, UniformListScrollHandle, Window, actions, div, px,
-    uniform_list,
-};
+use gpui_kit::{App, Context, EventEmitter, FocusHandle, Focusable, Window, actions};
 use vega_conversation::types::{
     DiffLanguage, DiffLayer, DiffRowKind, DiffTextProjection, GitWorkspaceErrorCode,
     WorkspaceChangeKind, WorkspaceFile, WorkspaceFileId, WorkspaceHead, WorkspaceLineCount,
     WorkspaceSnapshot,
 };
 use vega_markdown::HighlightKind;
-use vega_theme::{ThemeColors, Typography, theme};
-
-use crate::conversation_stream::{MONOFONT, code_token_style};
 
 actions!(
     vega_diff_view,
@@ -40,7 +30,6 @@ pub enum DiffLayout {
     SideBySide,
 }
 
-/// Requests the sole expanded accordion body's bounded projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffProjectionRequested {
     pub thread_id: String,
@@ -49,14 +38,12 @@ pub struct DiffProjectionRequested {
     pub file_id: WorkspaceFileId,
 }
 
-/// Requests a content-free workspace refresh retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffRetryRequested {
     pub thread_id: String,
     pub project_id: String,
 }
 
-/// Closes the current safe diff route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffClosed {
     pub thread_id: String,
@@ -125,7 +112,6 @@ pub(crate) struct PreparedHunk {
     missing_trailing_newline: bool,
 }
 
-/// IO-free state behind the diff panel.
 pub struct DiffView {
     thread_id: String,
     project_id: String,
@@ -138,12 +124,16 @@ pub struct DiffView {
     projection_error: Option<(WorkspaceFileId, GitWorkspaceErrorCode)>,
     refreshing: bool,
     show_refresh_progress: bool,
-    rows: Vec<PreparedRow>,
+    rows: Arc<Vec<PreparedRow>>,
     hunk_indexes: Vec<usize>,
     current_hunk: Option<usize>,
     rendered_language: &'static str,
     focus: FocusHandle,
-    scroll: UniformListScrollHandle,
+    presentation: Option<nsh_view::Presentation>,
+    presentation_version: crate::nsh::ProjectionId,
+    row_revision: u64,
+    scroll_revision: u64,
+    scroll_target: Option<usize>,
 }
 
 impl EventEmitter<DiffProjectionRequested> for DiffView {}
@@ -156,6 +146,7 @@ impl Focusable for DiffView {
     }
 }
 
+mod nsh_view;
 mod render;
 mod state;
 

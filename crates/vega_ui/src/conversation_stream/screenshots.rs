@@ -1,31 +1,5 @@
 use super::*;
 
-fn loading_indicator(colors: ThemeColors) -> AnyElement {
-    div()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(Typography::METADATA))
-        .text_color(colors.text_secondary)
-        .child(vega_i18n::t("ui.loading"))
-        .into_any_element()
-}
-
-fn screenshot_image(
-    image: Arc<gpui_kit::Image>,
-    dimensions: (u32, u32),
-    colors: ThemeColors,
-) -> gpui_kit::Img {
-    gpui_kit::img(image)
-        .size_full()
-        .max_w(px(dimensions.0 as f32))
-        .max_h(px(dimensions.1 as f32))
-        .object_fit(gpui_kit::ObjectFit::Contain)
-        .rounded(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
-        .with_loading(move || loading_indicator(colors))
-}
-
 pub(crate) struct ScreenshotCard {
     pub(super) image: attachments::ImagePreview,
 }
@@ -48,78 +22,18 @@ impl ScreenshotCard {
             (height * scale).max(Layout::SCREENSHOT_MIN_HEIGHT),
         )
     }
-
-    fn open_preview(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.image.view.update(cx, |view, cx| {
-            view.action(crate::image_preview::ImagePreviewAction::Open, cx)
-        });
-    }
-
-    fn image_content(&self, cx: &App) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(match self.image.preview.get() {
-                Some(image) => screenshot_image(
-                    image.clone(),
-                    (self.image.image.width(), self.image.image.height()),
-                    colors,
-                )
-                .into_any_element(),
-                None => loading_indicator(colors),
-            })
-            .into_any_element()
-    }
 }
 
 impl Render for ScreenshotCard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = theme(cx).colors;
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let (width, height) = self.thumbnail_size();
-        div()
-            .w(px(width + Layout::SCREENSHOT_BORDER * 2.0))
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .rounded(px(Layout::SCREENSHOT_RADIUS))
-            .overflow_hidden()
-            .bg(colors.bg_elevated)
-            .child(
-                div()
-                    .id("screenshot-expand")
-                    .aria_label(vega_i18n::t("ui.view_full_screenshot"))
-                    .track_focus(&self.image.view.read(cx).thumbnail_focus())
-                    .tab_stop(true)
-                    .w_full()
-                    .aspect_ratio(width / height)
-                    .relative()
-                    .rounded(px(Layout::SCREENSHOT_RADIUS - Layout::SCREENSHOT_BORDER))
-                    .cursor_pointer()
-                    .hover(move |style| style.border_1().border_color(colors.text_secondary))
-                    .focus_visible(move |style| style.border_1().border_color(colors.brand_primary))
-                    .tooltip(|_, cx| {
-                        crate::icons::tooltip(vega_i18n::t("ui.view_full_image_enter"), cx)
-                    })
-                    .on_key_down(
-                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.open_preview(window, cx);
-                                cx.stop_propagation();
-                            }
-                        }),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_preview(window, cx)))
-                    .child(self.image_content(cx))
-                    .child(crate::image_preview::ImagePreview::thumbnail_tracker(
-                        &self.image.view,
-                    )),
-            )
+        crate::image_preview::ImagePreview::screenshot_thumbnail(
+            &self.image.view,
+            (
+                width + Layout::SCREENSHOT_BORDER * 2.0,
+                height + Layout::SCREENSHOT_BORDER * 2.0,
+            ),
+        )
     }
 }
 

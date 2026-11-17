@@ -12,14 +12,14 @@ type Session = Arc<Mutex<Option<PermissionResetSession>>>;
 
 #[derive(Default)]
 pub(super) struct ResetController {
-    operation: u64,
+    pub(super) operation: u64,
     pub(super) projection: Projection,
     intent: Option<PermissionResetIntent>,
     paths: Option<(PathBuf, PathBuf)>,
-    session: Option<Session>,
+    pub(super) session: Option<Session>,
     lease: Option<TrustedActionToken>,
     scheduler_ready: Option<bool>,
-    notice_focus: Option<FocusHandle>,
+    pub(super) notice_focus: Option<FocusHandle>,
 }
 
 impl VegaWindow {

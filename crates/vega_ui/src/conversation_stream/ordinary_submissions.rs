@@ -1,12 +1,12 @@
 use super::*;
-use gpui_kit::Role;
+mod presentation;
 
 use vega_conversation::types::{
     AttemptId, CommitFact, OrdinarySubmission, PrimaryFact, RetryBlocker, RetryEligibility,
     SubmissionFailure, SubmissionId,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrdinaryAction {
     Cancel,
     Retry,
@@ -38,6 +38,7 @@ enum OrdinaryStatus {
     Unknown,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 struct OrdinaryControls {
     message: &'static str,
     detail: Option<&'static str>,
@@ -45,6 +46,31 @@ struct OrdinaryControls {
 }
 
 impl OrdinaryStatus {
+    fn from_attempt(
+        snapshot: &vega_conversation::types::SubmissionSnapshot,
+        attempt: &vega_conversation::types::AttemptSnapshot,
+    ) -> Self {
+        if snapshot.unavailable
+            || attempt.abnormal
+            || matches!(
+                attempt.commit,
+                CommitFact::Unknown | CommitFact::CommitInFlight
+            ) && attempt.sealed
+        {
+            OrdinaryStatus::Unknown
+        } else if let Some(failure) = attempt.failure {
+            if attempt.primary == PrimaryFact::Started {
+                OrdinaryStatus::Committed
+            } else {
+                OrdinaryStatus::Failed(failure, snapshot.retry)
+            }
+        } else if matches!(attempt.commit, CommitFact::Committed(_)) {
+            OrdinaryStatus::Committed
+        } else {
+            OrdinaryStatus::Pending
+        }
+    }
+
     fn controls(
         self,
         retry: RetryEligibility,
@@ -523,25 +549,7 @@ impl ConversationStream {
             let Some(attempt) = snapshot.attempts.last() else {
                 continue;
             };
-            let state = if snapshot.unavailable
-                || attempt.abnormal
-                || matches!(
-                    attempt.commit,
-                    CommitFact::Unknown | CommitFact::CommitInFlight
-                ) && attempt.sealed
-            {
-                OrdinaryStatus::Unknown
-            } else if let Some(failure) = attempt.failure {
-                if attempt.primary == PrimaryFact::Started {
-                    OrdinaryStatus::Committed
-                } else {
-                    OrdinaryStatus::Failed(failure, snapshot.retry)
-                }
-            } else if matches!(attempt.commit, CommitFact::Committed(_)) {
-                OrdinaryStatus::Committed
-            } else {
-                OrdinaryStatus::Pending
-            };
+            let state = OrdinaryStatus::from_attempt(&snapshot, attempt);
             if row.attempt != attempt.id || row.state != state {
                 row.attempt = attempt.id;
                 row.state = state;
@@ -590,8 +598,6 @@ impl ConversationStream {
         }
     }
 
-    /// A stopped turn already states its outcome with one stop line. The send
-    /// row must not repeat it as a failed send with a retry action.
     fn attempt_shows_stop_line(&self, row: &OrdinaryRow, cx: &App) -> bool {
         let snapshot = row.submission.snapshot();
         let Some(attempt) = snapshot.attempts.last() else {
@@ -602,11 +608,11 @@ impl ConversationStream {
             .is_some_and(|group| group.read(cx).status() == RunActivityStatus::Interrupted)
     }
 
-    pub(crate) fn ordinary_controls(
+    fn ordinary_projection(
         &self,
         index: usize,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+        cx: &App,
+    ) -> Option<(&OrdinaryRow, Option<OrdinaryControls>, bool)> {
         let identity = self.entry_identities.get(index)?;
         let row = self
             .ordinary
@@ -640,119 +646,21 @@ impl ConversationStream {
         if controls.is_none() && !diagnostic_available {
             return None;
         }
-        let submission = row.submission.id();
-        let attempt = row.attempt;
-        let thread = self.thread.id.clone();
-        let keyboard_thread = thread.clone();
-        let diagnostic_submission = row.submission.clone();
-        let keyboard_diagnostic_submission = diagnostic_submission.clone();
-        let colors = theme(cx).colors;
+        Some((row, controls, diagnostic_available))
+    }
+
+    pub(crate) fn ordinary_controls(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        self.ordinary_projection(index, cx)?;
         Some(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_size(px(Typography::BODY))
-                .text_color(colors.text_secondary)
-                .children(controls.as_ref().map(|controls| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(vega_i18n::t(controls.message))
-                        .children(controls.detail.map(vega_i18n::t))
-                }))
-                .children(
-                    controls
-                        .and_then(|controls| controls.action)
-                        .map(|(label, action)| {
-                            let label = vega_i18n::t(label);
-                            div()
-                                .id(format!(
-                                    "ordinary-action-{}",
-                                    row.submission.user_message_id()
-                                ))
-                                .role(Role::Button)
-                                .aria_label(label)
-                                .key_context("PendingMessageControl")
-                                .track_focus(&row.focus)
-                                .tab_stop(true)
-                                .cursor_pointer()
-                                .px_2()
-                                .py_1()
-                                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                                .focus_visible(move |style| {
-                                    style.border_1().border_color(colors.accent)
-                                })
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(move |_, _, _, cx| {
-                                        cx.stop_propagation();
-                                        cx.emit(OrdinaryActionRequested {
-                                            thread_id: thread.clone(),
-                                            submission,
-                                            attempt,
-                                            action,
-                                        });
-                                    }),
-                                )
-                                .on_action(cx.listener(
-                                    move |_, _: &ActivatePendingMessageControl, _, cx| {
-                                        cx.stop_propagation();
-                                        cx.emit(OrdinaryActionRequested {
-                                            thread_id: keyboard_thread.clone(),
-                                            submission,
-                                            attempt,
-                                            action,
-                                        });
-                                    },
-                                ))
-                                .child(label)
-                        }),
-                )
-                .children(diagnostic_available.then(|| {
-                    div()
-                        .id(format!(
-                            "ordinary-diagnostics-{}",
-                            row.submission.user_message_id()
-                        ))
-                        .role(Role::Button)
-                        .aria_label(vega_i18n::t("ui.ordinary_send.copy_diagnostics"))
-                        .key_context("PendingMessageControl")
-                        .track_focus(&row.diagnostic_focus)
-                        .tab_stop(true)
-                        .cursor_pointer()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                        .focus_visible(move |style| style.border_1().border_color(colors.accent))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |_, _, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(text) =
-                                    diagnostic_submission.preparation_diagnostics(attempt)
-                                {
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                        text,
-                                    ));
-                                }
-                            }),
-                        )
-                        .on_action(cx.listener(
-                            move |_, _: &ActivatePendingMessageControl, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(text) =
-                                    keyboard_diagnostic_submission.preparation_diagnostics(attempt)
-                                {
-                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                        text,
-                                    ));
-                                }
-                            },
-                        ))
-                        .child(vega_i18n::t("ui.ordinary_send.copy_diagnostics"))
-                }))
-                .into_any_element(),
+            presentation::ControlsRow {
+                owner: cx.weak_entity(),
+                index,
+            }
+            .into_any_element(),
         )
     }
 }

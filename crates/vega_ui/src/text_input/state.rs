@@ -11,6 +11,8 @@ impl TextInput {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             content_revision: 0,
+            nsh_selection_revision: 0,
+            nsh_composer: None,
             prediction: None,
             prediction_suppressed: false,
             placeholder: placeholder.into(),

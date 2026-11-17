@@ -1,6 +1,4 @@
 use super::*;
-use crate::interaction::InteractionExt;
-use gpui_kit::Role;
 use vega_conversation::types::{
     SubagentOpenRequested, SubagentSnapshot, SubagentState, SubagentStopRequested,
 };
@@ -227,48 +225,5 @@ impl ConversationStream {
         if let Some(group) = self.subagent_groups.get(parent_message) {
             group.update(cx, |group, cx| group.bind(id, stream, cx));
         }
-    }
-    pub(crate) fn render_subagent_parent(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let parent = self.thread.parent_thread_id.clone()?;
-        let colors = theme(cx).colors;
-        let activate = std::rc::Rc::new(move |this: &mut Self, cx: &mut Context<Self>| {
-            cx.emit(SubagentOpenRequested {
-                source_thread_id: this.thread.id.clone(),
-                thread_id: parent.clone(),
-            })
-        });
-        let keyboard = activate.clone();
-        Some(
-            div()
-                .id("subagent-parent")
-                .role(Role::Button)
-                .aria_label(vega_i18n::t("ui.back_to_parent"))
-                .track_focus(&self.subagent_parent_focus)
-                .tab_stop(true)
-                .border_1()
-                .border_color(gpui_kit::transparent_black())
-                .px_2()
-                .py_1()
-                .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                .text_size(px(Typography::BODY))
-                .text_color(colors.text_secondary)
-                .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, true)
-                .focus_visible(move |style| style.border_color(colors.accent))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    activate(this, cx);
-                }))
-                .on_key_down(
-                    cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            keyboard(this, cx);
-                        }
-                    }),
-                )
-                .child(vega_i18n::t("ui.back_to_parent"))
-                .into_any_element(),
-        )
     }
 }

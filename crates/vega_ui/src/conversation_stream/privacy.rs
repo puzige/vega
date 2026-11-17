@@ -1,6 +1,5 @@
 use super::*;
-use crate::interaction::InteractionExt;
-use crate::scroll_edge_fade::{ScrollFade, ScrollableFadeExt};
+mod control;
 use gpui_kit::SharedString;
 use vega_conversation::types::PrivacyReview;
 
@@ -74,16 +73,34 @@ impl ConversationStream {
 
     pub(crate) fn render_privacy_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let binding = control::Binding::capture(self, cx);
+        let text = |id: String, value: String, foreground| {
+            control::Control {
+                id: id.into(),
+                text: value,
+                disabled: false,
+                button: false,
+                colors,
+                foreground,
+                binding: Some(binding.clone()),
+                activate: None,
+            }
+            .into_any_element()
+        };
         let mut view = div()
             .px(px(Layout::CONVERSATION_PADDING))
             .flex()
             .flex_col()
             .gap_2();
         if self.privacy.pending {
-            view = view.child(vega_i18n::t("ui.checking"));
+            view = view.child(text(
+                "privacy-pending".into(),
+                vega_i18n::t("ui.checking").into(),
+                colors.text_secondary,
+            ));
         }
         if let Some(error) = &self.privacy.error {
-            view = view.child(div().text_color(colors.danger).child(error.render()));
+            view = view.child(text("privacy-error".into(), error.render(), colors.danger));
         }
         if let Some(review) = &self.privacy.review {
             let mut rows = div()
@@ -92,10 +109,13 @@ impl ConversationStream {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .gap_2()
-                .scroll_edge_fade(colors.bg_base, ScrollFade::compact());
+                .gap_2();
             if review.findings.is_empty() {
-                rows = rows.child(vega_i18n::t("ui.no_credentials_need_attention"));
+                rows = rows.child(text(
+                    "privacy-empty".into(),
+                    vega_i18n::t("ui.no_credentials_need_attention").into(),
+                    colors.text_secondary,
+                ));
             }
             for (index, finding) in review.findings.iter().enumerate() {
                 let snapshot = review.clone();
@@ -104,10 +124,19 @@ impl ConversationStream {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(finding.source_label())
-                    .child(finding.preview_text())
+                    .child(text(
+                        format!("privacy-source-{index}"),
+                        finding.source_label().into(),
+                        colors.text_secondary,
+                    ))
+                    .child(text(
+                        format!("privacy-preview-{index}"),
+                        finding.preview_text(),
+                        colors.text_primary,
+                    ))
                     .child(
                         PrivacyButton::new(format!("credential-details-{index}"), colors)
+                            .binding(binding.clone())
                             .label(if self.privacy.details.contains(&index) {
                                 vega_i18n::t("ui.hide_details")
                             } else {
@@ -121,15 +150,24 @@ impl ConversationStream {
                             })),
                     );
                 if self.privacy.details.contains(&index) {
-                    row = row.child(format!(
-                        "{} · {} · {} · {}–{}",
-                        finding.source_id, finding.field, finding.rule, finding.start, finding.end
+                    row = row.child(text(
+                        format!("privacy-details-{index}"),
+                        format!(
+                            "{} · {} · {} · {}–{}",
+                            finding.source_id,
+                            finding.field,
+                            finding.rule,
+                            finding.start,
+                            finding.end
+                        ),
+                        colors.text_secondary,
                     ));
                 }
                 if let Some(message) = &finding.message_id {
                     let message = message.clone();
                     row = row.child(
                         PrivacyButton::new(format!("credential-locate-{index}"), colors)
+                            .binding(binding.clone())
                             .label(vega_i18n::t("ui.locate"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.request_message_location(&message, cx)
@@ -139,6 +177,7 @@ impl ConversationStream {
                 if !finding.exact {
                     row = row.child(
                         PrivacyButton::new(format!("credential-exception-{index}"), colors)
+                            .binding(binding.clone())
                             .label(if allow {
                                 vega_i18n::t("ui.mark_as_test_value_false_positive")
                             } else {
@@ -164,11 +203,17 @@ impl ConversationStream {
                 if self.privacy.confirming {
                     let snapshot = review.clone();
                     view = view
-                        .child(vega_i18n::t(
-                            "ui.this_permanently_replaces_credentials_in_this_conversation_and",
+                        .child(text(
+                            "privacy-clean-warning".into(),
+                            vega_i18n::t(
+                                "ui.this_permanently_replaces_credentials_in_this_conversation_and",
+                            )
+                            .into(),
+                            colors.warning,
                         ))
                         .child(
                             PrivacyButton::new("credential-clean-confirm", colors)
+                                .binding(binding.clone())
                                 .label(vega_i18n::t("ui.confirm_permanent_cleanup"))
                                 .disabled(self.privacy.pending)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -182,6 +227,7 @@ impl ConversationStream {
                         );
                     view = view.child(
                         PrivacyButton::new("credential-clean-cancel", colors)
+                            .binding(binding.clone())
                             .label(vega_i18n::t("ui.cancel_cleanup"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.privacy.confirming = false;
@@ -191,6 +237,7 @@ impl ConversationStream {
                 } else {
                     view = view.child(
                         PrivacyButton::new("credential-clean-preview", colors)
+                            .binding(binding.clone())
                             .label(vega_i18n::t(
                                 "ui.permanently_remove_credentials_from_this_conversation",
                             ))
@@ -205,6 +252,7 @@ impl ConversationStream {
         }
         view.child(
             PrivacyButton::new("credential-review-close", colors)
+                .binding(binding.clone())
                 .label(vega_i18n::t("ui.close"))
                 .disabled(self.privacy.pending)
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -222,6 +270,7 @@ pub(super) struct PrivacyButton {
     label: &'static str,
     disabled: bool,
     colors: vega_theme::ThemeColors,
+    binding: Option<control::Binding>,
 }
 
 impl PrivacyButton {
@@ -231,7 +280,19 @@ impl PrivacyButton {
             label: "",
             disabled: false,
             colors,
+            binding: None,
         }
+    }
+    fn binding(mut self, binding: control::Binding) -> Self {
+        self.binding = Some(binding);
+        self
+    }
+    pub(super) fn owner(
+        self,
+        stream: &ConversationStream,
+        cx: &Context<ConversationStream>,
+    ) -> Self {
+        self.binding(control::Binding::capture(stream, cx))
     }
     pub(super) fn label(mut self, label: &'static str) -> Self {
         self.label = label;
@@ -245,42 +306,20 @@ impl PrivacyButton {
         self,
         activate: impl Fn(&(), &mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        let enabled = !self.disabled;
-        let colors = self.colors;
-        let activate = std::rc::Rc::new(activate);
-        let keyboard = activate.clone();
-        div()
-            .id(self.id)
-            .aria_label(self.label)
-            .focusable()
-            .tab_stop(enabled)
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_color(if enabled {
-                colors.text_secondary
+        control::Control {
+            id: self.id,
+            text: self.label.into(),
+            disabled: self.disabled,
+            button: true,
+            colors: self.colors,
+            foreground: if self.disabled {
+                self.colors.text_tertiary
             } else {
-                colors.text_tertiary
-            })
-            .interaction_surface(colors.bg_base, colors.bg_hover, colors.bg_active, enabled)
-            .when(enabled, |button| {
-                button
-                    .cursor_pointer()
-                    .focus_visible(move |style| style.border_1().border_color(colors.accent))
-            })
-            .on_click(move |_, window, cx| {
-                if enabled {
-                    cx.stop_propagation();
-                    activate(&(), window, cx);
-                }
-            })
-            .on_key_down(move |event, window, cx| {
-                if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    cx.stop_propagation();
-                    keyboard(&(), window, cx);
-                }
-            })
-            .child(self.label)
-            .into_any_element()
+                self.colors.text_secondary
+            },
+            binding: self.binding,
+            activate: Some(std::rc::Rc::new(activate)),
+        }
+        .into_any_element()
     }
 }

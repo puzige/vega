@@ -1,5 +1,8 @@
 use super::*;
-use gpui_kit::{ContentMask, DecorationRun, LineLayout, TextAlign, point};
+use gpui_kit::LineLayout;
+
+#[path = "newshimmer/mod.rs"]
+mod native;
 
 pub(crate) struct StageText {
     title: String,
@@ -28,31 +31,23 @@ impl Render for StageText {
         if let Some(epoch) = self.epoch {
             stage_text(self.title.clone(), epoch, window, cx)
         } else {
-            div().child(self.title.clone()).into_any_element()
+            let colors = theme(cx).colors;
+            native::element(
+                self.title.clone(),
+                None,
+                colors.conversation_stage,
+                colors.bg_base,
+                window,
+            )
         }
     }
 }
 
-pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> AnyElement {
-    let colors = theme(cx).colors;
-    styled_text(
-        text,
-        epoch,
-        Typography::CONVERSATION,
-        Layout::CONVERSATION_TOOL_HEIGHT,
-        colors.text_tertiary,
-        colors.text_primary,
-        window,
-    )
-}
-
 pub(crate) fn stage_text(text: String, epoch: Instant, window: &Window, cx: &App) -> AnyElement {
     let colors = theme(cx).colors;
-    styled_text(
+    native::element(
         text,
-        epoch,
-        Typography::CONVERSATION,
-        Layout::CONVERSATION_TOOL_HEIGHT,
+        Some(epoch),
         colors.conversation_stage,
         colors.bg_base,
         window,
@@ -116,7 +111,7 @@ fn display_layout(
     Some(best)
 }
 
-fn frame_decorations(
+fn frame_colors(
     text: &str,
     layout: &LineLayout,
     original_width: Pixels,
@@ -124,29 +119,22 @@ fn frame_decorations(
     base: Rgba,
     highlight: Rgba,
     moving: bool,
-) -> Vec<DecorationRun> {
+) -> Vec<Rgba> {
     let center = phase.fract() * 1.6 - 0.3;
     let width = f32::from(original_width.max(px(1.)));
     text.char_indices()
-        .map(|(index, ch)| {
+        .map(|(index, _)| {
             let x = f32::from(layout.x_for_index(index)) / width;
             let strength = if moving {
                 (1. - (x - center).abs() / 0.24).max(0.)
             } else {
                 0.
             };
-            DecorationRun {
-                len: ch.len_utf8() as u32,
-                color: Rgba {
-                    r: base.r + (highlight.r - base.r) * strength,
-                    g: base.g + (highlight.g - base.g) * strength,
-                    b: base.b + (highlight.b - base.b) * strength,
-                    a: base.a,
-                }
-                .into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+            Rgba {
+                r: base.r + (highlight.r - base.r) * strength,
+                g: base.g + (highlight.g - base.g) * strength,
+                b: base.b + (highlight.b - base.b) * strength,
+                a: base.a,
             }
         })
         .collect()
@@ -162,89 +150,4 @@ fn should_animate(
         && active
         && !reduce_motion
         && layout.is_some_and(|layout| layout.runs.iter().any(|run| !run.glyphs.is_empty()))
-}
-
-fn styled_text(
-    text: String,
-    epoch: Instant,
-    font_size: f32,
-    height: f32,
-    base_color: Rgba,
-    highlight: Rgba,
-    window: &Window,
-) -> AnyElement {
-    let base = TextRun {
-        len: text.len(),
-        font: window.text_style().font(),
-        color: gpui_kit::black(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let line =
-        window
-            .text_system()
-            .layout_line(&text, px(font_size), std::slice::from_ref(&base), None);
-    let width = line.width;
-    let label = text.clone();
-    let canvas = gpui_kit::canvas(
-        move |bounds, window, _| {
-            display_layout(&text, line, bounds.size.width, |candidate| {
-                window.text_system().layout_line(
-                    candidate,
-                    px(font_size),
-                    &[TextRun {
-                        len: candidate.len(),
-                        ..base.clone()
-                    }],
-                    None,
-                )
-            })
-        },
-        move |bounds, display, window, cx| {
-            let Some((shown, layout)) = display else {
-                return;
-            };
-            let clipped_bounds = bounds.intersect(&window.content_mask().bounds);
-            let moving = should_animate(
-                Some(&layout),
-                !clipped_bounds.is_empty(),
-                window.is_window_active(),
-                cx.reduce_motion(),
-            );
-            let phase = epoch.elapsed().as_secs_f32() * 1000.
-                / vega_theme::Motion::THINKING_SHIMMER_MS as f32;
-            let decorations =
-                frame_decorations(&shown, &layout, width, phase, base_color, highlight, moving);
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: clipped_bounds,
-                }),
-                |window| {
-                    let _ = layout.paint(
-                        point(bounds.left(), bounds.top()),
-                        bounds.size.height,
-                        TextAlign::Left,
-                        None,
-                        &decorations,
-                        window,
-                        cx,
-                    );
-                },
-            );
-            if moving {
-                window.request_animation_frame();
-            }
-        },
-    )
-    .w(width)
-    .max_w_full()
-    .h(px(height));
-    div()
-        .id("thinking-shimmer")
-        .min_w_0()
-        .max_w_full()
-        .aria_label(label)
-        .child(canvas)
-        .into_any_element()
 }
