@@ -209,19 +209,15 @@ impl ToolCard {
                 .flatten()
         };
         let shell_control = self.shell_command.as_ref().and_then(|command| {
-            (command.concurrent && (command.can_cancel || command.can_retry)).then(|| {
-                ShellControl {
-                    operation: command.operation_id.clone(),
-                    label: vega_i18n::t(if self.shell_control_pending {
-                        "ui.shell_session.stopping"
-                    } else if command.can_retry {
-                        "ui.shell_recovery.retry"
-                    } else {
-                        "ui.shell_session.cancel"
-                    })
-                    .to_owned(),
-                    enabled: !self.shell_control_pending,
-                }
+            (command.concurrent && command.can_retry).then(|| ShellControl {
+                operation: command.operation_id.clone(),
+                label: vega_i18n::t(if self.shell_control_pending {
+                    "ui.shell_recovery.retrying"
+                } else {
+                    "ui.shell_recovery.retry"
+                })
+                .to_owned(),
+                enabled: !self.shell_control_pending,
             })
         });
         let label = if let Some((status, _)) = &status {
@@ -452,7 +448,7 @@ impl ToolCard {
                         && self.shell_command.as_ref().is_some_and(|command| {
                             command.operation_id == control.operation
                                 && command.concurrent
-                                && (command.can_cancel || command.can_retry)
+                                && command.can_retry
                         })
                 });
                 let accepted = if let Some(control) = operation {
