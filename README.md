@@ -1,10 +1,17 @@
-# ✦ Vega
-
-**Native AI Agent Desktop** — Rust + GPUI 原生 Agent 工作台
-
 <p>
   <img src="assets/logo/vega-icon-smile-light.svg" width="128" alt="Vega logo">
 </p>
+
+# ✦ Vega
+
+
+
+**Native AI Agent Desktop** — Rust + GPUI 原生 Agent 工作台
+
+
+
+
+<img width="1404" height="860" alt="image" src="https://github.com/user-attachments/assets/8d5a5fe4-9575-4c50-9850-0d6a9393032a" />
 
 Vega 将模型对话、编码任务、工具执行和改动审阅放进同一个 macOS 原生工作台。界面使用 Rust + [GPUI](https://www.gpui.rs/) 和 Metal 渲染，不依赖 Electron；自研 Vega Runtime 直连模型 API，也支持通过 ACP 接入 Codex。
 
